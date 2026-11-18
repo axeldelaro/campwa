@@ -1,0 +1,26 @@
+{
+  "name": "SentinelCam — Centre de Contrôle E2EE",
+  "short_name": "SentinelCam",
+  "description": "Poste de contrôle WebRTC à la demande et portail Android sécurisé de bout en bout.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#05080f",
+  "theme_color": "#05080f",
+  "categories": ["security", "utilities"],
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
