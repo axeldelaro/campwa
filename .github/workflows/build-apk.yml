@@ -1,0 +1,132 @@
+name: Build & Release SentinelCam Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: "android-apk-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Compile Native Kotlin + WebRTC Signed APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Setup Java 17 (Eclipse Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK & Accept Licenses
+        uses: android-actions/setup-android@v3
+
+      - name: Ensure Android SDK 34 Licenses Accepted
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Setup Gradle Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install NPM dependencies & Build Web Assets
+        run: |
+          npm ci
+          npm run build
+          npx cap sync android
+
+      - name: Restore or Persist Signing Keystore Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.sentinelcam-signing
+          key: sentinelcam-release-keystore-v1
+
+      - name: Prepare Release Keystore (V1 + V2 Signed APK)
+        env:
+          SECRET_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          SECRET_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          SECRET_KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          mkdir -p ~/.sentinelcam-signing
+          KEYSTORE_FILE="$HOME/.sentinelcam-signing/sentinelcam-release.jks"
+          if [ -n "$SECRET_KEYSTORE_B64" ]; then
+            echo "$SECRET_KEYSTORE_B64" | base64 --decode > "$KEYSTORE_FILE"
+          elif [ ! -f "$KEYSTORE_FILE" ]; then
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_FILE" \
+              -storetype PKCS12 \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -alias sentinelcam \
+              -storepass sentinelcam2026 \
+              -keypass sentinelcam2026 \
+              -dname "CN=SentinelCam, OU=Security, O=SentinelCam, L=Paris, S=IDF, C=FR"
+          fi
+          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASSWORD=${SECRET_KEYSTORE_PASS:-sentinelcam2026}" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=${SECRET_KEY_ALIAS:-sentinelcam}" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=${SECRET_KEY_PASS:-sentinelcam2026}" >> "$GITHUB_ENV"
+
+      - name: Compile Signed Release APK with Gradle
+        working-directory: ./android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Package Ready-to-Install SentinelCam.apk
+        run: |
+          APK_OUT="android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK_OUT" ]; then
+            echo "Release APK not found at $APK_OUT"
+            exit 1
+          fi
+          cp "$APK_OUT" ./SentinelCam.apk
+          ls -lh ./SentinelCam.apk
+
+      - name: Upload SentinelCam.apk to Workflow Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SentinelCam-APK
+          path: ./SentinelCam.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish Signed APK to GitHub Releases
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "SentinelCam v1.0.${{ github.run_number }} (Signed Android APK)"
+          body: |
+            ### 🛡️ SentinelCam — Application Émettrice Android Signée (`v1.0.${{ github.run_number }}`)
+
+            Téléchargez et installez directement **`SentinelCam.apk`** sur votre smartphone Android (Android 8.0 à Android 15+).
+
+            #### Caractéristiques incluses :
+            - **Service Continu Natif (`CameraForegroundService`)** : Maintient l'écoute chiffrée même écran verrouillé ou lorsque d'autres applications sont utilisées (`PARTIAL_WAKE_LOCK` + `WifiLock` + exemption Doze).
+            - **Capture Matérielle à la Demande (`Camera2Enumerator` + `SurfaceTextureHelper`)** : Capteur caméra 100 % éteint en veille (0 mA), réveil instantané (< 2s) sur demande du Poste de Contrôle Web.
+            - **Sécurité Cryptographique Bout-en-Bout** : PBKDF2-SHA256 (150 000 itérations) + HKDF-SHA256 + Challenge mutuel HMAC-SHA256 + AES-256-GCM + WebRTC DTLS-SRTP + vérification SAS anti-MitM.
+            - **Transparence Système** : Notification permanente avec bouton d'arrêt rapide **« Couper le portail »**.
+          files: ./SentinelCam.apk
+          draft: false
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

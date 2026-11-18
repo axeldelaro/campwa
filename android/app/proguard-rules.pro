@@ -1,0 +1,5 @@
+-keep class org.webrtc.** { *; }
+-dontwarn org.webrtc.**
+-keep class org.eclipse.paho.** { *; }
+-dontwarn org.eclipse.paho.**
+-keep class com.sentinelcam.app.** { *; }
