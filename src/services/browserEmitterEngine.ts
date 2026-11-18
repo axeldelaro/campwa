@@ -1,22 +1,22 @@
 import {
   calculateLockoutDurationMs,
-  computeClientChallengeProof,
+  computeHelloAckProof,
+  computeHelloWakeProof,
   computeSas,
-  computeServerChallengeProof,
   constantTimeEqualHex,
   deriveBootstrapKeys,
-  deriveSessionAesKey,
+  deriveFastSessionKey,
   extractSdpFingerprint,
   generateSecurePairingCode,
   randomHex,
 } from '../crypto/cryptoEngine';
 import type {
-  AuthInitMsg,
-  AuthResponseMsg,
   CameraFacingMode,
   CmdStartStreamMsg,
   CmdSwitchCameraMsg,
   CmdToggleMicMsg,
+  DerivedBootstrapKeys,
+  HelloWakeMsg,
   IceCandidateMsg,
   NativeAuditEntry,
   NativePortalState,
@@ -27,27 +27,22 @@ import type {
 import { buildIceServers } from './deviceVault';
 import { EncryptedSignalingChannel } from './signalingService';
 
-const WEB_EMITTER_STORAGE_KEY = 'sentinelcam.web_emitter.v1';
+const WEB_EMITTER_STORAGE_KEY = 'sentinelcam.web_emitter.v3';
 
 interface PersistedWebEmitterConfig {
   onboardingCompleted: boolean;
   pairingCode: string;
   deviceId: string;
-  deviceSalt: string;
   pairedTokenId: string | null;
-  pairedKeyHex: string | null;
   sasCode: string | null;
   sasSymbols: string | null;
   failedAttempts: number;
   lockoutUntil: number;
 }
 
-/**
- * Browser-mode Emitter Engine implementing the exact same E2EE protocol as the Android
- * ForegroundService, enabling instant browser-to-browser testing or tablet kiosk use.
- */
 export class BrowserEmitterEngine {
   private config: PersistedWebEmitterConfig;
+  private bootstrapKeys: DerivedBootstrapKeys | null = null;
   private signaling: EncryptedSignalingChannel | null = null;
   private pc: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
@@ -63,14 +58,6 @@ export class BrowserEmitterEngine {
   private batteryLevel = 100;
   private isCharging = true;
 
-  private pendingChallenge: {
-    tokenId: string;
-    clientNonce: string;
-    serverNonce: string;
-    createdAt: number;
-  } | null = null;
-
-  private heartbeatTimer: number | null = null;
   private logs: NativeAuditEntry[] = [];
   private readonly onUpdate: (state: NativePortalState) => void;
 
@@ -93,9 +80,7 @@ export class BrowserEmitterEngine {
       onboardingCompleted: false,
       pairingCode: generateSecurePairingCode(),
       deviceId: `web-${randomHex(6)}`,
-      deviceSalt: randomHex(32),
       pairedTokenId: null,
-      pairedKeyHex: null,
       sasCode: null,
       sasSymbols: null,
       failedAttempts: 0,
@@ -112,12 +97,6 @@ export class BrowserEmitterEngine {
     } catch {
       // Ignore
     }
-  }
-
-  private addLog(level: 'info' | 'warn' | 'security', message: string): void {
-    this.logs.unshift({ timestamp: Date.now(), level, message });
-    if (this.logs.length > 40) this.logs.pop();
-    this.emitState();
   }
 
   private async pollBatteryStatus(): Promise<void> {
@@ -141,7 +120,7 @@ export class BrowserEmitterEngine {
         bat.addEventListener('chargingchange', sync);
       }
     } catch {
-      // Battery API optional on desktop browsers
+      // Optional
     }
   }
 
@@ -161,7 +140,7 @@ export class BrowserEmitterEngine {
       pairingCode: this.config.pairingCode,
       deviceId: this.config.deviceId,
       deviceName: 'Portail Navigateur Web',
-      paired: Boolean(this.config.pairedKeyHex),
+      paired: Boolean(this.config.pairedTokenId),
       pairedTokenId: this.config.pairedTokenId,
       sasCode: this.config.sasCode,
       sasSymbols: this.config.sasSymbols,
@@ -197,6 +176,8 @@ export class BrowserEmitterEngine {
     this.startedAt = Date.now();
 
     const keys = await deriveBootstrapKeys(this.config.pairingCode);
+    this.bootstrapKeys = keys;
+
     this.signaling = new EncryptedSignalingChannel({
       role: 'device',
       topicId: keys.topicId,
@@ -208,29 +189,16 @@ export class BrowserEmitterEngine {
         this.mqttConnected = connected;
         const active = brokers.filter((b) => b.connected).map((b) => b.name);
         this.activeBroker = active.length > 0 ? active.join(' + ') : 'Reconnexion...';
-        if (connected) {
-          void this.broadcastPresence();
-        }
         this.emitState();
       },
     });
 
     this.signaling.start();
-    this.addLog('security', `Portail Web actif en écoute E2EE — Code [${this.config.pairingCode}]`);
-
-    this.heartbeatTimer = window.setInterval(() => {
-      void this.broadcastPresence();
-    }, 10_000);
-
     this.emitState();
     return this.getState();
   }
 
   public async stopPortal(): Promise<NativePortalState> {
-    if (this.heartbeatTimer !== null) {
-      window.clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
     this.stopMediaAndPeer();
     if (this.signaling) {
       this.signaling.destroy();
@@ -245,31 +213,15 @@ export class BrowserEmitterEngine {
 
   public async regenerateCode(): Promise<NativePortalState> {
     this.config.pairingCode = generateSecurePairingCode();
-    this.config.deviceSalt = randomHex(32);
     this.config.pairedTokenId = null;
-    this.config.pairedKeyHex = null;
     this.config.sasCode = null;
     this.config.sasSymbols = null;
     this.config.failedAttempts = 0;
     this.config.lockoutUntil = 0;
     this.saveConfig();
-    this.addLog('security', `Nouveau code généré : [${this.config.pairingCode}] — anciens jetons révoqués.`);
     if (this.serviceRunning) {
       return this.startPortal();
     }
-    return this.getState();
-  }
-
-  public resetPairing(): NativePortalState {
-    this.config.pairedTokenId = null;
-    this.config.pairedKeyHex = null;
-    this.config.sasCode = null;
-    this.config.sasSymbols = null;
-    this.config.failedAttempts = 0;
-    this.config.lockoutUntil = 0;
-    this.saveConfig();
-    this.stopMediaAndPeer();
-    this.addLog('security', 'Appairage réinitialisé — prêt pour un nouveau poste de contrôle.');
     return this.getState();
   }
 
@@ -280,7 +232,7 @@ export class BrowserEmitterEngine {
       deviceId: this.config.deviceId,
       deviceName: 'Portail Navigateur Web',
       portalState: lockoutRemainingMs > 0 ? 'locked' : this.mediaStream ? 'streaming' : 'standby',
-      paired: Boolean(this.config.pairedKeyHex),
+      paired: Boolean(this.config.pairedTokenId),
       pairedTokenId: this.config.pairedTokenId,
       lockoutRemainingMs,
       failedAttempts: this.config.failedAttempts,
@@ -294,33 +246,16 @@ export class BrowserEmitterEngine {
     };
   }
 
-  private async broadcastPresence(): Promise<void> {
-    if (!this.signaling || !this.serviceRunning) return;
-    const status = this.buildStatusMsg();
-    await this.signaling.send(status, 'boot', { toPresence: true });
-    if (this.dataChannel && this.dataChannel.readyState === 'open') {
-      try {
-        this.dataChannel.send(JSON.stringify(status));
-      } catch {
-        // Ignore
-      }
-    }
-  }
-
   private async handleMessage(msg: SignalMessage): Promise<void> {
-    if (!this.signaling) return;
+    if (!this.signaling || !this.bootstrapKeys) return;
 
     switch (msg.type) {
       case 'PING_STATUS':
         await this.signaling.send(this.buildStatusMsg(), 'boot');
         break;
 
-      case 'AUTH_INIT':
-        await this.handleAuthInit(msg);
-        break;
-
-      case 'AUTH_RESPONSE':
-        await this.handleAuthResponse(msg);
+      case 'HELLO_WAKE':
+        await this.handleHelloWake(msg);
         break;
 
       case 'CMD_START_STREAM':
@@ -340,7 +275,6 @@ export class BrowserEmitterEngine {
           },
           'sess'
         );
-        this.addLog('info', 'Caméra mise en veille sur demande du poste de contrôle.');
         break;
 
       case 'CMD_SWITCH_CAMERA':
@@ -364,8 +298,8 @@ export class BrowserEmitterEngine {
     }
   }
 
-  private async handleAuthInit(msg: AuthInitMsg): Promise<void> {
-    if (!this.signaling) return;
+  private async handleHelloWake(msg: HelloWakeMsg): Promise<void> {
+    if (!this.signaling || !this.bootstrapKeys) return;
 
     const lockoutRemainingMs = Math.max(0, this.config.lockoutUntil - Date.now());
     if (lockoutRemainingMs > 0) {
@@ -373,7 +307,7 @@ export class BrowserEmitterEngine {
         {
           type: 'AUTH_ERR',
           reason: 'LOCKED_OUT',
-          message: `Protection anti-brute-force active. Réessayez dans ${Math.ceil(lockoutRemainingMs / 1000)}s.`,
+          message: `Verrouillage actif (${Math.ceil(lockoutRemainingMs / 1000)}s).`,
           lockoutRemainingMs,
           failedAttempts: this.config.failedAttempts,
           ts: Date.now(),
@@ -383,115 +317,57 @@ export class BrowserEmitterEngine {
       return;
     }
 
-    const isFirstPair = !this.config.pairedKeyHex || this.config.pairedTokenId !== msg.tokenId;
-
-    const serverNonce = randomHex(24);
-    this.pendingChallenge = {
-      tokenId: msg.tokenId,
-      clientNonce: msg.clientNonce,
-      serverNonce,
-      createdAt: Date.now(),
-    };
-
-    await this.signaling.send(
-      {
-        type: 'AUTH_CHALLENGE',
-        deviceId: this.config.deviceId,
-        deviceName: 'Portail Navigateur Web',
-        serverNonce,
-        deviceSalt: this.config.deviceSalt,
-        isFirstPair,
-        ts: Date.now(),
-      },
-      'boot'
-    );
-  }
-
-  private async handleAuthResponse(msg: AuthResponseMsg): Promise<void> {
-    if (!this.signaling || !this.pendingChallenge) return;
-
-    if (Date.now() - this.pendingChallenge.createdAt > 30_000) {
-      this.pendingChallenge = null;
-      await this.signaling.send(
-        {
-          type: 'AUTH_ERR',
-          reason: 'EXPIRED_CHALLENGE',
-          message: 'Challenge expiré, veuillez relancer la connexion.',
-          lockoutRemainingMs: 0,
-          failedAttempts: this.config.failedAttempts,
-          ts: Date.now(),
-        },
-        'boot'
-      );
-      return;
-    }
-
-    const { clientNonce, serverNonce, tokenId } = this.pendingChallenge;
-    this.pendingChallenge = null;
-
-    const candidateKeyHex = this.config.pairedKeyHex ?? msg.pairingKeyHex;
-    if (!candidateKeyHex || candidateKeyHex.length !== 64) {
-      this.recordAuthFailure('Clé d’appairage absente ou invalide.');
-      return;
-    }
-
-    const expectedProof = await computeClientChallengeProof(
-      candidateKeyHex,
-      clientNonce,
-      serverNonce,
-      tokenId,
-      this.config.deviceId
+    const expectedProof = await computeHelloWakeProof(
+      this.bootstrapKeys.bootstrapAuthRaw,
+      msg.clientNonce,
+      msg.tokenId
     );
 
     if (!constantTimeEqualHex(expectedProof, msg.proofHex)) {
-      this.recordAuthFailure('Échec de vérification HMAC-SHA256 !');
-      const rem = Math.max(0, this.config.lockoutUntil - Date.now());
-      await this.signaling.send(
-        {
-          type: 'AUTH_ERR',
-          reason: rem > 0 ? 'LOCKED_OUT' : 'INVALID_PROOF',
-          message: 'Signature HMAC invalide.',
-          lockoutRemainingMs: rem,
-          failedAttempts: this.config.failedAttempts,
-          ts: Date.now(),
-        },
-        'boot'
-      );
+      this.config.failedAttempts += 1;
+      const lockMs = calculateLockoutDurationMs(this.config.failedAttempts);
+      if (lockMs > 0) this.config.lockoutUntil = Date.now() + lockMs;
+      this.saveConfig();
       return;
     }
 
-    // Success! Reset failed attempts, persist pairing if first time, derive ephemeral session key
-    const sas = await computeSas(
-      this.config.pairingCode,
-      tokenId,
-      this.config.deviceId,
-      candidateKeyHex
+    const serverNonce = randomHex(20);
+    const sessionKey = await deriveFastSessionKey(
+      this.bootstrapKeys.bootstrapAuthRaw,
+      msg.clientNonce,
+      serverNonce,
+      this.config.deviceId
+    );
+    this.signaling.setSessionKey(sessionKey);
+
+    const serverProofHex = await computeHelloAckProof(
+      this.bootstrapKeys.bootstrapAuthRaw,
+      msg.clientNonce,
+      serverNonce,
+      this.config.deviceId
     );
 
-    this.config.pairedTokenId = tokenId;
-    this.config.pairedKeyHex = candidateKeyHex;
+    const sas = await computeSas(
+      this.config.pairingCode,
+      msg.tokenId,
+      this.config.deviceId,
+      this.bootstrapKeys.bootstrapAuthRaw
+    );
+
+    this.config.pairedTokenId = msg.tokenId;
     this.config.sasCode = sas.sasCode;
     this.config.sasSymbols = sas.sasSymbols;
     this.config.failedAttempts = 0;
     this.config.lockoutUntil = 0;
     this.saveConfig();
 
-    const sessionKey = await deriveSessionAesKey(candidateKeyHex, clientNonce, serverNonce);
-    this.signaling.setSessionKey(sessionKey);
-
-    const serverProofHex = await computeServerChallengeProof(
-      candidateKeyHex,
-      clientNonce,
-      serverNonce,
-      tokenId,
-      this.config.deviceId
-    );
-
     await this.signaling.send(
       {
-        type: 'AUTH_OK',
+        type: 'HELLO_ACK',
         deviceId: this.config.deviceId,
         deviceName: 'Portail Navigateur Web',
+        echoClientNonce: msg.clientNonce,
+        serverNonce,
         serverProofHex,
         sasCode: sas.sasCode,
         sasSymbols: sas.sasSymbols,
@@ -507,22 +383,16 @@ export class BrowserEmitterEngine {
       'boot'
     );
 
-    this.addLog('security', `Poste de contrôle authentifié — SAS [${sas.sasCode}]`);
-  }
-
-  private recordAuthFailure(reason: string): void {
-    this.config.failedAttempts += 1;
-    const lockoutMs = calculateLockoutDurationMs(this.config.failedAttempts);
-    if (lockoutMs > 0) {
-      this.config.lockoutUntil = Date.now() + lockoutMs;
-      this.addLog(
-        'security',
-        `${reason} Verrouillage anti-brute-force activé pour ${Math.round(lockoutMs / 1000)}s.`
-      );
-    } else {
-      this.addLog('warn', `${reason} (Échec ${this.config.failedAttempts}/3)`);
+    if (msg.autoStartStream) {
+      await this.handleStartStream({
+        type: 'CMD_START_STREAM',
+        sessionId: msg.sessionId,
+        cameraFacing: msg.cameraFacing,
+        enableAudio: msg.enableAudio,
+        quality: msg.quality,
+        ts: Date.now(),
+      });
     }
-    this.saveConfig();
   }
 
   private async handleStartStream(msg: CmdStartStreamMsg): Promise<void> {
@@ -534,7 +404,7 @@ export class BrowserEmitterEngine {
     this.micEnabled = msg.enableAudio;
 
     try {
-      const constraints: MediaStreamConstraints = {
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: msg.cameraFacing === 'front' ? 'user' : 'environment',
           width: { ideal: msg.quality === 'hd' ? 1280 : 640 },
@@ -542,9 +412,7 @@ export class BrowserEmitterEngine {
           frameRate: { ideal: 30, max: 30 },
         },
         audio: msg.enableAudio,
-      };
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      });
       this.mediaStream = stream;
 
       const pc = new RTCPeerConnection({
@@ -554,10 +422,6 @@ export class BrowserEmitterEngine {
       this.pc = pc;
 
       this.dataChannel = pc.createDataChannel('sentinel-telemetry', { ordered: true });
-      this.dataChannel.onopen = () => {
-        void this.broadcastPresence();
-      };
-
       for (const track of stream.getTracks()) {
         pc.addTrack(track, stream);
       }
@@ -592,23 +456,9 @@ export class BrowserEmitterEngine {
         },
         'sess'
       );
-
-      this.addLog('info', 'Streaming caméra démarré en direct (DTLS-SRTP).');
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Accès caméra refusé';
-      await this.signaling.send(
-        {
-          type: 'STREAM_STATE',
-          sessionId: msg.sessionId,
-          state: 'error',
-          cameraFacing: this.cameraFacing,
-          micEnabled: this.micEnabled,
-          error: errorMsg,
-          ts: Date.now(),
-        },
-        'sess'
-      );
-      this.addLog('warn', `Impossible d’ouvrir la caméra : ${errorMsg}`);
+      this.emitState();
+    } catch {
+      // Ignore
     }
   }
 
@@ -635,9 +485,8 @@ export class BrowserEmitterEngine {
       });
       if (newVideoTrack) this.mediaStream.addTrack(newVideoTrack);
       this.emitState();
-      void this.broadcastPresence();
     } catch {
-      // Ignore if device only has 1 webcam
+      // Ignore
     }
   }
 
@@ -649,7 +498,6 @@ export class BrowserEmitterEngine {
       });
     }
     this.emitState();
-    void this.broadcastPresence();
   }
 
   private async handleSdpAnswer(msg: SdpAnswerMsg): Promise<void> {

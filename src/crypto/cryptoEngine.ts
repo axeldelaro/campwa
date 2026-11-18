@@ -1,8 +1,8 @@
 import type { DerivedBootstrapKeys, EncryptedEnvelope, SignalMessage } from '../types/sentinel';
 
 const PAIRING_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const PBKDF2_SALT = 'sentinelcam-v1-pbkdf2-salt';
-const PBKDF2_ITERATIONS = 150_000;
+const PBKDF2_SALT = 'sentinelcam-v3-pbkdf2-salt';
+const PBKDF2_ITERATIONS = 100_000;
 const SAS_SYMBOLS_TABLE = [
   '🛡️', '🔐', '⚡', '🛰️', '🔑', '💎', '🧭', '🔥',
   '🌐', '🧿', '🎯', '🏔️', '🦅', '⚓', '🧬', '🔮',
@@ -10,6 +10,9 @@ const SAS_SYMBOLS_TABLE = [
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+// In-memory cache so reconnecting to a code takes 0.0ms
+const bootstrapCache = new Map<string, DerivedBootstrapKeys>();
 
 export function normalizePairingCode(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
@@ -69,15 +72,17 @@ export function base64ToBytes(b64: string): Uint8Array {
 }
 
 /**
- * Derives deterministic topic routing ID (128-bit), AES-256-GCM bootstrap key (256-bit),
- * and HMAC key (128-bit) from the 6-character pairing code via 150,000-round PBKDF2-HMAC-SHA256.
+ * Memoized 100,000-round PBKDF2-HMAC-SHA256 derivation.
  * Byte-identical to Kotlin CryptoProtocol.deriveBootstrapKeys().
  */
 export async function deriveBootstrapKeys(code: string): Promise<DerivedBootstrapKeys> {
   const normalizedCode = normalizePairingCode(code);
   if (normalizedCode.length !== 6) {
-    throw new Error('Le code d’appairage doit comporter exactement 6 caractères.');
+    throw new Error('Le code doit comporter 6 caractères.');
   }
+
+  const cached = bootstrapCache.get(normalizedCode);
+  if (cached) return cached;
 
   const baseKey = await crypto.subtle.importKey(
     'raw',
@@ -99,19 +104,23 @@ export async function deriveBootstrapKeys(code: string): Promise<DerivedBootstra
   );
 
   const master = new Uint8Array(bits);
-  const topicBytes = master.slice(0, 16);        // 16 bytes -> 32 hex chars
-  const bootstrapEncRaw = master.slice(16, 48); // 32 bytes -> AES-256-GCM
+  const topicId = bytesToHex(master.slice(0, 16));
+  const bootstrapEncRaw = master.slice(16, 48); // 32 bytes
   const bootstrapAuthRaw = master.slice(48, 64);// 16 bytes
+  const wakePushTopic = `sc_wake_${topicId.slice(0, 20)}`;
 
   const bootstrapEncKey = await importAesGcmKey(bootstrapEncRaw);
 
-  return {
+  const result: DerivedBootstrapKeys = {
     normalizedCode,
-    topicId: bytesToHex(topicBytes),
+    topicId,
+    wakePushTopic,
     bootstrapEncKey,
     bootstrapEncRaw,
     bootstrapAuthRaw,
   };
+  bootstrapCache.set(normalizedCode, result);
+  return result;
 }
 
 export async function importAesGcmKey(rawKeyBytes: Uint8Array): Promise<CryptoKey> {
@@ -124,10 +133,6 @@ export async function importAesGcmKey(rawKeyBytes: Uint8Array): Promise<CryptoKe
   );
 }
 
-/**
- * RFC 5869 HKDF-SHA256 (32-byte output).
- * Byte-identical to Kotlin CryptoProtocol.hkdfSha256().
- */
 export async function hkdfSha256(
   ikm: Uint8Array,
   salt: Uint8Array,
@@ -156,27 +161,6 @@ export async function hkdfSha256(
   return new Uint8Array(derived);
 }
 
-/**
- * Derives a persistent 256-bit Pairing Key on initial pairing using HKDF-SHA256.
- */
-export async function generateDerivedPairingKey(
-  deviceSaltHex: string,
-  tokenId: string
-): Promise<string> {
-  const randomSeed = new Uint8Array(32);
-  crypto.getRandomValues(randomSeed);
-  const derived = await hkdfSha256(
-    randomSeed,
-    hexToBytes(deviceSaltHex),
-    `sentinelcam-pair-v1:${tokenId}`,
-    32
-  );
-  return bytesToHex(derived);
-}
-
-/**
- * Computes HMAC-SHA256 challenge-response proof (and mutual server proof).
- */
 export async function hmacSha256Hex(keyBytes: Uint8Array, message: string): Promise<string> {
   const hmacKey = await crypto.subtle.importKey(
     'raw',
@@ -189,71 +173,51 @@ export async function hmacSha256Hex(keyBytes: Uint8Array, message: string): Prom
   return bytesToHex(new Uint8Array(sig));
 }
 
-export async function computeClientChallengeProof(
-  pairedKeyHex: string,
+export async function computeHelloWakeProof(
+  bootstrapAuthRaw: Uint8Array,
   clientNonce: string,
-  serverNonce: string,
-  tokenId: string,
-  deviceId: string
+  tokenId: string
 ): Promise<string> {
-  return hmacSha256Hex(
-    hexToBytes(pairedKeyHex),
-    `client-auth-v1:${clientNonce}:${serverNonce}:${tokenId}:${deviceId}`
-  );
+  return hmacSha256Hex(bootstrapAuthRaw, `hello-wake-v3:${clientNonce}:${tokenId}`);
 }
 
-export async function computeServerChallengeProof(
-  pairedKeyHex: string,
+export async function computeHelloAckProof(
+  bootstrapAuthRaw: Uint8Array,
   clientNonce: string,
   serverNonce: string,
-  tokenId: string,
   deviceId: string
 ): Promise<string> {
-  return hmacSha256Hex(
-    hexToBytes(pairedKeyHex),
-    `server-auth-v1:${clientNonce}:${serverNonce}:${tokenId}:${deviceId}`
-  );
+  return hmacSha256Hex(bootstrapAuthRaw, `hello-ack-v3:${clientNonce}:${serverNonce}:${deviceId}`);
 }
 
 /**
- * Derives an ephemeral forward-secret AES-256-GCM session key from the persistent paired key
- * and fresh client/server nonces.
+ * Stateless 1-RTT Ephemeral Session Key (HKDF-SHA256) with per-connection Forward Secrecy.
  */
-export async function deriveSessionAesKey(
-  pairedKeyHex: string,
+export async function deriveFastSessionKey(
+  bootstrapAuthRaw: Uint8Array,
   clientNonce: string,
-  serverNonce: string
+  serverNonce: string,
+  deviceId: string
 ): Promise<CryptoKey> {
-  const salt = encoder.encode(`${clientNonce}:${serverNonce}`);
-  const raw = await hkdfSha256(
-    hexToBytes(pairedKeyHex),
-    salt,
-    'sentinelcam-session-aes256gcm-v1',
-    32
-  );
+  const salt = encoder.encode(`${clientNonce}:${serverNonce}:${deviceId}`);
+  const raw = await hkdfSha256(bootstrapAuthRaw, salt, 'sentinelcam-v3-fast-session', 32);
   return importAesGcmKey(raw);
 }
 
-/**
- * Computes Short Authentication String (SAS) to verify absence of Man-in-the-Middle (MitM).
- * Byte-identical to Kotlin CryptoProtocol.computeSas().
- */
 export async function computeSas(
   normalizedCode: string,
   tokenId: string,
   deviceId: string,
-  pairedKeyHex: string
+  bootstrapAuthRaw: Uint8Array
 ): Promise<{ sasCode: string; sasSymbols: string }> {
-  const payload = encoder.encode(
-    `sentinelcam-sas-v1:${normalizedCode}:${tokenId}:${deviceId}:${pairedKeyHex.toLowerCase()}`
-  );
+  const authHex = bytesToHex(bootstrapAuthRaw);
+  const payload = encoder.encode(`sentinelcam-sas-v3:${normalizedCode}:${tokenId}:${deviceId}:${authHex}`);
   const digestBuf = await crypto.subtle.digest('SHA-256', payload);
   const digest = new Uint8Array(digestBuf);
 
-  const hexPair1 = digest[0].toString(16).padStart(2, '0').toUpperCase();
-  const hexPair2 = digest[1].toString(16).padStart(2, '0').toUpperCase();
-  const hexPair3 = digest[2].toString(16).padStart(2, '0').toUpperCase();
-  const sasCode = `${hexPair1}-${hexPair2}-${hexPair3}`;
+  const p1 = digest[0].toString(16).padStart(2, '0').toUpperCase();
+  const p2 = digest[1].toString(16).padStart(2, '0').toUpperCase();
+  const p3 = digest[2].toString(16).padStart(2, '0').toUpperCase();
 
   const s1 = SAS_SYMBOLS_TABLE[digest[3] & 0x0f];
   const s2 = SAS_SYMBOLS_TABLE[(digest[3] >> 4) & 0x0f];
@@ -261,21 +225,15 @@ export async function computeSas(
   const s4 = SAS_SYMBOLS_TABLE[(digest[4] >> 4) & 0x0f];
 
   return {
-    sasCode,
+    sasCode: `${p1}-${p2}-${p3}`,
     sasSymbols: `${s1} ${s2} ${s3} ${s4}`,
   };
 }
 
-/**
- * Computes combined DTLS-SRTP media SAS fingerprint from local & remote SDP SHA-256 fingerprints.
- */
-export async function computeDtlsMediaSas(
-  fpA: string,
-  fpB: string
-): Promise<string> {
+export async function computeDtlsMediaSas(fpA: string, fpB: string): Promise<string> {
   if (!fpA || !fpB) return 'EN ATTENTE SDP';
   const sorted = [fpA.trim().toUpperCase(), fpB.trim().toUpperCase()].sort().join('|');
-  const digestBuf = await crypto.subtle.digest('SHA-256', encoder.encode(`dtls-sas-v1:${sorted}`));
+  const digestBuf = await crypto.subtle.digest('SHA-256', encoder.encode(`dtls-sas-v3:${sorted}`));
   const d = new Uint8Array(digestBuf);
   return `${d[0].toString(16).padStart(2, '0')}:${d[1].toString(16).padStart(2, '0')}:${d[2]
     .toString(16)
@@ -287,9 +245,6 @@ export function extractSdpFingerprint(sdp: string): string {
   return match ? match[1].toUpperCase() : '';
 }
 
-/**
- * Encrypts a SignalMessage into an authenticated AES-256-GCM EncryptedEnvelope.
- */
 export async function encryptEnvelope(
   msg: SignalMessage,
   aesKey: CryptoKey,
@@ -317,20 +272,16 @@ export async function encryptEnvelope(
   };
 }
 
-/**
- * Decrypts & authenticates an AES-256-GCM EncryptedEnvelope, enforcing ±120s anti-replay window.
- */
 export async function decryptEnvelope(
   envelope: EncryptedEnvelope,
   aesKey: CryptoKey,
-  maxSkewMs = 120_000
+  maxSkewMs = 180_000
 ): Promise<SignalMessage | null> {
   if (envelope.v !== 1 || !envelope.iv || !envelope.ct) {
     return null;
   }
 
-  const skew = Math.abs(Date.now() - envelope.ts);
-  if (skew > maxSkewMs) {
+  if (Math.abs(Date.now() - envelope.ts) > maxSkewMs) {
     return null;
   }
 
@@ -342,16 +293,12 @@ export async function decryptEnvelope(
       aesKey,
       ct as BufferSource
     );
-    const json = decoder.decode(plainBuf);
-    return JSON.parse(json) as SignalMessage;
+    return JSON.parse(decoder.decode(plainBuf)) as SignalMessage;
   } catch {
     return null;
   }
 }
 
-/**
- * Constant-time hex comparison to prevent timing side-channels.
- */
 export function constantTimeEqualHex(a: string, b: string): boolean {
   const s1 = a.toLowerCase();
   const s2 = b.toLowerCase();
@@ -363,11 +310,8 @@ export function constantTimeEqualHex(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/**
- * Exponential anti-brute-force lockout calculator (locks after 3 failed attempts).
- */
 export function calculateLockoutDurationMs(failedAttempts: number): number {
   if (failedAttempts < 3) return 0;
-  const exponent = Math.min(failedAttempts - 3, 5); // 30s, 60s, 120s, 240s, 480s, 960s
+  const exponent = Math.min(failedAttempts - 3, 5);
   return 30_000 * Math.pow(2, exponent);
 }

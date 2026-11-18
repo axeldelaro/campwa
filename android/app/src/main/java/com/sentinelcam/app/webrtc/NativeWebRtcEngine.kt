@@ -118,6 +118,9 @@ class NativeWebRtcEngine(
     var isStreamingActive: Boolean = false
         private set
 
+    @Volatile
+    private var shuttingDown: Boolean = false
+
     fun startStream(
         sessionId: String,
         facing: String = "front",
@@ -435,16 +438,19 @@ class NativeWebRtcEngine(
         }
         audioSource = null
 
-        if (wasStreaming) {
+        if (wasStreaming && !shuttingDown) {
             onStreamStateChanged(false, null)
         }
     }
 
     fun shutdownEngine() {
-        rtcExecutor.execute {
-            stopStreamOnWorker()
+        shuttingDown = true
+        try {
+            rtcExecutor.execute {
+                stopStreamOnWorker()
+            }
+        } catch (_: Throwable) {
         }
-        rtcExecutor.shutdown()
     }
 
     private fun getCameraEnumerator(): CameraEnumerator {

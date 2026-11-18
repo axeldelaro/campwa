@@ -17,6 +17,7 @@ export interface EncryptedEnvelope {
 export interface DerivedBootstrapKeys {
   normalizedCode: string;
   topicId: string;
+  wakePushTopic: string;
   bootstrapEncKey: CryptoKey;
   bootstrapEncRaw: Uint8Array;
   bootstrapAuthRaw: Uint8Array;
@@ -27,7 +28,6 @@ export interface PairedDeviceRecord {
   deviceId: string;
   deviceName: string;
   tokenId: string;
-  pairedKeyHex: string;
   sasCode: string;
   sasSymbols: string;
   pairedAt: number;
@@ -80,7 +80,40 @@ export interface TurnServerSetting {
   credential?: string;
 }
 
-/* ==================== E2EE SIGNALING PAYLOADS ==================== */
+/* ==================== V3 1-RTT INSTANT E2EE PROTOCOL PAYLOADS ==================== */
+
+export interface HelloWakeMsg {
+  type: 'HELLO_WAKE';
+  controllerId: string;
+  tokenId: string;
+  clientNonce: string;
+  proofHex: string;
+  autoStartStream: boolean;
+  sessionId: string;
+  cameraFacing: CameraFacingMode;
+  enableAudio: boolean;
+  quality: StreamQualityPreset;
+  ts: number;
+}
+
+export interface HelloAckMsg {
+  type: 'HELLO_ACK';
+  deviceId: string;
+  deviceName: string;
+  echoClientNonce: string;
+  serverNonce: string;
+  serverProofHex: string;
+  sasCode: string;
+  sasSymbols: string;
+  portalState: 'standby' | 'streaming';
+  batteryLevel: number;
+  isCharging: boolean;
+  networkType: string;
+  cameraFacing: CameraFacingMode;
+  micEnabled: boolean;
+  uptimeSec: number;
+  ts: number;
+}
 
 export interface PingStatusMsg {
   type: 'PING_STATUS';
@@ -108,55 +141,9 @@ export interface PortalStatusMsg {
   ts: number;
 }
 
-export interface AuthInitMsg {
-  type: 'AUTH_INIT';
-  controllerId: string;
-  tokenId: string;
-  clientNonce: string;
-  intent: 'pair' | 'reconnect';
-  ts: number;
-}
-
-export interface AuthChallengeMsg {
-  type: 'AUTH_CHALLENGE';
-  deviceId: string;
-  deviceName: string;
-  serverNonce: string;
-  deviceSalt: string;
-  isFirstPair: boolean;
-  ts: number;
-}
-
-export interface AuthResponseMsg {
-  type: 'AUTH_RESPONSE';
-  controllerId: string;
-  tokenId: string;
-  pairingKeyHex?: string;
-  proofHex: string;
-  clientNonce: string;
-  ts: number;
-}
-
-export interface AuthOkMsg {
-  type: 'AUTH_OK';
-  deviceId: string;
-  deviceName: string;
-  serverProofHex: string;
-  sasCode: string;
-  sasSymbols: string;
-  portalState: 'standby' | 'streaming';
-  batteryLevel: number;
-  isCharging: boolean;
-  networkType: string;
-  cameraFacing: CameraFacingMode;
-  micEnabled: boolean;
-  uptimeSec: number;
-  ts: number;
-}
-
 export interface AuthErrMsg {
   type: 'AUTH_ERR';
-  reason: 'LOCKED_OUT' | 'ALREADY_PAIRED' | 'INVALID_PROOF' | 'EXPIRED_CHALLENGE';
+  reason: 'LOCKED_OUT' | 'INVALID_PROOF';
   message: string;
   lockoutRemainingMs: number;
   failedAttempts: number;
@@ -205,7 +192,6 @@ export interface SdpAnswerMsg {
   sessionId: string;
   sdp: string;
   fingerprint: string;
-  ts: number;
 }
 
 export interface IceCandidateMsg {
@@ -228,12 +214,10 @@ export interface StreamStateMsg {
 }
 
 export type SignalMessage =
+  | HelloWakeMsg
+  | HelloAckMsg
   | PingStatusMsg
   | PortalStatusMsg
-  | AuthInitMsg
-  | AuthChallengeMsg
-  | AuthResponseMsg
-  | AuthOkMsg
   | AuthErrMsg
   | CmdStartStreamMsg
   | CmdStopStreamMsg

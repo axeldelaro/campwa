@@ -47,9 +47,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Deep-Link Invitation Wake (opens & wakes app in 1 tap even if closed) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sentinelcam" android:host="wake" />
+            </intent-filter>
         </activity>
 
-        <!-- Resilient Continuous Background Portal & Camera ForegroundService -->
+        <!-- Eco-Standby Continuous Background Portal & On-Demand Camera ForegroundService -->
         <service
             android:name=".service.CameraForegroundService"
             android:enabled="true"
@@ -58,17 +66,23 @@
             android:foregroundServiceType="camera|microphone|specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-authorized encrypted WebRTC continuous camera portal with persistent stop action" />
+                android:value="Eco-standby encrypted WebRTC camera portal with instant stop action" />
         </service>
 
-        <!-- Self-Healing Persisted JobScheduler Watchdog -->
+        <!-- Self-Healing & Push-Invitation Watchdog JobService -->
         <service
             android:name=".service.PortalWatchdogJobService"
             android:enabled="true"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
-        <!-- Periodic Doze Keep-Alive Pulse Receiver -->
+        <!-- Crash-Free Broadcast Receiver for Notification Stop / Sleep Buttons -->
+        <receiver
+            android:name=".receiver.StopPortalReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- Periodic Eco Keep-Alive Pulse Receiver -->
         <receiver
             android:name=".receiver.KeepAliveReceiver"
             android:enabled="true"

@@ -24,20 +24,28 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.LinkedHashSet
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
+private object SharedOkHttpPool {
+    val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(7, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .pingInterval(45, TimeUnit.SECONDS) // Eco-friendly 45s keepalive ping
+        .retryOnConnectionFailure(true)
+        .build()
+}
+
 /**
- * Ultra-Resilient, Crash-Proof Pure Kotlin + OkHttp MQTT 3.1.1 over WSS Engine.
- * - Eliminates legacy Eclipse Paho threading/Timer crashes completely.
- * - Maintains simultaneous Triple-Active TLS WebSockets to EMQX, HiveMQ, and Mosquitto.
- * - Sends both WebSocket RFC6455 Pings (15s) and MQTT PINGREQ (18s) with dead-socket timeout detection.
- * - Instant reconnection on Wi-Fi <-> 4G/5G handoff.
+ * Eco-Power MQTT 3.1.1 over WSS Engine + Instant ntfy.sh Push Wake Listener.
+ * - Maintains a single ultra-lightweight Primary WSS socket (EMQX), failing over to HiveMQ ONLY if needed.
+ * - Also listens on a zero-CPU SSE stream (`ntfy.sh`) for instant remote wake pushes.
+ * - Never shuts down shared executors on stop -> 100% immune to shutdown crashes!
  */
 class MqttSignalingEngine(
     context: Context,
     private val topicId: String,
+    private val wakePushTopic: String,
     private val bootstrapEncKey: ByteArray,
     private val onMessageDecrypted: (payload: JSONObject, mode: String) -> Unit,
     private val onConnectionStateChanged: (connected: Boolean, brokerLabel: String) -> Unit
@@ -47,8 +55,7 @@ class MqttSignalingEngine(
     private val senderId = "device-${CryptoProtocol.randomHex(6)}"
     private val packetIdGen = AtomicInteger(1)
 
-    // Map of controllerId -> ephemeral session key so multiple sessions don't overwrite each other
-    private val sessionKeysByToken = ConcurrentHashMap<String, ByteArray>()
+    private val sessionKeys = ConcurrentHashMap<String, ByteArray>()
 
     @Volatile
     private var latestSessionKey: ByteArray? = null
@@ -60,28 +67,11 @@ class MqttSignalingEngine(
     private val outboundTopic = "sentinelcam/v1/$topicId/d2c"
     private val presenceTopic = "sentinelcam/v1/$topicId/presence"
 
-    private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS) // WebSocket keep-open
-        .pingInterval(15, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
-
-    private inner class MqttWsConnection(
-        val name: String,
-        val url: String
-    ) {
-        @Volatile
-        var ws: WebSocket? = null
-
-        @Volatile
-        var mqttReady: Boolean = false
-
-        @Volatile
-        var connecting: Boolean = false
-
-        @Volatile
-        var lastActivityMs: Long = 0L
+    private inner class MqttWsConnection(val name: String, val url: String) {
+        @Volatile var ws: WebSocket? = null
+        @Volatile var mqttReady: Boolean = false
+        @Volatile var connecting: Boolean = false
+        @Volatile var lastActivityMs: Long = 0L
 
         private val streamBuffer = ByteArrayOutputStream()
 
@@ -117,8 +107,8 @@ class MqttSignalingEngine(
                     multiplier *= 128
                 }
 
-                if (!completeLen) break // Wait for more bytes
-                if (lenCursor + remainingLength > all.size) break // Incomplete payload
+                if (!completeLen) break
+                if (lenCursor + remainingLength > all.size) break
 
                 val body = all.copyOfRange(lenCursor, lenCursor + remainingLength)
                 out.add(Pair(firstByte, body))
@@ -133,13 +123,9 @@ class MqttSignalingEngine(
         }
     }
 
-    private val brokers = CopyOnWriteArrayList(
-        listOf(
-            MqttWsConnection("EMQX", "wss://broker.emqx.io:8084/mqtt"),
-            MqttWsConnection("HiveMQ", "wss://broker.hivemq.com:8884/mqtt"),
-            MqttWsConnection("Mosquitto", "wss://test.mosquitto.org:8081/mqtt")
-        )
-    )
+    private val primaryNode = MqttWsConnection("EMQX Eco", "wss://broker.emqx.io:8084/mqtt")
+    private val failoverNode = MqttWsConnection("HiveMQ Eco", "wss://broker.hivemq.com:8884/mqtt")
+    private var pushWs: WebSocket? = null
 
     private val seenIds = LinkedHashSet<String>()
     private val connectivityManager =
@@ -147,20 +133,20 @@ class MqttSignalingEngine(
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            if (!destroyed) {
-                nudgeReconnect()
-            }
+            if (!destroyed) nudgeReconnect()
         }
 
         override fun onLost(network: Network) {
-            emitHealth()
+            if (!destroyed) emitHealth()
         }
     }
 
-    fun setSessionKey(keyBytes: ByteArray?, tokenId: String? = null) {
+    fun registerSessionKey(id: String, keyBytes: ByteArray) {
         latestSessionKey = keyBytes
-        if (tokenId != null && keyBytes != null) {
-            sessionKeysByToken[tokenId] = keyBytes
+        sessionKeys[id] = keyBytes
+        if (sessionKeys.size > 12) {
+            val oldest = sessionKeys.keys().nextElement()
+            if (oldest != null && oldest != id) sessionKeys.remove(oldest)
         }
     }
 
@@ -175,20 +161,39 @@ class MqttSignalingEngine(
         } catch (_: Throwable) {
         }
 
-        // Immediate connect + continuous 3s self-healing watchdog + 18s MQTT keepalive loop
+        connectPushWakeStream()
+
+        // Eco-Standby Loop: checks every 6s locally (0 network bytes if socket healthy), sends 2-byte MQTT ping every 48s
         scope.launch {
             var tick = 0
             while (isActive && !destroyed) {
                 try {
-                    ensureAllConnected()
-                    if (tick % 6 == 0) {
-                        sendMqttPingAll()
+                    maintainEcoSockets()
+                    if (tick > 0 && tick % 8 == 0) {
+                        sendMqttPingActive()
                     }
                     tick++
                 } catch (_: Throwable) {
                 }
-                delay(3_000L)
+                delay(6_000L)
             }
+        }
+    }
+
+    private fun connectPushWakeStream() {
+        if (destroyed) return
+        try {
+            val req = Request.Builder()
+                .url("wss://ntfy.sh/$wakePushTopic/ws")
+                .build()
+            pushWs = SharedOkHttpPool.client.newWebSocket(req, object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (!destroyed && text.contains("WAKE_INVITE")) {
+                        nudgeReconnect()
+                    }
+                }
+            })
+        } catch (_: Throwable) {
         }
     }
 
@@ -196,31 +201,40 @@ class MqttSignalingEngine(
         if (destroyed) return
         scope.launch {
             try {
-                ensureAllConnected()
-                sendMqttPingAll()
+                maintainEcoSockets()
+                sendMqttPingActive()
             } catch (_: Throwable) {
             }
         }
     }
 
-    private fun ensureAllConnected() {
+    private fun maintainEcoSockets() {
+        if (destroyed) return
         val now = System.currentTimeMillis()
-        for (node in brokers) {
-            if (destroyed) return
 
-            // Detect zombie half-open TCP/NAT connection (> 45s silent)
-            if (node.mqttReady && node.lastActivityMs > 0L && (now - node.lastActivityMs) > 45_000L) {
-                closeNodeQuietly(node)
+        // Reset primary if silent > 95s
+        if (primaryNode.mqttReady && primaryNode.lastActivityMs > 0L && (now - primaryNode.lastActivityMs) > 95_000L) {
+            closeNodeQuietly(primaryNode)
+        }
+
+        if (!primaryNode.mqttReady) {
+            if (!primaryNode.connecting || (now - primaryNode.lastActivityMs) > 10_000L) {
+                connectNode(primaryNode)
             }
-
-            if (node.mqttReady && node.ws != null) continue
-            if (node.connecting && (now - node.lastActivityMs) < 12_000L) continue
-
-            connectNode(node)
+            // Activate failover ONLY while primary is down (Eco-battery!)
+            if (!failoverNode.mqttReady && (!failoverNode.connecting || (now - failoverNode.lastActivityMs) > 10_000L)) {
+                connectNode(failoverNode)
+            }
+        } else {
+            // Primary is healthy! Close backup if it was open to save radio battery
+            if (failoverNode.ws != null) {
+                closeNodeQuietly(failoverNode)
+            }
         }
     }
 
     private fun connectNode(node: MqttWsConnection) {
+        if (destroyed) return
         closeNodeQuietly(node)
         node.connecting = true
         node.lastActivityMs = System.currentTimeMillis()
@@ -232,15 +246,15 @@ class MqttSignalingEngine(
                 .header("Sec-WebSocket-Protocol", "mqtt")
                 .build()
 
-            val socket = okHttpClient.newWebSocket(req, object : WebSocketListener() {
+            val socket = SharedOkHttpPool.client.newWebSocket(req, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     if (destroyed) {
-                        try { webSocket.close(1000, "bye") } catch (_: Throwable) {}
+                        try { webSocket.close(1000, null) } catch (_: Throwable) {}
                         return
                     }
                     node.lastActivityMs = System.currentTimeMillis()
                     val clientId = "sc_d_${CryptoProtocol.randomHex(5)}"
-                    val connectPacket = buildMqttConnectPacket(clientId, keepAliveSec = 30)
+                    val connectPacket = buildMqttConnectPacket(clientId, keepAliveSec = 60)
                     webSocket.send(connectPacket.toByteString())
                 }
 
@@ -261,19 +275,19 @@ class MqttSignalingEngine(
                     node.mqttReady = false
                     node.connecting = false
                     try { webSocket.close(1000, null) } catch (_: Throwable) {}
-                    emitHealth()
+                    if (!destroyed) emitHealth()
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     node.mqttReady = false
                     node.connecting = false
-                    emitHealth()
+                    if (!destroyed) emitHealth()
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     node.mqttReady = false
                     node.connecting = false
-                    emitHealth()
+                    if (!destroyed) emitHealth()
                 }
             })
 
@@ -281,7 +295,7 @@ class MqttSignalingEngine(
         } catch (_: Throwable) {
             node.mqttReady = false
             node.connecting = false
-            emitHealth()
+            if (!destroyed) emitHealth()
         }
     }
 
@@ -291,9 +305,9 @@ class MqttSignalingEngine(
         headerByte: Int,
         body: ByteArray
     ) {
+        if (destroyed) return
         when (headerByte and 0xF0) {
             0x20 -> {
-                // CONNACK
                 if (body.size >= 2 && (body[1].toInt() and 0xFF) == 0) {
                     node.mqttReady = true
                     node.connecting = false
@@ -306,7 +320,6 @@ class MqttSignalingEngine(
             }
 
             0x30 -> {
-                // PUBLISH inbound
                 if (body.size < 2) return
                 val qos = (headerByte ushr 1) and 0x03
                 val topicLen = ((body[0].toInt() and 0xFF) shl 8) or (body[1].toInt() and 0xFF)
@@ -319,7 +332,6 @@ class MqttSignalingEngine(
                     val pktLo = body[idx + 1]
                     idx += 2
                     if (qos == 1) {
-                        // Send PUBACK (0x40, len=2, pktId)
                         webSocket.send(byteArrayOf(0x40.toByte(), 0x02.toByte(), pktHi, pktLo).toByteString())
                     }
                 }
@@ -330,26 +342,16 @@ class MqttSignalingEngine(
                 }
             }
 
-            0x90 -> {
-                // SUBACK
-                emitHealth()
-            }
-
-            0xD0 -> {
-                // PINGRESP
-                node.lastActivityMs = System.currentTimeMillis()
-            }
+            0x90 -> emitHealth()
+            0xD0 -> node.lastActivityMs = System.currentTimeMillis()
         }
     }
 
-    private fun sendMqttPingAll() {
+    private fun sendMqttPingActive() {
         val pingBytes = byteArrayOf(0xC0.toByte(), 0x00.toByte()).toByteString()
-        for (node in brokers) {
+        for (node in listOf(primaryNode, failoverNode)) {
             if (node.mqttReady) {
-                try {
-                    node.ws?.send(pingBytes)
-                } catch (_: Throwable) {
-                }
+                try { node.ws?.send(pingBytes) } catch (_: Throwable) {}
             }
         }
     }
@@ -365,16 +367,12 @@ class MqttSignalingEngine(
                 val targetTopic = if (toPresence) presenceTopic else outboundTopic
                 val msgBytes = rawEnvelope.toByteArray(Charsets.UTF_8)
 
-                for (node in brokers) {
+                // When replying to a controller, publish on active socket(s) immediately
+                for (node in listOf(primaryNode, failoverNode)) {
                     val sock = node.ws
                     if (node.mqttReady && sock != null) {
                         try {
-                            val pkt = buildMqttPublishPacket(
-                                topic = targetTopic,
-                                payload = msgBytes,
-                                qos = 1,
-                                packetId = nextPacketId()
-                            )
+                            val pkt = buildMqttPublishPacket(targetTopic, msgBytes, 1, nextPacketId())
                             sock.send(pkt.toByteString())
                         } catch (_: Throwable) {
                         }
@@ -400,22 +398,21 @@ class MqttSignalingEngine(
         val mode = envelope.optString("mode", "boot")
         if (mode == "boot") {
             val plain = CryptoProtocol.decryptEnvelope(envelope, bootstrapEncKey) ?: return
-            onMessageDecrypted(plain, mode)
+            if (!destroyed) onMessageDecrypted(plain, mode)
         } else {
-            // Try latest session key first, then any active authorized session key
             val primary = latestSessionKey
             if (primary != null) {
                 val plain = CryptoProtocol.decryptEnvelope(envelope, primary)
                 if (plain != null) {
-                    onMessageDecrypted(plain, mode)
+                    if (!destroyed) onMessageDecrypted(plain, mode)
                     return
                 }
             }
-            for (candidateKey in sessionKeysByToken.values) {
+            for (candidateKey in sessionKeys.values) {
                 val plain = CryptoProtocol.decryptEnvelope(envelope, candidateKey)
                 if (plain != null) {
                     latestSessionKey = candidateKey
-                    onMessageDecrypted(plain, mode)
+                    if (!destroyed) onMessageDecrypted(plain, mode)
                     return
                 }
             }
@@ -439,17 +436,15 @@ class MqttSignalingEngine(
         val old = node.ws
         node.ws = null
         if (old != null) {
-            try {
-                old.cancel()
-            } catch (_: Throwable) {
-            }
+            try { old.close(1000, null) } catch (_: Throwable) {}
         }
     }
 
     private fun emitHealth() {
-        val activeNames = brokers.filter { it.mqttReady && it.ws != null }.map { it.name }
+        if (destroyed) return
+        val activeNames = listOf(primaryNode, failoverNode).filter { it.mqttReady && it.ws != null }.map { it.name }
         val isAnyConnected = activeNames.isNotEmpty()
-        val label = if (isAnyConnected) activeNames.joinToString(" + ") else "Reconnexion auto..."
+        val label = if (isAnyConnected) activeNames.joinToString(" + ") else "Veille / Reconnexion..."
         onConnectionStateChanged(isAnyConnected, label)
     }
 
@@ -460,21 +455,15 @@ class MqttSignalingEngine(
         } catch (_: Throwable) {
         }
         scope.cancel()
-        for (node in brokers) {
-            closeNodeQuietly(node)
-        }
-        try {
-            okHttpClient.dispatcher.executorService.shutdown()
-        } catch (_: Throwable) {
-        }
+        closeNodeQuietly(primaryNode)
+        closeNodeQuietly(failoverNode)
+        try { pushWs?.close(1000, null) } catch (_: Throwable) {}
+        pushWs = null
     }
 
     private fun nextPacketId(): Int {
-        val id = packetIdGen.getAndUpdate { if (it >= 65530) 1 else it + 1 }
-        return id
+        return packetIdGen.getAndUpdate { if (it >= 65530) 1 else it + 1 }
     }
-
-    /* ==================== MQTT 3.1.1 BINARY PACKET BUILDERS ==================== */
 
     private fun writeUtf8String(out: ByteArrayOutputStream, str: String) {
         val bytes = str.toByteArray(Charsets.UTF_8)
@@ -496,15 +485,15 @@ class MqttSignalingEngine(
     private fun buildMqttConnectPacket(clientId: String, keepAliveSec: Int): ByteArray {
         val body = ByteArrayOutputStream()
         writeUtf8String(body, "MQTT")
-        body.write(0x04) // Protocol Level 4 (MQTT 3.1.1)
-        body.write(0x02) // Clean Session = 1
+        body.write(0x04)
+        body.write(0x02)
         body.write((keepAliveSec ushr 8) and 0xFF)
         body.write(keepAliveSec and 0xFF)
         writeUtf8String(body, clientId)
 
         val bodyBytes = body.toByteArray()
         val packet = ByteArrayOutputStream(bodyBytes.size + 5)
-        packet.write(0x10) // CONNECT
+        packet.write(0x10)
         encodeRemainingLength(packet, bodyBytes.size)
         packet.write(bodyBytes)
         return packet.toByteArray()
@@ -519,18 +508,13 @@ class MqttSignalingEngine(
 
         val bodyBytes = body.toByteArray()
         val packet = ByteArrayOutputStream(bodyBytes.size + 5)
-        packet.write(0x82) // SUBSCRIBE (reserved flags 0010)
+        packet.write(0x82)
         encodeRemainingLength(packet, bodyBytes.size)
         packet.write(bodyBytes)
         return packet.toByteArray()
     }
 
-    private fun buildMqttPublishPacket(
-        topic: String,
-        payload: ByteArray,
-        qos: Int,
-        packetId: Int
-    ): ByteArray {
+    private fun buildMqttPublishPacket(topic: String, payload: ByteArray, qos: Int, packetId: Int): ByteArray {
         val body = ByteArrayOutputStream(topic.length + payload.size + 8)
         writeUtf8String(body, topic)
         if (qos > 0) {

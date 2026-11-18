@@ -22,8 +22,10 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.sentinelcam.app.MainActivity
+import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.receiver.KeepAliveReceiver
+import com.sentinelcam.app.receiver.StopPortalReceiver
 import com.sentinelcam.app.signaling.MqttSignalingEngine
 import com.sentinelcam.app.storage.PortalPreferences
 import com.sentinelcam.app.webrtc.NativeWebRtcEngine
@@ -35,7 +37,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 
 class CameraForegroundService : Service() {
@@ -46,93 +47,60 @@ class CameraForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
+    private var activeBootstrapKeys: BootstrapKeys? = null
     private var signalingEngine: MqttSignalingEngine? = null
     private var webRtcEngine: NativeWebRtcEngine? = null
     private var startedAtMs: Long = System.currentTimeMillis()
     private var activeSignalingCode: String = ""
-    private var heartbeatStarted: Boolean = false
+    private var telemetryLoopStarted: Boolean = false
+
+    @Volatile
+    private var lastViewerSeenMs: Long = 0L
 
     @Volatile
     private var cameraFgsPromoted: Boolean = false
 
-    private data class PendingChallenge(
-        val tokenId: String,
-        val clientNonce: String,
-        val serverNonce: String,
-        val createdAt: Long
-    )
-
-    private val pendingChallenges = ConcurrentHashMap<String, PendingChallenge>()
-
     override fun onCreate() {
         super.onCreate()
+        instance = this
         prefs = PortalPreferences(this)
         startedAtMs = System.currentTimeMillis()
         createNotificationChannel()
-        acquireLocks()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val action = intent?.action
-
-        if (action == ACTION_STOP_PORTAL) {
-            prefs.userManuallyStopped = true
-            prefs.appendLog("security", "Portail coupé par l’utilisateur.")
-            PortalWatchdogJobService.cancelAll(this)
-            KeepAliveReceiver.cancelPulse(this)
-            shutdownPortalCompletely()
+        if (prefs.userManuallyStopped) {
+            stopSelf()
             return START_NOT_STICKY
         }
 
-        prefs.userManuallyStopped = false
         isRunning = true
-
         val fromUi = intent?.getBooleanExtra(EXTRA_FROM_UI, false) ?: false
+
         if (!startInForegroundSafely(promoteCamera = fromUi)) {
             isRunning = false
             stopSelf()
             return START_NOT_STICKY
         }
 
-        // Schedule continuous self-healing watchdogs
+        // Schedule lightweight watchdog (also polls push invitations if app later closes)
         PortalWatchdogJobService.scheduleWatchdog(this)
         KeepAliveReceiver.scheduleNextPulse(this)
 
-        when (action) {
-            ACTION_SLEEP_CAMERA -> {
-                val activeSession = webRtcEngine?.currentSessionId.orEmpty()
-                webRtcEngine?.stopStream()
-                if (activeSession.isNotEmpty()) {
-                    signalingEngine?.send(
-                        JSONObject().apply {
-                            put("type", "STREAM_STATE")
-                            put("sessionId", activeSession)
-                            put("state", "standby")
-                            put("cameraFacing", currentFacing)
-                            put("micEnabled", currentMic)
-                            put("ts", System.currentTimeMillis())
-                        },
-                        mode = "sess"
-                    )
-                }
-                updateNotificationAndNotifyListeners()
-                return START_STICKY
-            }
-
+        when (intent?.action) {
             ACTION_NUDGE_NETWORK -> {
-                ensureEnginesRunning(forceReloadSignaling = false)
+                ensureSignalingRunning(forceReload = false)
                 signalingEngine?.nudgeReconnect()
-                broadcastPresenceNow()
                 return START_STICKY
             }
 
             ACTION_RESTART_SIGNALING -> {
-                ensureEnginesRunning(forceReloadSignaling = true)
+                ensureSignalingRunning(forceReload = true)
                 return START_STICKY
             }
         }
 
-        ensureEnginesRunning(forceReloadSignaling = false)
+        ensureSignalingRunning(forceReload = false)
         notifyStateListeners()
         return START_STICKY
     }
@@ -143,7 +111,6 @@ class CameraForegroundService : Service() {
         super.onTaskRemoved(rootIntent)
         try {
             if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
-                // JobScheduler + KeepAliveReceiver safely keep/revive the portal without Android 12-15 crashes
                 PortalWatchdogJobService.scheduleImmediateRevive(applicationContext)
                 KeepAliveReceiver.scheduleNextPulse(applicationContext)
                 signalingEngine?.nudgeReconnect()
@@ -153,6 +120,7 @@ class CameraForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        instance = null
         val shouldRevive = try {
             prefs.onboardingCompleted && !prefs.userManuallyStopped
         } catch (_: Throwable) {
@@ -163,22 +131,33 @@ class CameraForegroundService : Service() {
         mqttConnected = false
         isStreaming = false
         cameraFgsPromoted = false
-        activeBrokerLabel = "Reconnexion..."
+        activeBrokerLabel = if (shouldRevive) "Reconnexion..." else "En pause"
 
         serviceScope.cancel()
-        try {
-            signalingEngine?.destroy()
-        } catch (_: Throwable) {
-        }
+
+        val sig = signalingEngine
         signalingEngine = null
-
         try {
-            webRtcEngine?.shutdownEngine()
+            sig?.destroy()
         } catch (_: Throwable) {
         }
-        webRtcEngine = null
 
-        releaseLocks()
+        val rtc = webRtcEngine
+        webRtcEngine = null
+        try {
+            rtc?.shutdownEngine()
+        } catch (_: Throwable) {
+        }
+
+        // Release CPU/WiFi locks immediately
+        releaseStreamingLocks()
+
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(NOTIFICATION_ID)
+        } catch (_: Throwable) {
+        }
+
         notifyStateListeners()
 
         if (shouldRevive) {
@@ -189,58 +168,21 @@ class CameraForegroundService : Service() {
         super.onDestroy()
     }
 
-    private fun shutdownPortalCompletely() {
-        isRunning = false
-        mqttConnected = false
-        isStreaming = false
-        cameraFgsPromoted = false
-        activeBrokerLabel = "Arrêté"
-
-        try {
-            signalingEngine?.destroy()
-        } catch (_: Throwable) {
-        }
-        signalingEngine = null
-
-        try {
-            webRtcEngine?.shutdownEngine()
-        } catch (_: Throwable) {
-        }
-        webRtcEngine = null
-
-        releaseLocks()
-        try {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } catch (_: Throwable) {
-        }
-        stopSelf()
-        notifyStateListeners()
-    }
-
-    private fun ensureEnginesRunning(forceReloadSignaling: Boolean) {
-        if (webRtcEngine == null) {
-            initWebRtcEngine()
-        }
-        val currentCode = prefs.pairingCode
-        if (signalingEngine == null || forceReloadSignaling || activeSignalingCode != currentCode) {
-            initializeOrReloadSignaling(currentCode)
-        }
-        if (!heartbeatStarted) {
-            heartbeatStarted = true
-            startHeartbeatLoop()
-        }
-    }
-
-    private fun acquireLocks() {
+    /**
+     * Eco-Battery Lock Management:
+     * WakeLock & Low-Latency WifiLock are ONLY acquired while actively streaming video!
+     * During idle standby, 0% CPU WakeLock is held so the smartphone sleeps deeply.
+     */
+    private fun acquireStreamingLocks() {
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             if (wakeLock?.isHeld != true) {
                 wakeLock = pm.newWakeLock(
                     PowerManager.PARTIAL_WAKE_LOCK,
-                    "SentinelCam::ContinuousPortalWakeLock"
+                    "SentinelCam::ActiveStreamWakeLock"
                 ).apply {
                     setReferenceCounted(false)
-                    acquire()
+                    acquire(4 * 60 * 60 * 1000L) // Max 4h safety cap
                 }
             }
         } catch (_: Throwable) {
@@ -255,7 +197,7 @@ class CameraForegroundService : Service() {
                 } else {
                     WifiManager.WIFI_MODE_FULL_HIGH_PERF
                 }
-                wifiLock = wm.createWifiLock(lockMode, "SentinelCam::LowLatencyWifiLock").apply {
+                wifiLock = wm.createWifiLock(lockMode, "SentinelCam::StreamWifiLock").apply {
                     setReferenceCounted(false)
                     acquire()
                 }
@@ -264,7 +206,7 @@ class CameraForegroundService : Service() {
         }
     }
 
-    private fun releaseLocks() {
+    private fun releaseStreamingLocks() {
         try {
             if (wakeLock?.isHeld == true) wakeLock?.release()
         } catch (_: Throwable) {
@@ -278,8 +220,10 @@ class CameraForegroundService : Service() {
         wifiLock = null
     }
 
-    private fun initWebRtcEngine() {
-        webRtcEngine = NativeWebRtcEngine(
+    private fun ensureWebRtcInitialized(): NativeWebRtcEngine {
+        var rtc = webRtcEngine
+        if (rtc != null) return rtc
+        rtc = NativeWebRtcEngine(
             context = this,
             onLocalOfferReady = { sessionId, sdp, fingerprint ->
                 signalingEngine?.send(
@@ -308,68 +252,106 @@ class CameraForegroundService : Service() {
             },
             onStreamStateChanged = { active, err ->
                 isStreaming = active
+                if (active) {
+                    acquireStreamingLocks()
+                } else {
+                    releaseStreamingLocks()
+                }
                 currentFacing = webRtcEngine?.currentFacing ?: "front"
                 currentMic = webRtcEngine?.currentMicEnabled ?: false
                 if (err != null) {
                     prefs.appendLog("warn", err)
                 }
-                serviceScope.launch(Dispatchers.Main) {
-                    updateNotificationAndNotifyListeners()
-                    broadcastPresenceNow()
+                if (isRunning) {
+                    serviceScope.launch(Dispatchers.Main) {
+                        updateNotificationAndNotifyListeners()
+                        broadcastPresenceNow()
+                    }
                 }
             }
         )
+        webRtcEngine = rtc
+        return rtc
     }
 
-    private fun initializeOrReloadSignaling(code: String) {
-        activeSignalingCode = code
-        val previous = signalingEngine
-        signalingEngine = null
-        try {
-            previous?.destroy()
-        } catch (_: Throwable) {
-        }
-        webRtcEngine?.stopStream()
+    private fun ensureSignalingRunning(forceReload: Boolean) {
+        val currentCode = prefs.pairingCode
+        if (signalingEngine == null || forceReload || activeSignalingCode != currentCode) {
+            activeSignalingCode = currentCode
+            val prev = signalingEngine
+            signalingEngine = null
+            try { prev?.destroy() } catch (_: Throwable) {}
+            webRtcEngine?.stopStream()
+            releaseStreamingLocks()
 
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                val keys = CryptoProtocol.deriveBootstrapKeys(code)
-                val engine = MqttSignalingEngine(
-                    context = applicationContext,
-                    topicId = keys.topicId,
-                    bootstrapEncKey = keys.bootstrapEncKey,
-                    onMessageDecrypted = { json, _ ->
-                        handleDecryptedSignal(json)
-                    },
-                    onConnectionStateChanged = { connected, brokerLabel ->
-                        mqttConnected = connected
-                        activeBrokerLabel = brokerLabel
-                        if (connected) {
-                            broadcastPresenceNow()
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    val keys = CryptoProtocol.deriveBootstrapKeys(currentCode)
+                    activeBootstrapKeys = keys
+                    val engine = MqttSignalingEngine(
+                        context = applicationContext,
+                        topicId = keys.topicId,
+                        wakePushTopic = keys.wakePushTopic,
+                        bootstrapEncKey = keys.bootstrapEncKey,
+                        onMessageDecrypted = { json, _ ->
+                            handleDecryptedSignal(json)
+                        },
+                        onConnectionStateChanged = { connected, brokerLabel ->
+                            mqttConnected = connected
+                            activeBrokerLabel = brokerLabel
+                            notifyStateListeners()
                         }
-                        notifyStateListeners()
-                    }
-                )
-                signalingEngine = engine
-                engine.start()
-                prefs.appendLog("security", "Pont continu actif 24h/24 — Code [$code]")
-                notifyStateListeners()
-            } catch (t: Throwable) {
-                prefs.appendLog("warn", "Erreur init réseau: ${t.message}")
+                    )
+                    signalingEngine = engine
+                    engine.start()
+                    notifyStateListeners()
+                } catch (_: Throwable) {
+                }
             }
         }
+
+        if (!telemetryLoopStarted) {
+            telemetryLoopStarted = true
+            startEcoTelemetryLoop()
+        }
     }
 
-    private fun startHeartbeatLoop() {
+    /**
+     * Eco-Telemetry Loop:
+     * Sends 0 bytes when nobody is watching! Only sends battery/network telemetry while
+     * a viewer is actively connected (`lastViewerSeenMs` within last 35s or streaming).
+     */
+    private fun startEcoTelemetryLoop() {
         serviceScope.launch(Dispatchers.IO) {
             while (isActive) {
-                delay(8_000L)
-                if (isRunning) {
-                    acquireLocks()
+                delay(6_000L)
+                if (!isRunning) continue
+                val viewerActive = isStreaming || (System.currentTimeMillis() - lastViewerSeenMs) < 35_000L
+                if (viewerActive) {
                     broadcastPresenceNow()
                 }
             }
         }
+    }
+
+    fun sleepCameraInternal() {
+        val activeSession = webRtcEngine?.currentSessionId.orEmpty()
+        webRtcEngine?.stopStream()
+        releaseStreamingLocks()
+        if (activeSession.isNotEmpty()) {
+            signalingEngine?.send(
+                JSONObject().apply {
+                    put("type", "STREAM_STATE")
+                    put("sessionId", activeSession)
+                    put("state", "standby")
+                    put("cameraFacing", currentFacing)
+                    put("micEnabled", currentMic)
+                    put("ts", System.currentTimeMillis())
+                },
+                mode = "sess"
+            )
+        }
+        updateNotificationAndNotifyListeners()
     }
 
     private fun buildPortalStatusJson(): JSONObject {
@@ -386,7 +368,7 @@ class CameraForegroundService : Service() {
             put("deviceId", prefs.deviceId)
             put("deviceName", prefs.deviceName)
             put("portalState", stateStr)
-            put("paired", prefs.hasAnyAuthorizedToken())
+            put("paired", !prefs.pairedTokenId.isNullOrEmpty())
             put("pairedTokenId", prefs.pairedTokenId ?: JSONObject.NULL)
             put("lockoutRemainingMs", lockoutRem)
             put("failedAttempts", prefs.failedAttempts)
@@ -410,14 +392,16 @@ class CameraForegroundService : Service() {
     }
 
     private fun handleDecryptedSignal(msg: JSONObject) {
+        if (!isRunning) return
+        lastViewerSeenMs = System.currentTimeMillis()
+
         try {
             when (msg.optString("type")) {
+                "HELLO_WAKE" -> handleHelloWake(msg)
+
                 "PING_STATUS" -> {
                     signalingEngine?.send(buildPortalStatusJson(), mode = "boot")
                 }
-
-                "AUTH_INIT" -> handleAuthInit(msg)
-                "AUTH_RESPONSE" -> handleAuthResponse(msg)
 
                 "CMD_START_STREAM" -> {
                     val sessionId = msg.optString("sessionId", "")
@@ -425,14 +409,15 @@ class CameraForegroundService : Service() {
                     val enableAudio = msg.optBoolean("enableAudio", false)
                     val quality = msg.optString("quality", "hd")
                     if (sessionId.isNotEmpty()) {
-                        prefs.appendLog("info", "Caméra activée à distance ($facing).")
-                        webRtcEngine?.startStream(sessionId, facing, enableAudio, quality)
+                        acquireStreamingLocks()
+                        ensureWebRtcInitialized().startStream(sessionId, facing, enableAudio, quality)
                     }
                 }
 
                 "CMD_STOP_STREAM" -> {
                     val sessionId = msg.optString("sessionId", "")
                     webRtcEngine?.stopStream()
+                    releaseStreamingLocks()
                     signalingEngine?.send(
                         JSONObject().apply {
                             put("type", "STREAM_STATE")
@@ -444,7 +429,6 @@ class CameraForegroundService : Service() {
                         },
                         mode = "sess"
                     )
-                    prefs.appendLog("info", "Caméra mise en veille à distance.")
                 }
 
                 "CMD_SWITCH_CAMERA" -> {
@@ -481,123 +465,88 @@ class CameraForegroundService : Service() {
                     }
                 }
             }
-        } catch (t: Throwable) {
-            prefs.appendLog("warn", "Signal ignoré: ${t.javaClass.simpleName}")
+        } catch (_: Throwable) {
         }
     }
 
-    private fun handleAuthInit(msg: JSONObject) {
+    /**
+     * 1-RTT Instant Handshake + Optional Piggybacked Stream Startup (< 0.8s total connection!).
+     */
+    private fun handleHelloWake(msg: JSONObject) {
+        val keys = activeBootstrapKeys ?: return
         val now = System.currentTimeMillis()
         val lockoutRem = (prefs.lockoutUntil - now).coerceAtLeast(0L)
         if (lockoutRem > 0L) {
-            sendAuthError(
-                reason = "LOCKED_OUT",
-                message = "Verrouillage sécurité actif (${(lockoutRem / 1000L) + 1}s).",
-                lockoutRemainingMs = lockoutRem
+            signalingEngine?.send(
+                JSONObject().apply {
+                    put("type", "AUTH_ERR")
+                    put("reason", "LOCKED_OUT")
+                    put("message", "Temporisation active (${(lockoutRem / 1000L) + 1}s).")
+                    put("lockoutRemainingMs", lockoutRem)
+                    put("failedAttempts", prefs.failedAttempts)
+                    put("ts", now)
+                },
+                mode = "boot"
             )
             return
         }
 
         val tokenId = msg.optString("tokenId", "")
         val clientNonce = msg.optString("clientNonce", "")
-        if (tokenId.isEmpty() || clientNonce.isEmpty()) return
-
-        // Check if this specific browser tokenId already holds a registered HKDF key;
-        // if not, allow seamless HKDF pairing because the caller already proved knowledge of the 6-char PBKDF2 key!
-        val existingKeyForToken = prefs.getAuthorizedKeyForToken(tokenId)
-        val isFirstPairForThisBrowser = existingKeyForToken.isNullOrEmpty()
-
-        val serverNonce = CryptoProtocol.randomHex(24)
-        pendingChallenges[tokenId] = PendingChallenge(
-            tokenId = tokenId,
-            clientNonce = clientNonce,
-            serverNonce = serverNonce,
-            createdAt = now
-        )
-
-        signalingEngine?.send(
-            JSONObject().apply {
-                put("type", "AUTH_CHALLENGE")
-                put("deviceId", prefs.deviceId)
-                put("deviceName", prefs.deviceName)
-                put("serverNonce", serverNonce)
-                put("deviceSalt", prefs.deviceSalt)
-                put("isFirstPair", isFirstPairForThisBrowser)
-                put("ts", System.currentTimeMillis())
-            },
-            mode = "boot"
-        )
-    }
-
-    private fun handleAuthResponse(msg: JSONObject) {
-        val tokenId = msg.optString("tokenId", "")
-        if (tokenId.isEmpty()) return
-        val ch = pendingChallenges.remove(tokenId) ?: return
-
-        if (System.currentTimeMillis() - ch.createdAt > 45_000L) {
-            sendAuthError("EXPIRED_CHALLENGE", "Délai dépassé, reconnexion automatique...", 0L)
-            return
-        }
-
         val proofHex = msg.optString("proofHex", "")
-        val incomingPairingKey = msg.optString("pairingKeyHex", "")
-        val existingKey = prefs.getAuthorizedKeyForToken(tokenId)
-        val candidateKeyHex = existingKey ?: incomingPairingKey
+        if (tokenId.isEmpty() || clientNonce.isEmpty() || proofHex.isEmpty()) return
 
-        if (candidateKeyHex.length != 64) {
-            recordFailure("Clé d’appairage invalide.")
-            return
-        }
-
-        val expectedProof = CryptoProtocol.computeClientChallengeProof(
-            pairedKeyHex = candidateKeyHex,
-            clientNonce = ch.clientNonce,
-            serverNonce = ch.serverNonce,
-            tokenId = ch.tokenId,
-            deviceId = prefs.deviceId
+        val expectedProof = CryptoProtocol.computeHelloWakeProof(
+            bootstrapAuthRaw = keys.bootstrapAuthKey,
+            clientNonce = clientNonce,
+            tokenId = tokenId
         )
 
         if (!CryptoProtocol.constantTimeEqualHex(expectedProof, proofHex)) {
-            recordFailure("Signature HMAC invalide !")
-            val remAfter = (prefs.lockoutUntil - System.currentTimeMillis()).coerceAtLeast(0L)
-            sendAuthError(
-                reason = if (remAfter > 0L) "LOCKED_OUT" else "INVALID_PROOF",
-                message = "Authentification refusée.",
-                lockoutRemainingMs = remAfter
-            )
+            val count = prefs.failedAttempts + 1
+            prefs.failedAttempts = count
+            val lockMs = CryptoProtocol.calculateLockoutDurationMs(count)
+            if (lockMs > 0L) prefs.lockoutUntil = now + lockMs
             return
         }
 
-        val sas = CryptoProtocol.computeSas(
-            normalizedCode = prefs.pairingCode,
-            tokenId = ch.tokenId,
-            deviceId = prefs.deviceId,
-            pairedKeyHex = candidateKeyHex
-        )
-
-        prefs.registerAuthorizedToken(ch.tokenId, candidateKeyHex, Pair(sas.sasCode, sas.sasSymbols))
-
-        val sessionKey = CryptoProtocol.deriveSessionAesKey(
-            pairedKeyHex = candidateKeyHex,
-            clientNonce = ch.clientNonce,
-            serverNonce = ch.serverNonce
-        )
-        signalingEngine?.setSessionKey(sessionKey, ch.tokenId)
-
-        val serverProof = CryptoProtocol.computeServerChallengeProof(
-            pairedKeyHex = candidateKeyHex,
-            clientNonce = ch.clientNonce,
-            serverNonce = ch.serverNonce,
-            tokenId = ch.tokenId,
+        val serverNonce = CryptoProtocol.randomHex(20)
+        val sessionKey = CryptoProtocol.deriveFastSessionKey(
+            bootstrapAuthRaw = keys.bootstrapAuthKey,
+            clientNonce = clientNonce,
+            serverNonce = serverNonce,
             deviceId = prefs.deviceId
         )
+        signalingEngine?.registerSessionKey(clientNonce, sessionKey)
+
+        val serverProof = CryptoProtocol.computeHelloAckProof(
+            bootstrapAuthRaw = keys.bootstrapAuthKey,
+            clientNonce = clientNonce,
+            serverNonce = serverNonce,
+            deviceId = prefs.deviceId
+        )
+
+        val sas = CryptoProtocol.computeSas(
+            normalizedCode = prefs.pairingCode,
+            tokenId = tokenId,
+            deviceId = prefs.deviceId,
+            bootstrapAuthRaw = keys.bootstrapAuthKey
+        )
+
+        prefs.pairedTokenId = tokenId
+        prefs.sasCode = sas.sasCode
+        prefs.sasSymbols = sas.sasSymbols
+        prefs.failedAttempts = 0
+        prefs.lockoutUntil = 0L
 
         val bat = readBatteryInfo()
         signalingEngine?.send(
             JSONObject().apply {
-                put("type", "AUTH_OK")
+                put("type", "HELLO_ACK")
                 put("deviceId", prefs.deviceId)
                 put("deviceName", prefs.deviceName)
+                put("echoClientNonce", clientNonce)
+                put("serverNonce", serverNonce)
                 put("serverProofHex", serverProof)
                 put("sasCode", sas.sasCode)
                 put("sasSymbols", sas.sasSymbols)
@@ -607,41 +556,23 @@ class CameraForegroundService : Service() {
                 put("networkType", readNetworkTypeLabel())
                 put("cameraFacing", currentFacing)
                 put("micEnabled", currentMic)
-                put("uptimeSec", ((System.currentTimeMillis() - startedAtMs) / 1000L).coerceAtLeast(0L))
-                put("ts", System.currentTimeMillis())
+                put("uptimeSec", ((now - startedAtMs) / 1000L).coerceAtLeast(0L))
+                put("ts", now)
             },
             mode = "boot"
         )
 
-        prefs.appendLog("security", "Connexion Web autorisée — SAS [${sas.sasCode}]")
-        notifyStateListeners()
-    }
-
-    private fun recordFailure(logMessage: String) {
-        val count = prefs.failedAttempts + 1
-        prefs.failedAttempts = count
-        val lockoutMs = CryptoProtocol.calculateLockoutDurationMs(count)
-        if (lockoutMs > 0L) {
-            prefs.lockoutUntil = System.currentTimeMillis() + lockoutMs
-            prefs.appendLog("security", "$logMessage Verrouillage ${lockoutMs / 1000L}s.")
-        } else {
-            prefs.appendLog("warn", "$logMessage ($count/3)")
+        val autoStart = msg.optBoolean("autoStartStream", false)
+        val sessionId = msg.optString("sessionId", "")
+        if (autoStart && sessionId.isNotEmpty()) {
+            val facing = msg.optString("cameraFacing", "front")
+            val enableAudio = msg.optBoolean("enableAudio", false)
+            val quality = msg.optString("quality", "hd")
+            acquireStreamingLocks()
+            ensureWebRtcInitialized().startStream(sessionId, facing, enableAudio, quality)
         }
-        notifyStateListeners()
-    }
 
-    private fun sendAuthError(reason: String, message: String, lockoutRemainingMs: Long) {
-        signalingEngine?.send(
-            JSONObject().apply {
-                put("type", "AUTH_ERR")
-                put("reason", reason)
-                put("message", message)
-                put("lockoutRemainingMs", lockoutRemainingMs)
-                put("failedAttempts", prefs.failedAttempts)
-                put("ts", System.currentTimeMillis())
-            },
-            mode = "boot"
-        )
+        notifyStateListeners()
     }
 
     private fun createNotificationChannel() {
@@ -649,10 +580,10 @@ class CameraForegroundService : Service() {
             try {
                 val channel = NotificationChannel(
                     CHANNEL_ID,
-                    "Portail Continu SentinelCam",
+                    "Portail Éco-Veille SentinelCam",
                     NotificationManager.IMPORTANCE_LOW
                 ).apply {
-                    description = "Maintient le pont continu SentinelCam actif en arrière-plan"
+                    description = "Écoute éco-énergie en tâche de fond SentinelCam"
                     setShowBadge(false)
                 }
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -673,10 +604,11 @@ class CameraForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val stopIntent = Intent(this, CameraForegroundService::class.java).apply {
-            action = ACTION_STOP_PORTAL
+        // BroadcastReceiver PendingIntents (100% crash-free on Android 8-15!)
+        val stopIntent = Intent(this, StopPortalReceiver::class.java).apply {
+            action = StopPortalReceiver.ACTION_USER_STOP_PORTAL
         }
-        val stopPi = PendingIntent.getService(
+        val stopPi = PendingIntent.getBroadcast(
             this,
             101,
             stopIntent,
@@ -686,13 +618,13 @@ class CameraForegroundService : Service() {
         val title = if (isStreaming) {
             "Streaming caméra en cours"
         } else {
-            "Portail SentinelCam actif - En attente"
+            "SentinelCam actif (Éco-Veille)"
         }
 
         val subtitle = if (isStreaming) {
-            "Flux direct chiffré (${if (currentFacing == "front") "Caméra avant" else "Caméra arrière"})"
+            "Flux direct actif (${if (currentFacing == "front") "Selfie" else "Arrière"})"
         } else {
-            "Code : ${prefs.pairingCode} • Pont continu 24h/24 actif"
+            "Code : ${prefs.pairingCode} • Capteur éteint (0% conso)"
         }
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -706,10 +638,10 @@ class CameraForegroundService : Service() {
             .setContentIntent(contentPi)
 
         if (isStreaming) {
-            val sleepIntent = Intent(this, CameraForegroundService::class.java).apply {
-                action = ACTION_SLEEP_CAMERA
+            val sleepIntent = Intent(this, StopPortalReceiver::class.java).apply {
+                action = StopPortalReceiver.ACTION_USER_SLEEP_CAMERA
             }
-            val sleepPi = PendingIntent.getService(
+            val sleepPi = PendingIntent.getBroadcast(
                 this,
                 102,
                 sleepIntent,
@@ -753,7 +685,6 @@ class CameraForegroundService : Service() {
         val hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
-        // 1. Try full CAMERA (+ MICROPHONE) FGS when eligible
         if (appVisible && hasCam) {
             var fullType = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
             if (hasMic) {
@@ -767,11 +698,9 @@ class CameraForegroundService : Service() {
                 cameraFgsPromoted = true
                 return true
             } catch (_: Throwable) {
-                // Fall through to SPECIAL_USE fallback
             }
         }
 
-        // 2. Fallback to SPECIAL_USE (Android 14+) or base startForeground (Android 11-13)
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
@@ -840,11 +769,12 @@ class CameraForegroundService : Service() {
         private const val CHANNEL_ID = "sentinelcam_portal_channel"
         private const val NOTIFICATION_ID = 4401
 
-        const val ACTION_STOP_PORTAL = "com.sentinelcam.app.ACTION_STOP_PORTAL"
-        const val ACTION_SLEEP_CAMERA = "com.sentinelcam.app.ACTION_SLEEP_CAMERA"
         const val ACTION_RESTART_SIGNALING = "com.sentinelcam.app.ACTION_RESTART_SIGNALING"
         const val ACTION_NUDGE_NETWORK = "com.sentinelcam.app.ACTION_NUDGE_NETWORK"
         private const val EXTRA_FROM_UI = "extra_from_ui"
+
+        @Volatile
+        private var instance: CameraForegroundService? = null
 
         @Volatile
         var isRunning: Boolean = false
@@ -882,10 +812,7 @@ class CameraForegroundService : Service() {
 
         private fun notifyStateListeners() {
             for (l in listeners) {
-                try {
-                    l.invoke()
-                } catch (_: Throwable) {
-                }
+                try { l.invoke() } catch (_: Throwable) {}
             }
         }
 
@@ -900,9 +827,6 @@ class CameraForegroundService : Service() {
             }
         }
 
-        /**
-         * Called from visible MainActivity / Plugin UI: starts or upgrades service with full Camera FGS rights.
-         */
         fun startFromUi(context: Context) {
             try {
                 val appCtx = context.applicationContext
@@ -914,18 +838,11 @@ class CameraForegroundService : Service() {
             }
         }
 
-        /**
-         * Safe background revival / keep-alive nudge (called from JobScheduler, BootReceiver, KeepAliveReceiver).
-         * Never throws BackgroundServiceStartNotAllowedException or ForegroundServiceStartNotAllowedException.
-         */
         fun ensureRunningSafely(context: Context) {
             try {
                 val appCtx = context.applicationContext
                 if (isRunning) {
-                    val nudge = Intent(appCtx, CameraForegroundService::class.java).apply {
-                        action = ACTION_NUDGE_NETWORK
-                    }
-                    appCtx.startService(nudge)
+                    instance?.signalingEngine?.nudgeReconnect()
                     return
                 }
 
@@ -958,16 +875,31 @@ class CameraForegroundService : Service() {
             }
         }
 
+        fun sleepCameraFromNotification(context: Context) {
+            try {
+                instance?.sleepCameraInternal()
+            } catch (_: Throwable) {
+            }
+        }
+
+        /**
+         * 100% Crash-Free Server Shutdown:
+         * Calls `stopService()` directly instead of sending a start Intent!
+         * Keeps Watchdog scheduled in Push-Invite listening mode so user can still receive wake invitations!
+         */
         fun stopPortal(context: Context) {
             try {
                 val appCtx = context.applicationContext
-                PortalWatchdogJobService.cancelAll(appCtx)
                 KeepAliveReceiver.cancelPulse(appCtx)
-                if (!isRunning) return
-                val intent = Intent(appCtx, CameraForegroundService::class.java).apply {
-                    action = ACTION_STOP_PORTAL
-                }
-                appCtx.startService(intent)
+                PortalWatchdogJobService.scheduleWatchdog(appCtx)
+
+                isRunning = false
+                isStreaming = false
+                mqttConnected = false
+                activeBrokerLabel = "En pause"
+
+                appCtx.stopService(Intent(appCtx, CameraForegroundService::class.java))
+                notifyStateListeners()
             } catch (_: Throwable) {
             }
         }

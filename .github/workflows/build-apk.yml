@@ -122,17 +122,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.${{ github.run_number }}
-          name: "SentinelCam v2.0.${{ github.run_number }} (Pont Continu 24h/24 & Zero-Crash APK)"
+          tag_name: v3.0.${{ github.run_number }}
+          name: "SentinelCam v3.0.${{ github.run_number }} (Instant 1-RTT, Éco-Veille & Push Wake)"
           body: |
-            ### 🛡️ SentinelCam v2.0 — Pont Continu 24h/24 & Architecture Zéro-Crash (`v2.0.${{ github.run_number }}`)
+            ### 🛡️ SentinelCam v3.0 — Connexion Instantanée, Éco-Veille & Push d'Invitation (`v3.0.${{ github.run_number }}`)
 
-            Téléchargez et installez directement **`SentinelCam.apk`** sur votre smartphone Android (Android 8.0 à Android 15+).
+            Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            #### Nouveautés majeures v2.0 :
-            - **Zéro Force-Close (Android 12 à 15+)** : Moteur WebRTC isolé sur thread dédié + singleton JNI (aucun plantage à la fermeture ou au redémarrage) + promotion sécurisée du ForegroundService + bouclier anti-crash global.
-            - **Pont Continu Auto-Réparateur (`OkHttp WSS` + `JobScheduler` + `KeepAliveReceiver`)** : Triple connexion simultanée aux relais mondiaux (`EMQX`, `HiveMQ`, `Mosquitto`), maintien actif écran éteint / application fermée et relance automatique en tâche de fond.
-            - **Interface Simplifiée 1-Clic** : Saisie du code à 6 caractères sur le site web avec connexion et réveil caméra automatiques.
+            - **Connexion Quasi-Instantanée (1-RTT + Pool WSS pré-chauffé)** : Reconnexion immédiate dès la saisie du code.
+            - **Mode Éco-Veille (0% consommation caméra/CPU en attente)** : Capteur et WakeLocks totalement coupés tant qu'aucun flux n'est ouvert.
+            - **Push d'Invitation & Deep-Link (`sentinelcam://wake`)** : Réveil ou notification d'ouverture même si l'application a été fermée.
+            - **Arrêt Serveur Zéro-Crash** : Arrêt propre par `BroadcastReceiver` + `stopService` sans jamais provoquer d'exception système.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

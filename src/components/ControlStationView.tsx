@@ -4,8 +4,10 @@ import {
   AlertTriangle,
   Battery,
   BatteryCharging,
+  BellRing,
   Camera,
   CameraOff,
+  Check,
   Download,
   FlipHorizontal,
   Lock,
@@ -14,6 +16,7 @@ import {
   MicOff,
   Power,
   RefreshCw,
+  Share2,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
@@ -58,6 +61,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [stats, setStats] = useState<StreamRealtimeStats | null>(null);
   const [authError, setAuthError] = useState<AuthErrMsg | null>(null);
   const [autoWakeOnConnect, setAutoWakeOnConnect] = useState(true);
+  const [pushSentFeedback, setPushSentFeedback] = useState<string | null>(null);
 
   const [sasInfo, setSasInfo] = useState<{
     deviceName: string;
@@ -76,12 +80,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const videoContainerRef = useRef<HTMLDivElement | null>(null);
   const controllerRef = useRef<SentinelWebRtcController | null>(null);
-  const autoWakeRef = useRef(autoWakeOnConnect);
-  const hasAutoWokenSessionRef = useRef(false);
-
-  useEffect(() => {
-    autoWakeRef.current = autoWakeOnConnect;
-  }, [autoWakeOnConnect]);
 
   useEffect(() => {
     const ctrl = new SentinelWebRtcController({
@@ -100,12 +98,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           sasSymbols: info.sasSymbols,
         });
         setSavedDevices(listPairedDevices());
-
-        // Automatically wake the camera right upon initial connection if enabled
-        if (autoWakeRef.current && !hasAutoWokenSessionRef.current) {
-          hasAutoWokenSessionRef.current = true;
-          void ctrl.startCameraStream('front', false, 'hd');
-        }
       },
       onAuthError: (err) => {
         setAuthError(err);
@@ -119,7 +111,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         }
       },
       onStatsUpdate: (s) => setStats(s),
-      onLog: () => {},
     });
 
     controllerRef.current = ctrl;
@@ -135,13 +126,47 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     if (normalized.length !== 6) return;
 
     setAuthError(null);
-    hasAutoWokenSessionRef.current = false;
+    setPushSentFeedback(null);
     setCodeChars(normalized.split(''));
     try {
-      await controllerRef.current?.connectToPortal(normalized);
+      await controllerRef.current?.connectToPortal(normalized, autoWakeOnConnect);
     } catch {
-      // Handled by state callbacks
+      // Handled via state callbacks
     }
+  };
+
+  const handleSendPushInvite = async () => {
+    if (fullCode.length !== 6) return;
+    setPushSentFeedback('Envoi du Push de réveil...');
+    const pushed = await controllerRef.current?.sendServerlessPushInvitation(fullCode);
+
+    const inviteUrl = `${window.location.origin}${window.location.pathname}?invite=${fullCode}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Ouvrir SentinelCam',
+          text: `Appuyez pour activer le portail SentinelCam (${fullCode}) :`,
+          url: inviteUrl,
+        });
+        setPushSentFeedback('Push envoyé + Invitation partagée !');
+        return;
+      } catch {
+        // User cancelled share sheet; still copy link
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setPushSentFeedback(
+        pushed
+          ? 'Push envoyé au téléphone + Lien d’invitation copié !'
+          : 'Lien d’ouverture directe copié dans le presse-papiers !'
+      );
+    } catch {
+      setPushSentFeedback('Signal Push de réveil envoyé !');
+    }
+
+    window.setTimeout(() => setPushSentFeedback(null), 4000);
   };
 
   const handleCharChange = (index: number, val: string) => {
@@ -206,7 +231,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   };
 
   const handleDisconnect = () => {
-    hasAutoWokenSessionRef.current = false;
     controllerRef.current?.disconnect();
     setTelemetry(null);
     setStats(null);
@@ -267,7 +291,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const isSessionOpen = Boolean(sasInfo) || portalState === 'standby' || portalState === 'streaming';
   const isStreaming = portalState === 'streaming';
 
-  /* ==================== SCREEN 1: SIMPLE 6-CHAR CODE ENTRY ==================== */
+  /* ==================== SCREEN 1: INSTANT 6-CHAR CODE ENTRY ==================== */
   if (!isSessionOpen) {
     return (
       <div className="mx-auto flex min-h-[78vh] max-w-lg flex-col justify-center px-4 py-8">
@@ -277,11 +301,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           </div>
 
           <h1 className="mt-4 text-center text-2xl font-extrabold tracking-tight text-white">
-            Connecter un Smartphone
+            Connexion Instantanée
           </h1>
           <p className="mt-1.5 text-center text-xs text-slate-400">
-            Tapez le code à 6 caractères affiché sur l’application Android SentinelCam : la
-            connexion démarre automatiquement.
+            Saisissez le code à 6 caractères du smartphone : la liaison démarre à la milliseconde
+            où le code est complet.
           </p>
 
           {/* 6-character Code Slots */}
@@ -306,7 +330,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             ))}
           </div>
 
-          {/* Auto-wake checkbox */}
           <label className="mt-4 flex cursor-pointer items-center justify-center gap-2 text-xs text-slate-300">
             <input
               type="checkbox"
@@ -314,10 +337,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               onChange={(e) => setAutoWakeOnConnect(e.target.checked)}
               className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500 focus:ring-emerald-500"
             />
-            <span>Allumer la caméra automatiquement dès la connexion</span>
+            <span>Ouvrir la vidéo automatiquement dès la connexion</span>
           </label>
 
-          {/* Primary Connect / Ping Button */}
           <button
             type="button"
             disabled={fullCode.length !== 6}
@@ -327,7 +349,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             {portalState === 'connecting' ? (
               <>
                 <RefreshCw className="h-4 w-4 animate-spin" />
-                <span>Ping du smartphone en cours ({fullCode})...</span>
+                <span>Connexion instantanée ({fullCode})...</span>
               </>
             ) : (
               <>
@@ -337,16 +359,37 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             )}
           </button>
 
-          {portalState === 'connecting' && (
-            <div className="mt-3 flex items-center justify-between rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3.5 py-2.5 text-xs text-emerald-300">
-              <span>Réveil chiffré envoyé sur les 3 relais mondiaux...</span>
+          {/* Push Invitation / Wake Action when phone app is closed */}
+          {fullCode.length === 6 && (
+            <div className="mt-3 space-y-2">
               <button
                 type="button"
-                onClick={handleDisconnect}
-                className="font-semibold text-slate-400 underline hover:text-white"
+                onClick={() => void handleSendPushInvite()}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-cyan-500/35 bg-cyan-500/10 px-4 py-3 text-xs font-bold text-cyan-300 transition hover:bg-cyan-500/20"
               >
-                Annuler
+                <BellRing className="h-4 w-4" />
+                <span>Envoyer un Push / Lien d’invitation (si appli fermée)</span>
+                <Share2 className="h-3.5 w-3.5 opacity-75" />
               </button>
+
+              {pushSentFeedback && (
+                <div className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300">
+                  <Check className="h-3.5 w-3.5" />
+                  <span>{pushSentFeedback}</span>
+                </div>
+              )}
+
+              {portalState === 'connecting' && (
+                <div className="text-center">
+                  <button
+                    type="button"
+                    onClick={handleDisconnect}
+                    className="text-[11px] text-slate-400 underline hover:text-white"
+                  >
+                    Annuler la tentative en cours
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -364,7 +407,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           {savedDevices.length > 0 && (
             <div className="mt-6 border-t border-slate-800/90 pt-5">
               <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Reconnexion rapide en 1 clic
+                Appareils mémorisés (Connexion en 1 clic)
               </div>
               <div className="mt-2.5 space-y-2">
                 {savedDevices.map((dev) => (
@@ -385,7 +428,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                           </span>
                         </div>
                         <div className="text-[11px] text-slate-500">
-                          Cliquer pour connecter immédiatement • {dev.sasSymbols}
+                          Connexion instantanée • {dev.sasSymbols}
                         </div>
                       </div>
                     </div>
@@ -393,7 +436,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                       type="button"
                       onClick={(e) => handleForgetDevice(dev.pairingCode, e)}
                       className="rounded-lg p-1.5 text-slate-500 transition hover:bg-rose-500/15 hover:text-rose-400"
-                      title="Supprimer cet appareil mémorisé"
+                      title="Supprimer cet appareil"
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -410,7 +453,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   /* ==================== SCREEN 2: CONNECTED LIVE CAMERA STATION ==================== */
   return (
     <div className="mx-auto max-w-5xl space-y-4 px-4 py-5 sm:px-6">
-      {/* Compact Connected Device Status Header */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 bg-obsidian-900/90 px-4 py-3 shadow-lg">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
@@ -431,7 +473,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             </span>
           </div>
 
-          {/* Battery Pill */}
           {telemetry && (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-800 bg-obsidian-950 px-2.5 py-1 font-mono text-xs text-slate-200">
               {telemetry.isCharging ? (
@@ -443,7 +484,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             </span>
           )}
 
-          {/* Live Latency & Bitrate Pill */}
           {isStreaming && stats && (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 font-mono text-xs text-cyan-300">
               <Activity className="h-3.5 w-3.5" />
@@ -458,7 +498,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               type="button"
               onClick={() => setSasModalOpen(true)}
               className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 font-mono text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/20"
-              title="Vérifier l’empreinte cryptographique de bout en bout"
             >
               <Lock className="h-3.5 w-3.5" />
               <span>E2EE {sasInfo.sasCode}</span>
@@ -471,12 +510,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-rose-500/40 hover:text-rose-300"
           >
             <Unplug className="h-3.5 w-3.5" />
-            <span>Changer de code</span>
+            <span>Déconnecter</span>
           </button>
         </div>
       </div>
 
-      {/* LIVE VIDEO MONITOR */}
       <div
         ref={videoContainerRef}
         className="relative aspect-video w-full overflow-hidden rounded-3xl border border-slate-800 bg-obsidian-950 shadow-2xl"
@@ -506,11 +544,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               <>
                 <RefreshCw className="h-11 w-11 animate-spin text-emerald-400" />
                 <h3 className="mt-4 text-lg font-bold text-white">
-                  Ouverture du flux caméra en direct...
+                  Démarrage instantané de la vidéo...
                 </h3>
-                <p className="mt-1 text-xs text-slate-400">
-                  Connexion chiffrée directe avec le smartphone en arrière-plan...
-                </p>
               </>
             ) : portalState === 'locked' ? (
               <>
@@ -525,11 +560,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   <CameraOff className="h-8 w-8 text-emerald-400" />
                 </div>
                 <h3 className="mt-4 text-lg font-bold text-white">
-                  Smartphone connecté • Caméra en veille
+                  Mode Éco-Veille Actif (0% conso caméra)
                 </h3>
                 <p className="mt-1 max-w-md text-xs text-slate-400">
-                  Le capteur caméra est éteint pour économiser la batterie. Cliquez ci-dessous pour
-                  afficher la vidéo en direct immédiatement.
+                  Le capteur caméra est totalement éteint sur le téléphone tant que vous ne
+                  regardez pas.
                 </p>
                 <button
                   type="button"
@@ -545,7 +580,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         )}
       </div>
 
-      {/* SIMPLE ACTION DECK */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 bg-obsidian-900/90 p-4 shadow-xl">
         <div className="flex flex-wrap items-center gap-2.5">
           {!isStreaming ? (
@@ -564,7 +598,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               className="inline-flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 px-5 py-2.5 text-sm font-bold text-amber-300 transition hover:bg-amber-500/25"
             >
               <Power className="h-4 w-4" />
-              <span>Mettre en veille la caméra</span>
+              <span>Éteindre la caméra (Éco-Veille)</span>
             </button>
           )}
 
@@ -615,7 +649,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             type="button"
             onClick={() => setLocalAudioMuted((m) => !m)}
             className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-obsidian-950 text-slate-300 transition hover:text-white"
-            title={localAudioMuted ? 'Activer le son' : 'Couper le son'}
           >
             {localAudioMuted ? (
               <VolumeX className="h-4 w-4 text-rose-400" />
@@ -630,7 +663,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border bg-obsidian-950 transition ${
               mirrorVideo ? 'border-emerald-500/40 text-emerald-300' : 'border-slate-800 text-slate-400'
             }`}
-            title="Mode miroir"
           >
             <FlipHorizontal className="h-4 w-4" />
           </button>
@@ -648,14 +680,12 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             disabled={!isStreaming}
             onClick={handleFullscreen}
             className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-obsidian-950 text-slate-300 transition hover:text-white disabled:opacity-40"
-            title="Plein écran"
           >
             <Maximize2 className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      {/* Snapshots Strip */}
       {snapshots.length > 0 && (
         <div className="rounded-2xl border border-slate-800/90 bg-obsidian-900/90 p-4">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">

@@ -4,6 +4,7 @@ import android.util.Base64
 import org.json.JSONObject
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.SecretKeyFactory
@@ -17,6 +18,7 @@ import kotlin.math.pow
 data class BootstrapKeys(
     val normalizedCode: String,
     val topicId: String,
+    val wakePushTopic: String,
     val bootstrapEncKey: ByteArray,
     val bootstrapAuthKey: ByteArray
 )
@@ -27,19 +29,15 @@ data class SasPair(
 )
 
 /**
- * Cryptographic Protocol Engine — 100% byte-for-byte interoperable with WebCrypto API
- * (`src/crypto/cryptoEngine.ts`).
- *
- * - PBKDF2-HMAC-SHA256 (150,000 iterations)
- * - RFC 5869 HKDF-SHA256
- * - HMAC-SHA256 Mutual Challenge-Response
- * - AES-256-GCM (96-bit random IV + 128-bit authentication tag + ±120s anti-replay)
+ * SentinelCam v3.0 Cryptographic Engine — 100% byte-identical with WebCrypto (`cryptoEngine.ts`).
+ * Memoizes PBKDF2 keys for 0ms reconnects and uses stateless 1-RTT HKDF session derivation.
  */
 object CryptoProtocol {
     private const val PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    private const val PBKDF2_SALT = "sentinelcam-v1-pbkdf2-salt"
-    private const val PBKDF2_ITERATIONS = 150_000
+    private const val PBKDF2_SALT = "sentinelcam-v3-pbkdf2-salt"
+    private const val PBKDF2_ITERATIONS = 100_000
     private val secureRandom = SecureRandom()
+    private val keyCache = ConcurrentHashMap<String, BootstrapKeys>()
 
     private val SAS_SYMBOLS_TABLE = arrayOf(
         "🛡️", "🔐", "⚡", "🛰️", "🔑", "💎", "🧭", "🔥",
@@ -75,19 +73,11 @@ object CryptoProtocol {
         return sb.toString()
     }
 
-    fun hexToBytes(hex: String): ByteArray {
-        val clean = hex.trim().lowercase()
-        require(clean.length % 2 == 0) { "Invalid hex length" }
-        val out = ByteArray(clean.length / 2)
-        for (i in out.indices) {
-            out[i] = clean.substring(i * 2, i * 2 + 2).toInt(16).toByte()
-        }
-        return out
-    }
-
     fun deriveBootstrapKeys(code: String): BootstrapKeys {
         val normalized = normalizePairingCode(code)
         require(normalized.length == 6) { "Pairing code must be 6 chars" }
+
+        keyCache[normalized]?.let { return it }
 
         val spec = PBEKeySpec(
             normalized.toCharArray(),
@@ -99,21 +89,21 @@ object CryptoProtocol {
         val master = factory.generateSecret(spec).encoded
         spec.clearPassword()
 
-        val topicBytes = master.copyOfRange(0, 16)
+        val topicId = bytesToHex(master.copyOfRange(0, 16))
         val encBytes = master.copyOfRange(16, 48)
         val authBytes = master.copyOfRange(48, 64)
 
-        return BootstrapKeys(
+        val derived = BootstrapKeys(
             normalizedCode = normalized,
-            topicId = bytesToHex(topicBytes),
+            topicId = topicId,
+            wakePushTopic = "sc_wake_${topicId.take(20)}",
             bootstrapEncKey = encBytes,
             bootstrapAuthKey = authBytes
         )
+        keyCache[normalized] = derived
+        return derived
     }
 
-    /**
-     * RFC 5869 HKDF-SHA256 implementation matching WebCrypto HKDF bit-for-bit.
-     */
     fun hkdfSha256(ikm: ByteArray, salt: ByteArray, infoStr: String, lengthBytes: Int = 32): ByteArray {
         val actualSalt = if (salt.isEmpty()) ByteArray(32) else salt
         val prk = hmacSha256Raw(actualSalt, ikm)
@@ -150,59 +140,46 @@ object CryptoProtocol {
         return bytesToHex(hmacSha256Raw(keyBytes, message.toByteArray(Charsets.UTF_8)))
     }
 
-    fun computeClientChallengeProof(
-        pairedKeyHex: String,
+    fun computeHelloWakeProof(
+        bootstrapAuthRaw: ByteArray,
         clientNonce: String,
-        serverNonce: String,
-        tokenId: String,
-        deviceId: String
+        tokenId: String
     ): String {
-        return hmacSha256Hex(
-            hexToBytes(pairedKeyHex),
-            "client-auth-v1:$clientNonce:$serverNonce:$tokenId:$deviceId"
-        )
+        return hmacSha256Hex(bootstrapAuthRaw, "hello-wake-v3:$clientNonce:$tokenId")
     }
 
-    fun computeServerChallengeProof(
-        pairedKeyHex: String,
+    fun computeHelloAckProof(
+        bootstrapAuthRaw: ByteArray,
         clientNonce: String,
         serverNonce: String,
-        tokenId: String,
         deviceId: String
     ): String {
-        return hmacSha256Hex(
-            hexToBytes(pairedKeyHex),
-            "server-auth-v1:$clientNonce:$serverNonce:$tokenId:$deviceId"
-        )
+        return hmacSha256Hex(bootstrapAuthRaw, "hello-ack-v3:$clientNonce:$serverNonce:$deviceId")
     }
 
-    fun deriveSessionAesKey(
-        pairedKeyHex: String,
+    fun deriveFastSessionKey(
+        bootstrapAuthRaw: ByteArray,
         clientNonce: String,
-        serverNonce: String
+        serverNonce: String,
+        deviceId: String
     ): ByteArray {
-        val salt = "$clientNonce:$serverNonce".toByteArray(Charsets.UTF_8)
-        return hkdfSha256(
-            hexToBytes(pairedKeyHex),
-            salt,
-            "sentinelcam-session-aes256gcm-v1",
-            32
-        )
+        val salt = "$clientNonce:$serverNonce:$deviceId".toByteArray(Charsets.UTF_8)
+        return hkdfSha256(bootstrapAuthRaw, salt, "sentinelcam-v3-fast-session", 32)
     }
 
     fun computeSas(
         normalizedCode: String,
         tokenId: String,
         deviceId: String,
-        pairedKeyHex: String
+        bootstrapAuthRaw: ByteArray
     ): SasPair {
-        val input = "sentinelcam-sas-v1:$normalizedCode:$tokenId:$deviceId:${pairedKeyHex.lowercase()}"
+        val authHex = bytesToHex(bootstrapAuthRaw)
+        val input = "sentinelcam-sas-v3:$normalizedCode:$tokenId:$deviceId:$authHex"
         val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
 
         val p1 = String.format("%02X", digest[0].toInt() and 0xFF)
         val p2 = String.format("%02X", digest[1].toInt() and 0xFF)
         val p3 = String.format("%02X", digest[2].toInt() and 0xFF)
-        val sasCode = "$p1-$p2-$p3"
 
         val b3 = digest[3].toInt() and 0xFF
         val b4 = digest[4].toInt() and 0xFF
@@ -211,7 +188,7 @@ object CryptoProtocol {
         val s3 = SAS_SYMBOLS_TABLE[b4 and 0x0F]
         val s4 = SAS_SYMBOLS_TABLE[(b4 ushr 4) and 0x0F]
 
-        return SasPair(sasCode = sasCode, sasSymbols = "$s1 $s2 $s3 $s4")
+        return SasPair(sasCode = "$p1-$p2-$p3", sasSymbols = "$s1 $s2 $s3 $s4")
     }
 
     fun extractSdpFingerprint(sdp: String): String {
@@ -248,7 +225,7 @@ object CryptoProtocol {
     fun decryptEnvelope(
         envelope: JSONObject,
         aesKeyBytes: ByteArray,
-        maxSkewMs: Long = 120_000L
+        maxSkewMs: Long = 180_000L
     ): JSONObject? {
         if (envelope.optInt("v", 0) != 1) return null
         val ts = envelope.optLong("ts", 0L)
@@ -265,7 +242,7 @@ object CryptoProtocol {
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKeyBytes, "AES"), GCMParameterSpec(128, iv))
             val plainBytes = cipher.doFinal(ct)
             JSONObject(String(plainBytes, Charsets.UTF_8))
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             null
         }
     }

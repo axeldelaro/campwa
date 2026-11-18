@@ -1,22 +1,21 @@
 import {
-  computeClientChallengeProof,
   computeDtlsMediaSas,
+  computeHelloAckProof,
+  computeHelloWakeProof,
   computeSas,
-  computeServerChallengeProof,
   constantTimeEqualHex,
   deriveBootstrapKeys,
-  deriveSessionAesKey,
+  deriveFastSessionKey,
   extractSdpFingerprint,
-  generateDerivedPairingKey,
   normalizePairingCode,
   randomHex,
 } from '../crypto/cryptoEngine';
 import type {
-  AuthChallengeMsg,
   AuthErrMsg,
-  AuthOkMsg,
   CameraFacingMode,
+  DerivedBootstrapKeys,
   DeviceTelemetry,
+  HelloAckMsg,
   IceCandidateMsg,
   PortalOperationalState,
   PortalStatusMsg,
@@ -31,7 +30,6 @@ import {
   buildIceServers,
   findPairedDeviceByCode,
   getOrCreateControllerTokenId,
-  removePairedDevice,
   savePairedDevice,
 } from './deviceVault';
 import { EncryptedSignalingChannel, type BrokerHealth } from './signalingService';
@@ -45,29 +43,24 @@ export interface ControllerCallbacks {
     deviceId: string;
     sasCode: string;
     sasSymbols: string;
-    isNewPairing: boolean;
   }) => void;
   onAuthError: (err: AuthErrMsg) => void;
   onRemoteStream: (stream: MediaStream | null) => void;
   onStatsUpdate: (stats: StreamRealtimeStats | null) => void;
-  onLog: (level: 'info' | 'warn' | 'security', text: string) => void;
 }
 
 export class SentinelWebRtcController {
   private readonly callbacks: ControllerCallbacks;
   private signaling: EncryptedSignalingChannel | null = null;
+  private bootstrapKeys: DerivedBootstrapKeys | null = null;
   private pc: RTCPeerConnection | null = null;
   private remoteStream: MediaStream | null = null;
 
   private pairingCode = '';
   private tokenId = '';
-  private clientNonce = '';
-  private pendingIsNewPair = false;
   private activeSessionId = '';
   private authenticated = false;
-  private handshakeInFlight = false;
 
-  // Desired continuous state for automatic recovery across Wi-Fi <-> 5G transitions
   private desiredStreaming = false;
   private desiredFacing: CameraFacingMode = 'front';
   private desiredAudio = false;
@@ -78,24 +71,21 @@ export class SentinelWebRtcController {
   private pendingCandidates: IceCandidateMsg[] = [];
 
   private statsTimer: number | null = null;
-  private watchdogTimer: number | null = null;
+  private retryTimer: number | null = null;
   private streamRecoverTimer: number | null = null;
-  private lastTelemetryAt = 0;
   private lastBytesReceived = 0;
   private lastStatsTimestamp = 0;
-
-  private pendingPairCandidate: {
-    deviceId: string;
-    deviceName: string;
-    serverNonce: string;
-    pairedKeyHex: string;
-  } | null = null;
 
   constructor(callbacks: ControllerCallbacks) {
     this.callbacks = callbacks;
   }
 
-  public async connectToPortal(rawCode: string): Promise<void> {
+  /**
+   * 1-RTT Instant Connection:
+   * Subscribes on the pre-warmed WSS pool, waits for confirmed SUBACK (~35ms),
+   * and immediately sends HELLO_WAKE (optionally piggybacking camera startup in the same packet!).
+   */
+  public async connectToPortal(rawCode: string, autoStartCamera = true): Promise<void> {
     this.disconnect();
 
     const code = normalizePairingCode(rawCode);
@@ -106,12 +96,19 @@ export class SentinelWebRtcController {
     this.pairingCode = code;
     this.tokenId = getOrCreateControllerTokenId();
     this.authenticated = false;
-    this.handshakeInFlight = false;
+    this.desiredStreaming = autoStartCamera;
 
     this.callbacks.onStateChange('connecting');
-    this.callbacks.onLog('security', `Connexion chiffrée au smartphone [${code}]...`);
 
     const keys = await deriveBootstrapKeys(code);
+    this.bootstrapKeys = keys;
+
+    // Pre-allocate WebRTC PeerConnection immediately so 0ms is wasted when SDP_OFFER arrives!
+    if (autoStartCamera) {
+      this.activeSessionId = randomHex(10);
+      this.pendingCandidates = [];
+      this.setupPeerConnection(this.activeSessionId);
+    }
 
     this.signaling = new EncryptedSignalingChannel({
       role: 'controller',
@@ -120,24 +117,24 @@ export class SentinelWebRtcController {
       onMessage: (msg, mode) => {
         void this.handleSignalMessage(msg, mode);
       },
+      onSubscribedReady: () => {
+        // Guaranteed SUBACK confirmed! Send 1-RTT HELLO_WAKE immediately!
+        void this.sendHelloWake();
+      },
       onConnectionChange: (connected, brokers) => {
         this.callbacks.onBrokerHealth(connected, brokers);
-        if (connected && !this.authenticated) {
-          void this.sendWakeAndHandshake();
-        }
       },
     });
 
     this.signaling.start();
 
-    // Continuous Wake-Ping & Auto-Reconnect Watchdog (retries every 2.5s until connected, and monitors health)
-    this.watchdogTimer = window.setInterval(() => {
-      if (!this.signaling || !this.signaling.isAnyConnected()) return;
+    // Fast 1.8s retry until phone replies HELLO_ACK, plus lightweight keepalive once connected
+    this.retryTimer = window.setInterval(() => {
+      if (!this.signaling || !this.signaling.isSubscribedAndReady()) return;
 
       if (!this.authenticated) {
-        void this.sendWakeAndHandshake();
+        void this.sendHelloWake();
       } else {
-        // Periodic keep-alive ping to phone
         void this.signaling.send(
           {
             type: 'PING_STATUS',
@@ -147,59 +144,79 @@ export class SentinelWebRtcController {
           },
           'boot'
         );
-
-        // If phone rebooted or recreated its session (>25s without telemetry), re-authenticate seamlessly
-        if (this.lastTelemetryAt > 0 && Date.now() - this.lastTelemetryAt > 25_000) {
-          this.authenticated = false;
-          this.lastTelemetryAt = Date.now();
-          void this.sendWakeAndHandshake();
-        }
       }
-    }, 2500);
+    }, 1800);
   }
 
-  private async sendWakeAndHandshake(): Promise<void> {
-    if (!this.signaling || this.authenticated || this.handshakeInFlight) return;
-    this.handshakeInFlight = true;
+  private async sendHelloWake(): Promise<void> {
+    if (!this.signaling || !this.bootstrapKeys || this.authenticated) return;
 
-    // Allow next retry in 2.2s if no response yet
-    window.setTimeout(() => {
-      this.handshakeInFlight = false;
-    }, 2200);
+    const clientNonce = randomHex(20);
+    const proofHex = await computeHelloWakeProof(
+      this.bootstrapKeys.bootstrapAuthRaw,
+      clientNonce,
+      this.tokenId
+    );
 
-    const saved = findPairedDeviceByCode(this.pairingCode);
-    if (saved) {
-      this.tokenId = saved.tokenId;
+    if (this.desiredStreaming && !this.pc) {
+      this.activeSessionId = randomHex(10);
+      this.pendingCandidates = [];
+      this.setupPeerConnection(this.activeSessionId);
     }
-
-    this.clientNonce = randomHex(24);
-    const intent = saved ? 'reconnect' : 'pair';
 
     await this.signaling.send(
       {
-        type: 'AUTH_INIT',
+        type: 'HELLO_WAKE',
         controllerId: this.signaling.getSenderId(),
         tokenId: this.tokenId,
-        clientNonce: this.clientNonce,
-        intent,
+        clientNonce,
+        proofHex,
+        autoStartStream: this.desiredStreaming,
+        sessionId: this.activeSessionId || randomHex(10),
+        cameraFacing: this.desiredFacing,
+        enableAudio: this.desiredAudio,
+        quality: this.desiredQuality,
         ts: Date.now(),
       },
       'boot'
     );
   }
 
+  /**
+   * Sends a serverless Push Wake Notification via ntfy.sh so even if the smartphone app
+   * is paused or closed in background, its push watchdog wakes/alerts the phone immediately.
+   */
+  public async sendServerlessPushInvitation(rawCode?: string): Promise<boolean> {
+    const code = normalizePairingCode(rawCode || this.pairingCode);
+    if (code.length !== 6) return false;
+    try {
+      const keys = await deriveBootstrapKeys(code);
+      const response = await fetch(`https://ntfy.sh/${keys.wakePushTopic}`, {
+        method: 'POST',
+        headers: {
+          Title: 'SentinelCam — Demande de connexion',
+          Priority: 'high',
+          Tags: 'camera,bell',
+        },
+        body: JSON.stringify({
+          type: 'WAKE_INVITE',
+          ts: Date.now(),
+        }),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
+      case 'HELLO_ACK':
+        await this.handleHelloAck(msg);
+        break;
+
       case 'PORTAL_STATUS':
         this.handlePortalStatus(msg);
-        break;
-
-      case 'AUTH_CHALLENGE':
-        await this.handleAuthChallenge(msg);
-        break;
-
-      case 'AUTH_OK':
-        await this.handleAuthOk(msg);
         break;
 
       case 'AUTH_ERR':
@@ -223,109 +240,42 @@ export class SentinelWebRtcController {
     }
   }
 
-  private handlePortalStatus(msg: PortalStatusMsg): void {
-    this.lastTelemetryAt = Date.now();
-    this.callbacks.onTelemetry({
-      deviceId: msg.deviceId,
-      deviceName: msg.deviceName,
-      portalState: msg.portalState,
-      paired: msg.paired,
-      pairedTokenId: msg.pairedTokenId,
-      lockoutRemainingMs: msg.lockoutRemainingMs,
-      failedAttempts: msg.failedAttempts,
-      batteryLevel: msg.batteryLevel,
-      isCharging: msg.isCharging,
-      batteryTempC: msg.batteryTempC,
-      networkType: msg.networkType,
-      cameraFacing: msg.cameraFacing,
-      micEnabled: msg.micEnabled,
-      uptimeSec: msg.uptimeSec,
-      updatedAt: Date.now(),
-    });
+  private async handleHelloAck(msg: HelloAckMsg): Promise<void> {
+    if (!this.signaling || !this.bootstrapKeys) return;
 
-    if (msg.portalState === 'locked') {
-      this.callbacks.onStateChange('locked');
-    } else if (this.authenticated && !this.pc && !this.desiredStreaming) {
-      this.callbacks.onStateChange('standby');
-    }
-  }
-
-  private async handleAuthChallenge(msg: AuthChallengeMsg): Promise<void> {
-    if (!this.signaling) return;
-
-    const saved = findPairedDeviceByCode(this.pairingCode);
-    let pairedKeyHex: string;
-    let sendPairingKeyHex: string | undefined;
-
-    if (msg.isFirstPair || !saved || !saved.pairedKeyHex) {
-      pairedKeyHex = await generateDerivedPairingKey(msg.deviceSalt, this.tokenId);
-      sendPairingKeyHex = pairedKeyHex;
-      this.pendingIsNewPair = true;
-    } else {
-      pairedKeyHex = saved.pairedKeyHex;
-      this.pendingIsNewPair = false;
-    }
-
-    const proofHex = await computeClientChallengeProof(
-      pairedKeyHex,
-      this.clientNonce,
+    const expectedServerProof = await computeHelloAckProof(
+      this.bootstrapKeys.bootstrapAuthRaw,
+      msg.echoClientNonce,
       msg.serverNonce,
-      this.tokenId,
       msg.deviceId
     );
 
-    const sessionKey = await deriveSessionAesKey(pairedKeyHex, this.clientNonce, msg.serverNonce);
-    this.signaling.setSessionKey(sessionKey);
-
-    this.pendingPairCandidate = {
-      deviceId: msg.deviceId,
-      deviceName: msg.deviceName,
-      serverNonce: msg.serverNonce,
-      pairedKeyHex,
-    };
-
-    await this.signaling.send(
-      {
-        type: 'AUTH_RESPONSE',
-        controllerId: this.signaling.getSenderId(),
-        tokenId: this.tokenId,
-        pairingKeyHex: sendPairingKeyHex,
-        proofHex,
-        clientNonce: this.clientNonce,
-        ts: Date.now(),
-      },
-      'boot'
-    );
-  }
-
-  private async handleAuthOk(msg: AuthOkMsg): Promise<void> {
-    if (!this.pendingPairCandidate) return;
-
-    const { deviceId, pairedKeyHex, serverNonce } = this.pendingPairCandidate;
-    const expectedServerProof = await computeServerChallengeProof(
-      pairedKeyHex,
-      this.clientNonce,
-      serverNonce,
-      this.tokenId,
-      deviceId
-    );
-
     if (!constantTimeEqualHex(expectedServerProof, msg.serverProofHex)) {
-      this.callbacks.onLog('security', 'Alerte sécurité : preuve serveur invalide.');
       return;
     }
 
-    const localSas = await computeSas(this.pairingCode, this.tokenId, msg.deviceId, pairedKeyHex);
+    const sessionKey = await deriveFastSessionKey(
+      this.bootstrapKeys.bootstrapAuthRaw,
+      msg.echoClientNonce,
+      msg.serverNonce,
+      msg.deviceId
+    );
+    this.signaling.setSessionKey(sessionKey);
+
+    const localSas = await computeSas(
+      this.pairingCode,
+      this.tokenId,
+      msg.deviceId,
+      this.bootstrapKeys.bootstrapAuthRaw
+    );
+
     this.authenticated = true;
-    this.handshakeInFlight = false;
-    this.lastTelemetryAt = Date.now();
 
     savePairedDevice({
       pairingCode: this.pairingCode,
       deviceId: msg.deviceId,
       deviceName: msg.deviceName,
       tokenId: this.tokenId,
-      pairedKeyHex,
       sasCode: localSas.sasCode,
       sasSymbols: localSas.sasSymbols,
       pairedAt: findPairedDeviceByCode(this.pairingCode)?.pairedAt ?? Date.now(),
@@ -354,34 +304,41 @@ export class SentinelWebRtcController {
       deviceId: msg.deviceId,
       sasCode: localSas.sasCode,
       sasSymbols: localSas.sasSymbols,
-      isNewPairing: this.pendingIsNewPair,
     });
 
-    // If stream was active before a network drop, automatically resume live video!
-    if (this.desiredStreaming && !this.pc) {
-      this.callbacks.onLog('info', 'Reprise automatique du flux caméra direct...');
-      await this.startCameraStream(this.desiredFacing, this.desiredAudio, this.desiredQuality);
-    } else if (!this.pc) {
+    if (!this.desiredStreaming && !this.pc) {
       this.callbacks.onStateChange('standby');
-      this.callbacks.onLog('security', `Connecté à ${msg.deviceName} (SAS ${localSas.sasCode})`);
+    }
+  }
+
+  private handlePortalStatus(msg: PortalStatusMsg): void {
+    this.callbacks.onTelemetry({
+      deviceId: msg.deviceId,
+      deviceName: msg.deviceName,
+      portalState: msg.portalState,
+      paired: msg.paired,
+      pairedTokenId: msg.pairedTokenId,
+      lockoutRemainingMs: msg.lockoutRemainingMs,
+      failedAttempts: msg.failedAttempts,
+      batteryLevel: msg.batteryLevel,
+      isCharging: msg.isCharging,
+      batteryTempC: msg.batteryTempC,
+      networkType: msg.networkType,
+      cameraFacing: msg.cameraFacing,
+      micEnabled: msg.micEnabled,
+      uptimeSec: msg.uptimeSec,
+      updatedAt: Date.now(),
+    });
+
+    if (msg.portalState === 'locked') {
+      this.callbacks.onStateChange('locked');
+    } else if (this.authenticated && !this.pc && !this.desiredStreaming) {
+      this.callbacks.onStateChange('standby');
     }
   }
 
   private handleAuthErr(msg: AuthErrMsg): void {
     this.authenticated = false;
-    this.handshakeInFlight = false;
-
-    // If local stored token became stale (e.g. phone app reinstalled), clear stale token and auto-repair!
-    if (msg.reason === 'INVALID_PROOF' || msg.reason === 'ALREADY_PAIRED') {
-      const existing = findPairedDeviceByCode(this.pairingCode);
-      if (existing) {
-        removePairedDevice(this.pairingCode);
-        this.tokenId = getOrCreateControllerTokenId();
-        void this.sendWakeAndHandshake();
-        return;
-      }
-    }
-
     if (msg.reason === 'LOCKED_OUT') {
       this.callbacks.onStateChange('locked');
     }
@@ -400,6 +357,7 @@ export class SentinelWebRtcController {
 
     if (!this.signaling || !this.authenticated) {
       this.callbacks.onStateChange('connecting');
+      void this.sendHelloWake();
       return;
     }
 
@@ -408,10 +366,6 @@ export class SentinelWebRtcController {
     this.activeSessionId = randomHex(10);
     this.pendingCandidates = [];
     this.callbacks.onStateChange('connecting');
-    this.callbacks.onLog(
-      'info',
-      `Allumage de la caméra ${cameraFacing === 'front' ? 'avant (selfie)' : 'arrière'}...`
-    );
 
     this.setupPeerConnection(this.activeSessionId);
 
@@ -427,7 +381,6 @@ export class SentinelWebRtcController {
       'sess'
     );
 
-    // Automatic stream retry if SDP offer didn't arrive within 6s (e.g. mobile cell handover)
     if (this.streamRecoverTimer) window.clearTimeout(this.streamRecoverTimer);
     const currentSid = this.activeSessionId;
     this.streamRecoverTimer = window.setTimeout(() => {
@@ -439,7 +392,7 @@ export class SentinelWebRtcController {
       ) {
         void this.startCameraStream(this.desiredFacing, this.desiredAudio, this.desiredQuality);
       }
-    }, 6500);
+    }, 5500);
   }
 
   public async stopCameraStream(): Promise<void> {
@@ -462,7 +415,6 @@ export class SentinelWebRtcController {
     this.closePeerConnectionOnly();
     if (this.authenticated) {
       this.callbacks.onStateChange('standby');
-      this.callbacks.onLog('info', 'Caméra mise en veille (pont d’écoute toujours actif).');
     }
   }
 
@@ -553,29 +505,35 @@ export class SentinelWebRtcController {
           this.streamRecoverTimer = null;
         }
         this.callbacks.onStateChange('streaming');
-        this.callbacks.onLog('security', 'Flux vidéo direct établi (DTLS-SRTP).');
         this.startStatsMonitor();
       } else if (state === 'failed' || state === 'disconnected') {
         this.stopStatsMonitor();
         if (this.desiredStreaming && this.pc === pc) {
-          this.callbacks.onLog('warn', 'Changement réseau détecté — reconnexion vidéo automatique...');
           window.setTimeout(() => {
             if (this.desiredStreaming && this.pc === pc && pc.connectionState !== 'connected') {
               this.closePeerConnectionOnly();
               if (this.authenticated) {
                 void this.startCameraStream(this.desiredFacing, this.desiredAudio, this.desiredQuality);
               } else {
-                void this.sendWakeAndHandshake();
+                void this.sendHelloWake();
               }
             }
-          }, 2500);
+          }, 2200);
         }
       }
     };
   }
 
   private async handleSdpOffer(msg: SdpOfferMsg): Promise<void> {
-    if (!this.pc || !this.signaling || msg.sessionId !== this.activeSessionId) return;
+    if (!this.signaling) return;
+
+    // Accept piggybacked SDP offer even if activeSessionId was adopted on the fly
+    if (!this.pc || msg.sessionId !== this.activeSessionId) {
+      this.closePeerConnectionOnly();
+      this.activeSessionId = msg.sessionId;
+      this.setupPeerConnection(msg.sessionId);
+    }
+    if (!this.pc) return;
 
     this.remoteSdpFingerprint = msg.fingerprint || extractSdpFingerprint(msg.sdp);
 
@@ -614,7 +572,6 @@ export class SentinelWebRtcController {
         sessionId: msg.sessionId,
         sdp: answerSdp,
         fingerprint: this.localSdpFingerprint,
-        ts: Date.now(),
       },
       'sess'
     );
@@ -648,8 +605,6 @@ export class SentinelWebRtcController {
       if (this.authenticated) {
         this.callbacks.onStateChange('standby');
       }
-    } else if (msg.state === 'error' && msg.error) {
-      this.callbacks.onLog('warn', `Caméra distante : ${msg.error}`);
     }
   }
 
@@ -796,9 +751,9 @@ export class SentinelWebRtcController {
 
   public disconnect(): void {
     this.desiredStreaming = false;
-    if (this.watchdogTimer !== null) {
-      window.clearInterval(this.watchdogTimer);
-      this.watchdogTimer = null;
+    if (this.retryTimer !== null) {
+      window.clearInterval(this.retryTimer);
+      this.retryTimer = null;
     }
     if (this.streamRecoverTimer !== null) {
       window.clearTimeout(this.streamRecoverTimer);
@@ -810,7 +765,6 @@ export class SentinelWebRtcController {
       this.signaling = null;
     }
     this.authenticated = false;
-    this.handshakeInFlight = false;
     this.callbacks.onStateChange('offline');
   }
 }
