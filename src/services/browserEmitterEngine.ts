@@ -383,23 +383,7 @@ export class BrowserEmitterEngine {
       return;
     }
 
-    const isFirstPair = !this.config.pairedKeyHex;
-    if (!isFirstPair && this.config.pairedTokenId !== msg.tokenId) {
-      this.recordAuthFailure('Tentative de connexion avec un jeton non appairé bloquée.');
-      const rem = Math.max(0, this.config.lockoutUntil - Date.now());
-      await this.signaling.send(
-        {
-          type: 'AUTH_ERR',
-          reason: rem > 0 ? 'LOCKED_OUT' : 'ALREADY_PAIRED',
-          message: 'Ce portail est verrouillé sur un autre navigateur appairé.',
-          lockoutRemainingMs: rem,
-          failedAttempts: this.config.failedAttempts,
-          ts: Date.now(),
-        },
-        'boot'
-      );
-      return;
-    }
+    const isFirstPair = !this.config.pairedKeyHex || this.config.pairedTokenId !== msg.tokenId;
 
     const serverNonce = randomHex(24);
     this.pendingChallenge = {

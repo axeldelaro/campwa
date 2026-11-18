@@ -1,5 +1,7 @@
 -keep class org.webrtc.** { *; }
 -dontwarn org.webrtc.**
--keep class org.eclipse.paho.** { *; }
--dontwarn org.eclipse.paho.**
+-keep class okhttp3.** { *; }
+-keep class okio.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**
 -keep class com.sentinelcam.app.** { *; }

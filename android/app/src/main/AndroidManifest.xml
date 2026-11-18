@@ -14,6 +14,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
     <!-- Continuous Background Execution & Android 11-15 ForegroundService Types -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -26,6 +27,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
+        android:name=".SentinelApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -59,7 +61,20 @@
                 android:value="User-authorized encrypted WebRTC continuous camera portal with persistent stop action" />
         </service>
 
-        <!-- Automatic Restart on Device Reboot or App Update -->
+        <!-- Self-Healing Persisted JobScheduler Watchdog -->
+        <service
+            android:name=".service.PortalWatchdogJobService"
+            android:enabled="true"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- Periodic Doze Keep-Alive Pulse Receiver -->
+        <receiver
+            android:name=".receiver.KeepAliveReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- Automatic Restart on Device Reboot, Unlock, or App Update -->
         <receiver
             android:name=".receiver.BootReceiver"
             android:enabled="true"
@@ -67,6 +82,8 @@
             android:directBootAware="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.USER_PRESENT" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>

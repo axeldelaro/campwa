@@ -122,18 +122,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: "SentinelCam v1.0.${{ github.run_number }} (Signed Android APK)"
+          tag_name: v2.0.${{ github.run_number }}
+          name: "SentinelCam v2.0.${{ github.run_number }} (Pont Continu 24h/24 & Zero-Crash APK)"
           body: |
-            ### 🛡️ SentinelCam — Application Émettrice Android Signée (`v1.0.${{ github.run_number }}`)
+            ### 🛡️ SentinelCam v2.0 — Pont Continu 24h/24 & Architecture Zéro-Crash (`v2.0.${{ github.run_number }}`)
 
             Téléchargez et installez directement **`SentinelCam.apk`** sur votre smartphone Android (Android 8.0 à Android 15+).
 
-            #### Caractéristiques incluses :
-            - **Service Continu Natif (`CameraForegroundService`)** : Maintient l'écoute chiffrée même écran verrouillé ou lorsque d'autres applications sont utilisées (`PARTIAL_WAKE_LOCK` + `WifiLock` + exemption Doze).
-            - **Capture Matérielle à la Demande (`Camera2Enumerator` + `SurfaceTextureHelper`)** : Capteur caméra 100 % éteint en veille (0 mA), réveil instantané (< 2s) sur demande du Poste de Contrôle Web.
-            - **Sécurité Cryptographique Bout-en-Bout** : PBKDF2-SHA256 (150 000 itérations) + HKDF-SHA256 + Challenge mutuel HMAC-SHA256 + AES-256-GCM + WebRTC DTLS-SRTP + vérification SAS anti-MitM.
-            - **Transparence Système** : Notification permanente avec bouton d'arrêt rapide **« Couper le portail »**.
+            #### Nouveautés majeures v2.0 :
+            - **Zéro Force-Close (Android 12 à 15+)** : Moteur WebRTC isolé sur thread dédié + singleton JNI (aucun plantage à la fermeture ou au redémarrage) + promotion sécurisée du ForegroundService + bouclier anti-crash global.
+            - **Pont Continu Auto-Réparateur (`OkHttp WSS` + `JobScheduler` + `KeepAliveReceiver`)** : Triple connexion simultanée aux relais mondiaux (`EMQX`, `HiveMQ`, `Mosquitto`), maintien actif écran éteint / application fermée et relance automatique en tâche de fond.
+            - **Interface Simplifiée 1-Clic** : Saisie du code à 6 caractères sur le site web avec connexion et réveil caméra automatiques.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

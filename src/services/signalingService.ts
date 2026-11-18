@@ -8,8 +8,12 @@ export const SIGNALING_BROKERS = [
     url: 'wss://broker.emqx.io:8084/mqtt',
   },
   {
-    name: 'HiveMQ Cloud Public WSS',
+    name: 'HiveMQ Public WSS',
     url: 'wss://broker.hivemq.com:8884/mqtt',
+  },
+  {
+    name: 'Mosquitto Eclipse WSS',
+    url: 'wss://test.mosquitto.org:8081/mqtt',
   },
 ] as const;
 
@@ -30,11 +34,9 @@ interface SignalingOptions {
 }
 
 /**
- * Dual-Active Serverless WebRTC Signaling Engine over Secure MQTT WebSockets (WSS).
- * - Connects simultaneously to multiple global public MQTT WSS clusters for zero single-point-of-failure.
- * - Encrypts 100% of packets with AES-256-GCM (bootstrap key or ephemeral HKDF session key).
- * - Deduplicates incoming envelopes via sliding LRU window & enforces ±120s replay defense.
- * - Handles infinite automatic reconnection & immediate Wi-Fi <-> 4G/5G network handoff.
+ * Triple-Active Redundant Serverless WebRTC Signaling Engine over Secure MQTT WebSockets (WSS).
+ * Connects simultaneously to EMQX, HiveMQ, and Mosquitto so packet delivery is instant and
+ * immune to single-broker outages or mobile network transitions.
  */
 export class EncryptedSignalingChannel {
   private readonly role: SignalingRole;
@@ -55,6 +57,7 @@ export class EncryptedSignalingChannel {
   private readonly presenceTopic: string;
 
   private readonly handleOnlineBound: () => void;
+  private readonly handleVisibilityBound: () => void;
 
   constructor(options: SignalingOptions) {
     this.role = options.role;
@@ -75,8 +78,15 @@ export class EncryptedSignalingChannel {
     }
 
     this.handleOnlineBound = () => this.forceReconnectAll();
+    this.handleVisibilityBound = () => {
+      if (document.visibilityState === 'visible') {
+        this.forceReconnectAll();
+      }
+    };
+
     if (typeof window !== 'undefined') {
       window.addEventListener('online', this.handleOnlineBound);
+      document.addEventListener('visibilitychange', this.handleVisibilityBound);
     }
   }
 
@@ -96,9 +106,9 @@ export class EncryptedSignalingChannel {
       const client = mqtt.connect(broker.url, {
         clientId,
         clean: true,
-        keepalive: 25,
-        reconnectPeriod: 2500,
-        connectTimeout: 10_000,
+        keepalive: 20,
+        reconnectPeriod: 1800,
+        connectTimeout: 8_000,
         protocolVersion: 4,
       });
 
@@ -140,7 +150,7 @@ export class EncryptedSignalingChannel {
       });
 
       client.on('error', () => {
-        // Handled gracefully by MQTT automatic reconnect loop
+        // Handled automatically by MQTT reconnect loop
       });
 
       client.on('message', (_topic, payload) => {
@@ -196,6 +206,7 @@ export class EncryptedSignalingChannel {
     this.destroyed = true;
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', this.handleOnlineBound);
+      document.removeEventListener('visibilitychange', this.handleVisibilityBound);
     }
     for (const entry of this.clients) {
       try {
@@ -228,7 +239,7 @@ export class EncryptedSignalingChannel {
     }
     this.seenEnvelopeIds.add(id);
     this.seenQueue.push(id);
-    if (this.seenQueue.length > 400) {
+    if (this.seenQueue.length > 500) {
       const oldest = this.seenQueue.shift();
       if (oldest) this.seenEnvelopeIds.delete(oldest);
     }

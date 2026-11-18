@@ -47,7 +47,10 @@ class SentinelNativePlugin : Plugin() {
 
     private val serviceStateListener: () -> Unit = {
         activity?.runOnUiThread {
-            notifyListeners("portalStateChanged", buildPortalStateObject())
+            try {
+                notifyListeners("portalStateChanged", buildPortalStateObject())
+            } catch (_: Throwable) {
+            }
         }
     }
 
@@ -69,14 +72,18 @@ class SentinelNativePlugin : Plugin() {
 
     @PluginMethod
     fun requestAllPermissions(call: PluginCall) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            requestPermissionForAliases(
-                arrayOf("cameraAndMic", "notifications"),
-                call,
-                "permissionsCallback"
-            )
-        } else {
-            requestPermissionForAlias("cameraAndMic", call, "permissionsCallback")
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                requestPermissionForAliases(
+                    arrayOf("cameraAndMic", "notifications"),
+                    call,
+                    "permissionsCallback"
+                )
+            } else {
+                requestPermissionForAlias("cameraAndMic", call, "permissionsCallback")
+            }
+        } catch (_: Throwable) {
+            call.resolve(buildPermissionStatusObject())
         }
     }
 
@@ -97,13 +104,13 @@ class SentinelNativePlugin : Plugin() {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(intent)
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 try {
                     val fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                     context.startActivity(fallback)
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
                 }
             }
         }
@@ -113,21 +120,39 @@ class SentinelNativePlugin : Plugin() {
         call.resolve(ret)
     }
 
+    @SuppressLint("BatteryLife")
     @PluginMethod
     fun completeOnboardingAndStart(call: PluginCall) {
         val autoBoot = call.getBoolean("autoStartOnBoot", true) ?: true
         prefs.autoStartOnBoot = autoBoot
         prefs.onboardingCompleted = true
         prefs.userManuallyStopped = false
-        prefs.appendLog("security", "Consentement initial validé — activation du portail continu.")
-        CameraForegroundService.startPortal(context)
+        prefs.appendLog("security", "Portail continu activé.")
+
+        CameraForegroundService.startFromUi(context)
+
+        // Prompt Doze exemption automatically if not yet exempted so background persistence never drops
+        try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val pkg = context.packageName
+            if (!pm.isIgnoringBatteryOptimizations(pkg)) {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$pkg")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            }
+        } catch (_: Throwable) {
+        }
+
         call.resolve(buildPortalStateObject())
     }
 
     @PluginMethod
     fun startPortalService(call: PluginCall) {
+        prefs.onboardingCompleted = true
         prefs.userManuallyStopped = false
-        CameraForegroundService.startPortal(context)
+        CameraForegroundService.startFromUi(context)
         call.resolve(buildPortalStateObject())
     }
 
@@ -141,18 +166,14 @@ class SentinelNativePlugin : Plugin() {
     @PluginMethod
     fun regeneratePairingCode(call: PluginCall) {
         prefs.regeneratePairingCode()
-        if (CameraForegroundService.isRunning) {
-            CameraForegroundService.reloadSignaling(context)
-        }
+        CameraForegroundService.reloadSignaling(context)
         call.resolve(buildPortalStateObject())
     }
 
     @PluginMethod
     fun resetPairedController(call: PluginCall) {
         prefs.resetPairingOnly()
-        if (CameraForegroundService.isRunning) {
-            CameraForegroundService.reloadSignaling(context)
-        }
+        CameraForegroundService.reloadSignaling(context)
         call.resolve(buildPortalStateObject())
     }
 
@@ -206,7 +227,11 @@ class SentinelNativePlugin : Plugin() {
             else -> "standby"
         }
 
-        val batIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val batIntent = try {
+            context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        } catch (_: Throwable) {
+            null
+        }
         val level = batIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
         val scale = batIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
         val status = batIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
@@ -232,7 +257,7 @@ class SentinelNativePlugin : Plugin() {
             put("pairingCode", prefs.pairingCode)
             put("deviceId", prefs.deviceId)
             put("deviceName", prefs.deviceName)
-            put("paired", !prefs.pairedKeyHex.isNullOrEmpty())
+            put("paired", prefs.hasAnyAuthorizedToken())
             put("pairedTokenId", prefs.pairedTokenId)
             put("sasCode", prefs.sasCode)
             put("sasSymbols", prefs.sasSymbols)

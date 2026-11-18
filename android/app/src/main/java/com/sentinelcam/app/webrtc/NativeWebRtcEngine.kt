@@ -28,12 +28,59 @@ import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.ByteBuffer
+import java.util.concurrent.Executors
 
 /**
- * Headless Hardware WebRTC Capture Engine for Android ForegroundService.
- * Uses Camera2Enumerator + Offscreen SurfaceTextureHelper (EGL) so capture continues
- * uninterrupted even when MainActivity is closed, another app is active, or the screen is locked.
- * Physically releases Camera2 when stopped to ensure 0 mA idle camera battery usage.
+ * Process-wide singleton WebRTC Native Runtime so restarting CameraForegroundService
+ * never re-initializes or disposes JNI globals (eliminates SIGSEGV on service restart).
+ */
+private object SharedWebRtcRuntime {
+    private var initialized = false
+    var eglBase: EglBase? = null
+        private set
+    var factory: PeerConnectionFactory? = null
+        private set
+
+    @Synchronized
+    fun ensureReady(appContext: Context): Pair<EglBase, PeerConnectionFactory>? {
+        if (initialized && eglBase != null && factory != null) {
+            return Pair(eglBase!!, factory!!)
+        }
+        return try {
+            PeerConnectionFactory.initialize(
+                PeerConnectionFactory.InitializationOptions.builder(appContext)
+                    .setEnableInternalTracer(false)
+                    .createInitializationOptions()
+            )
+            val rootEgl = EglBase.create()
+            val encoderFactory = DefaultVideoEncoderFactory(rootEgl.eglBaseContext, true, true)
+            val decoderFactory = DefaultVideoDecoderFactory(rootEgl.eglBaseContext)
+            val audioModule = JavaAudioDeviceModule.builder(appContext)
+                .setUseHardwareAcousticEchoCanceler(true)
+                .setUseHardwareNoiseSuppressor(true)
+                .createAudioDeviceModule()
+
+            val pcFactory = PeerConnectionFactory.builder()
+                .setAudioDeviceModule(audioModule)
+                .setVideoEncoderFactory(encoderFactory)
+                .setVideoDecoderFactory(decoderFactory)
+                .createPeerConnectionFactory()
+
+            audioModule.release()
+            eglBase = rootEgl
+            factory = pcFactory
+            initialized = true
+            Pair(rootEgl, pcFactory)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+}
+
+/**
+ * Thread-safe Headless Hardware WebRTC Capture Engine.
+ * All native WebRTC & Camera2 operations are strictly serialized onto a dedicated single-thread
+ * executor (`rtcExecutor`) to prevent JNI race conditions and re-entrant callback crashes.
  */
 class NativeWebRtcEngine(
     context: Context,
@@ -42,8 +89,9 @@ class NativeWebRtcEngine(
     private val onStreamStateChanged: (isStreaming: Boolean, error: String?) -> Unit
 ) {
     private val appContext = context.applicationContext
-    private var eglBase: EglBase? = null
-    private var peerConnectionFactory: PeerConnectionFactory? = null
+    private val rtcExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "SentinelWebRtcWorker").apply { isDaemon = true }
+    }
 
     private var peerConnection: PeerConnection? = null
     private var dataChannel: DataChannel? = null
@@ -70,43 +118,24 @@ class NativeWebRtcEngine(
     var isStreamingActive: Boolean = false
         private set
 
-    @Synchronized
-    private fun ensureFactoryInitialized() {
-        if (peerConnectionFactory != null) return
-
-        PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions.builder(appContext)
-                .setEnableInternalTracer(false)
-                .createInitializationOptions()
-        )
-
-        val rootEgl = EglBase.create()
-        eglBase = rootEgl
-
-        val encoderFactory = DefaultVideoEncoderFactory(rootEgl.eglBaseContext, true, true)
-        val decoderFactory = DefaultVideoDecoderFactory(rootEgl.eglBaseContext)
-        val audioModule = JavaAudioDeviceModule.builder(appContext)
-            .setUseHardwareAcousticEchoCanceler(true)
-            .setUseHardwareNoiseSuppressor(true)
-            .createAudioDeviceModule()
-
-        peerConnectionFactory = PeerConnectionFactory.builder()
-            .setAudioDeviceModule(audioModule)
-            .setVideoEncoderFactory(encoderFactory)
-            .setVideoDecoderFactory(decoderFactory)
-            .createPeerConnectionFactory()
-
-        audioModule.release()
-    }
-
-    @Synchronized
     fun startStream(
         sessionId: String,
         facing: String = "front",
         enableAudio: Boolean = false,
         quality: String = "hd"
     ) {
-        stopStream()
+        rtcExecutor.execute {
+            startStreamOnWorker(sessionId, facing, enableAudio, quality)
+        }
+    }
+
+    private fun startStreamOnWorker(
+        sessionId: String,
+        facing: String,
+        enableAudio: Boolean,
+        quality: String
+    ) {
+        stopStreamOnWorker()
 
         val hasCamPerm = ContextCompat.checkSelfPermission(
             appContext,
@@ -114,14 +143,17 @@ class NativeWebRtcEngine(
         ) == PackageManager.PERMISSION_GRANTED
 
         if (!hasCamPerm) {
-            onStreamStateChanged(false, "Permission CAMERA non accordée sur Android.")
+            onStreamStateChanged(false, "Permission caméra requise sur le smartphone.")
             return
         }
 
         try {
-            ensureFactoryInitialized()
-            val factory = peerConnectionFactory ?: return
-            val rootEgl = eglBase ?: return
+            val runtime = SharedWebRtcRuntime.ensureReady(appContext)
+            if (runtime == null) {
+                onStreamStateChanged(false, "Initialisation matérielle WebRTC impossible.")
+                return
+            }
+            val (rootEgl, factory) = runtime
 
             currentSessionId = sessionId
             currentFacing = facing
@@ -129,12 +161,12 @@ class NativeWebRtcEngine(
 
             val capturer = createCameraCapturer(facing)
             if (capturer == null) {
-                onStreamStateChanged(false, "Aucun capteur caméra disponible.")
+                onStreamStateChanged(false, "Aucun capteur caméra détecté.")
                 return
             }
             videoCapturer = capturer
 
-            val texHelper = SurfaceTextureHelper.create("SentinelCamCapture", rootEgl.eglBaseContext)
+            val texHelper = SurfaceTextureHelper.create("SentinelCaptureTex", rootEgl.eglBaseContext)
             surfaceTextureHelper = texHelper
 
             val vSource = factory.createVideoSource(capturer.isScreencast)
@@ -149,23 +181,26 @@ class NativeWebRtcEngine(
             vTrack.setEnabled(true)
             videoTrack = vTrack
 
-            // Optional Microphone Track
             val hasAudioPerm = ContextCompat.checkSelfPermission(
                 appContext,
                 Manifest.permission.RECORD_AUDIO
             ) == PackageManager.PERMISSION_GRANTED
 
             if (hasAudioPerm) {
-                val aSource = factory.createAudioSource(MediaConstraints())
-                audioSource = aSource
-                val aTrack = factory.createAudioTrack("ARDAMSa0", aSource)
-                aTrack.setEnabled(enableAudio)
-                audioTrack = aTrack
+                try {
+                    val aSource = factory.createAudioSource(MediaConstraints())
+                    audioSource = aSource
+                    val aTrack = factory.createAudioTrack("ARDAMSa0", aSource)
+                    aTrack.setEnabled(enableAudio)
+                    audioTrack = aTrack
+                } catch (_: Throwable) {
+                }
             }
 
             val iceServers = listOf(
                 PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
                 PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+                PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
                 PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer()
             )
 
@@ -180,10 +215,13 @@ class NativeWebRtcEngine(
                 override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
 
                 override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                    if (state == PeerConnection.IceConnectionState.FAILED ||
-                        state == PeerConnection.IceConnectionState.CLOSED
-                    ) {
-                        stopStream()
+                    // CRITICAL: Never close PeerConnection synchronously inside C++ callback!
+                    if (state == PeerConnection.IceConnectionState.FAILED) {
+                        rtcExecutor.execute {
+                            if (currentSessionId == sessionId) {
+                                stopStreamOnWorker()
+                            }
+                        }
                     }
                 }
 
@@ -209,8 +247,8 @@ class NativeWebRtcEngine(
             })
 
             if (pc == null) {
-                stopStream()
-                onStreamStateChanged(false, "Échec création PeerConnection native.")
+                stopStreamOnWorker()
+                onStreamStateChanged(false, "Impossible de créer la session WebRTC.")
                 return
             }
             peerConnection = pc
@@ -232,185 +270,215 @@ class NativeWebRtcEngine(
             pc.createOffer(object : SdpObserver {
                 override fun onCreateSuccess(desc: SessionDescription?) {
                     if (desc == null) return
-                    pc.setLocalDescription(object : SdpObserver {
-                        override fun onCreateSuccess(p0: SessionDescription?) {}
-                        override fun onSetSuccess() {
-                            val sdp = desc.description
-                            val fp = CryptoProtocol.extractSdpFingerprint(sdp)
-                            onLocalOfferReady(sessionId, sdp, fp)
-                        }
-                        override fun onCreateFailure(err: String?) {}
-                        override fun onSetFailure(err: String?) {}
-                    }, desc)
+                    rtcExecutor.execute {
+                        val activePc = peerConnection ?: return@execute
+                        if (currentSessionId != sessionId) return@execute
+                        activePc.setLocalDescription(object : SdpObserver {
+                            override fun onCreateSuccess(p0: SessionDescription?) {}
+                            override fun onSetSuccess() {
+                                val sdp = desc.description
+                                val fp = CryptoProtocol.extractSdpFingerprint(sdp)
+                                onLocalOfferReady(sessionId, sdp, fp)
+                            }
+                            override fun onCreateFailure(err: String?) {}
+                            override fun onSetFailure(err: String?) {}
+                        }, desc)
+                    }
                 }
 
                 override fun onSetSuccess() {}
                 override fun onCreateFailure(error: String?) {
-                    onStreamStateChanged(false, error ?: "Erreur SDP Offer")
+                    rtcExecutor.execute {
+                        onStreamStateChanged(false, error ?: "Erreur création SDP")
+                    }
                 }
                 override fun onSetFailure(error: String?) {}
             }, offerConstraints)
 
-        } catch (e: Exception) {
-            stopStream()
-            onStreamStateChanged(false, e.message ?: "Erreur matérielle Camera2")
+        } catch (t: Throwable) {
+            stopStreamOnWorker()
+            onStreamStateChanged(false, t.message ?: "Erreur ouverture caméra")
         }
     }
 
-    @Synchronized
     fun applyRemoteAnswer(sessionId: String, sdp: String) {
-        val pc = peerConnection ?: return
-        if (sessionId != currentSessionId) return
-        val answer = SessionDescription(SessionDescription.Type.ANSWER, sdp)
-        pc.setRemoteDescription(object : SdpObserver {
-            override fun onCreateSuccess(p0: SessionDescription?) {}
-            override fun onSetSuccess() {}
-            override fun onCreateFailure(p0: String?) {}
-            override fun onSetFailure(p0: String?) {}
-        }, answer)
-    }
-
-    @Synchronized
-    fun addRemoteIceCandidate(sessionId: String, candidate: String, sdpMid: String?, sdpMLineIndex: Int) {
-        val pc = peerConnection ?: return
-        if (sessionId != currentSessionId) return
-        try {
-            pc.addIceCandidate(IceCandidate(sdpMid, sdpMLineIndex, candidate))
-        } catch (_: Exception) {
+        rtcExecutor.execute {
+            try {
+                val pc = peerConnection ?: return@execute
+                if (sessionId != currentSessionId) return@execute
+                val answer = SessionDescription(SessionDescription.Type.ANSWER, sdp)
+                pc.setRemoteDescription(object : SdpObserver {
+                    override fun onCreateSuccess(p0: SessionDescription?) {}
+                    override fun onSetSuccess() {}
+                    override fun onCreateFailure(p0: String?) {}
+                    override fun onSetFailure(p0: String?) {}
+                }, answer)
+            } catch (_: Throwable) {
+            }
         }
     }
 
-    @Synchronized
-    fun switchCamera(targetFacing: String) {
-        val capturer = videoCapturer ?: return
-        if (targetFacing == currentFacing) return
-        val enumerator = getCameraEnumerator()
-        val targetDevice = findCameraDeviceName(enumerator, preferFront = targetFacing == "front") ?: return
-
-        capturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
-            override fun onCameraSwitchDone(isFrontCamera: Boolean) {
-                currentFacing = if (isFrontCamera) "front" else "back"
+    fun addRemoteIceCandidate(sessionId: String, candidate: String, sdpMid: String?, sdpMLineIndex: Int) {
+        rtcExecutor.execute {
+            try {
+                val pc = peerConnection ?: return@execute
+                if (sessionId != currentSessionId) return@execute
+                pc.addIceCandidate(IceCandidate(sdpMid, sdpMLineIndex, candidate))
+            } catch (_: Throwable) {
             }
-
-            override fun onCameraSwitchError(errorDescription: String?) {}
-        }, targetDevice)
+        }
     }
 
-    @Synchronized
+    fun switchCamera(targetFacing: String) {
+        rtcExecutor.execute {
+            try {
+                val capturer = videoCapturer ?: return@execute
+                if (targetFacing == currentFacing) return@execute
+                val enumerator = getCameraEnumerator()
+                val targetDevice = findCameraDeviceName(enumerator, preferFront = targetFacing == "front")
+                    ?: return@execute
+
+                capturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+                    override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                        currentFacing = if (isFrontCamera) "front" else "back"
+                    }
+
+                    override fun onCameraSwitchError(errorDescription: String?) {}
+                }, targetDevice)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     fun setMicrophoneEnabled(enabled: Boolean) {
-        currentMicEnabled = enabled
-        audioTrack?.setEnabled(enabled)
+        rtcExecutor.execute {
+            try {
+                currentMicEnabled = enabled
+                audioTrack?.setEnabled(enabled)
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     fun sendTelemetryOverDataChannel(statusJson: JSONObject) {
-        val dc = dataChannel ?: return
-        if (dc.state() != DataChannel.State.OPEN) return
-        try {
-            val bytes = statusJson.toString().toByteArray(Charsets.UTF_8)
-            dc.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), false))
-        } catch (_: Exception) {
+        rtcExecutor.execute {
+            try {
+                val dc = dataChannel ?: return@execute
+                if (dc.state() != DataChannel.State.OPEN) return@execute
+                val bytes = statusJson.toString().toByteArray(Charsets.UTF_8)
+                dc.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), false))
+            } catch (_: Throwable) {
+            }
         }
     }
 
-    @Synchronized
     fun stopStream() {
+        rtcExecutor.execute {
+            stopStreamOnWorker()
+        }
+    }
+
+    private fun stopStreamOnWorker() {
         val wasStreaming = isStreamingActive
         isStreamingActive = false
         currentSessionId = ""
 
         try {
             videoCapturer?.stopCapture()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
         try {
             videoCapturer?.dispose()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
         videoCapturer = null
 
         try {
-            videoTrack?.dispose()
-        } catch (_: Exception) {
-        }
-        videoTrack = null
-
-        try {
-            videoSource?.dispose()
-        } catch (_: Exception) {
-        }
-        videoSource = null
-
-        try {
-            surfaceTextureHelper?.dispose()
-        } catch (_: Exception) {
-        }
-        surfaceTextureHelper = null
-
-        try {
-            audioTrack?.dispose()
-        } catch (_: Exception) {
-        }
-        audioTrack = null
-
-        try {
-            audioSource?.dispose()
-        } catch (_: Exception) {
-        }
-        audioSource = null
-
-        try {
             dataChannel?.close()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
         dataChannel = null
 
         try {
             peerConnection?.close()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
         peerConnection = null
+
+        try {
+            videoTrack?.dispose()
+        } catch (_: Throwable) {
+        }
+        videoTrack = null
+
+        try {
+            videoSource?.dispose()
+        } catch (_: Throwable) {
+        }
+        videoSource = null
+
+        try {
+            surfaceTextureHelper?.dispose()
+        } catch (_: Throwable) {
+        }
+        surfaceTextureHelper = null
+
+        try {
+            audioTrack?.dispose()
+        } catch (_: Throwable) {
+        }
+        audioTrack = null
+
+        try {
+            audioSource?.dispose()
+        } catch (_: Throwable) {
+        }
+        audioSource = null
 
         if (wasStreaming) {
             onStreamStateChanged(false, null)
         }
     }
 
-    @Synchronized
-    fun releaseAll() {
-        stopStream()
-        try {
-            peerConnectionFactory?.dispose()
-        } catch (_: Exception) {
+    fun shutdownEngine() {
+        rtcExecutor.execute {
+            stopStreamOnWorker()
         }
-        peerConnectionFactory = null
-
-        try {
-            eglBase?.release()
-        } catch (_: Exception) {
-        }
-        eglBase = null
+        rtcExecutor.shutdown()
     }
 
     private fun getCameraEnumerator(): CameraEnumerator {
-        return if (Camera2Enumerator.isSupported(appContext)) {
-            Camera2Enumerator(appContext)
-        } else {
+        return try {
+            if (Camera2Enumerator.isSupported(appContext)) {
+                Camera2Enumerator(appContext)
+            } else {
+                Camera1Enumerator(true)
+            }
+        } catch (_: Throwable) {
             Camera1Enumerator(true)
         }
     }
 
     private fun findCameraDeviceName(enumerator: CameraEnumerator, preferFront: Boolean): String? {
-        val names = enumerator.deviceNames
-        for (name in names) {
-            if (preferFront && enumerator.isFrontFacing(name)) return name
-            if (!preferFront && enumerator.isBackFacing(name)) return name
+        return try {
+            val names = enumerator.deviceNames
+            for (name in names) {
+                if (preferFront && enumerator.isFrontFacing(name)) return name
+                if (!preferFront && enumerator.isBackFacing(name)) return name
+            }
+            names.firstOrNull()
+        } catch (_: Throwable) {
+            null
         }
-        return names.firstOrNull()
     }
 
     private fun createCameraCapturer(facing: String): CameraVideoCapturer? {
-        val enumerator = getCameraEnumerator()
-        val deviceName = findCameraDeviceName(enumerator, preferFront = facing == "front") ?: return null
-        return enumerator.createCapturer(deviceName, null)
+        return try {
+            val enumerator = getCameraEnumerator()
+            val deviceName = findCameraDeviceName(enumerator, preferFront = facing == "front") ?: return null
+            enumerator.createCapturer(deviceName, null)
+        } catch (_: Throwable) {
+            null
+        }
     }
 }
