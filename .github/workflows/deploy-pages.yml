@@ -9,16 +9,14 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
   group: "pages-deploy"
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build Static PWA Bundle
+  build-and-deploy:
+    name: Build & Publish Static PWA to GitHub Pages
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -39,30 +37,8 @@ jobs:
           touch dist/.nojekyll
           cp dist/index.html dist/404.html
 
-      - name: Publish gh-pages branch (instant zero-config fallback)
+      - name: Deploy dist to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./dist
-          cname: ''
-
-      - name: Upload GitHub Pages Artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: ./dist
-
-  deploy:
-    name: Deploy to GitHub Pages Environment
-    needs: build
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - name: Deploy Artifact to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
