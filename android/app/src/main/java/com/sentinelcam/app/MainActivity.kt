@@ -42,7 +42,8 @@ class MainActivity : BridgeActivity() {
         super.onResume()
         try {
             val prefs = PortalPreferences(this)
-            if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
+            // Only start service if not already running — avoids redundant FGS re-promotions that could interrupt camera!
+            if (prefs.onboardingCompleted && !prefs.userManuallyStopped && !CameraForegroundService.isRunning) {
                 CameraForegroundService.startFromUi(this)
             }
         } catch (_: Throwable) {

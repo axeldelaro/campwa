@@ -143,6 +143,11 @@ class NativeWebRtcEngine(
     @Volatile
     private var shuttingDown: Boolean = false
 
+    private var lastCamWidth: Int = 1280
+    private var lastCamHeight: Int = 720
+    private var lastCamFps: Int = 30
+    private var cameraRecoveryAttempts: Int = 0
+
     fun startStream(
         sessionId: String,
         facing: String = "front",
@@ -261,7 +266,12 @@ class NativeWebRtcEngine(
         quality: String,
         allowIntercom: Boolean
     ) {
+        val hadActiveCamera = videoCapturer is CameraVideoCapturer
         stopStreamOnWorker()
+        if (hadActiveCamera) {
+            // Let Android Camera2 HAL cleanly release the hardware device before reopening
+            try { Thread.sleep(140L) } catch (_: Throwable) {}
+        }
 
         val hasCamPerm = ContextCompat.checkSelfPermission(
             appContext,
@@ -281,9 +291,11 @@ class NativeWebRtcEngine(
 
         currentFacing = facing
         currentMediaMode = "camera"
-        val width = if (quality == "sd") 640 else 1280
-        val height = if (quality == "sd") 480 else 720
-        launchSession(sessionId, capturer, width, height, 30, enableAudio, allowIntercom)
+        cameraRecoveryAttempts = 0
+        lastCamWidth = if (quality == "sd") 640 else 1280
+        lastCamHeight = if (quality == "sd") 480 else 720
+        lastCamFps = 30
+        launchSession(sessionId, capturer, lastCamWidth, lastCamHeight, lastCamFps, enableAudio, allowIntercom)
     }
 
     private fun startScreenStreamOnWorker(
@@ -688,9 +700,56 @@ class NativeWebRtcEngine(
         return try {
             val enumerator = getCameraEnumerator()
             val deviceName = findCameraDeviceName(enumerator, preferFront = facing == "front") ?: return null
-            enumerator.createCapturer(deviceName, null)
+            val eventsHandler = object : CameraVideoCapturer.CameraEventsHandler {
+                override fun onCameraError(errorDescription: String?) {
+                    attemptCameraSelfHeal("Erreur capteur caméra")
+                }
+
+                override fun onCameraDisconnected() {
+                    attemptCameraSelfHeal("Caméra interrompue par le système")
+                }
+
+                override fun onCameraFreezed(errorDescription: String?) {
+                    attemptCameraSelfHeal("Image caméra figée")
+                }
+
+                override fun onCameraOpening(cameraName: String?) {}
+                override fun onFirstFrameAvailable() {
+                    cameraRecoveryAttempts = 0
+                }
+                override fun onCameraClosed() {}
+            }
+            enumerator.createCapturer(deviceName, eventsHandler)
         } catch (_: Throwable) {
             null
+        }
+    }
+
+    private fun attemptCameraSelfHeal(reason: String) {
+        rtcExecutor.execute {
+            if (shuttingDown || !isStreamingActive || currentMediaMode != "camera") return@execute
+            val cam = videoCapturer as? CameraVideoCapturer ?: return@execute
+            if (cameraRecoveryAttempts < 3) {
+                cameraRecoveryAttempts++
+                try {
+                    cam.stopCapture()
+                } catch (_: Throwable) {
+                }
+                try {
+                    Thread.sleep(450L)
+                } catch (_: Throwable) {
+                }
+                if (!shuttingDown && isStreamingActive && currentMediaMode == "camera") {
+                    try {
+                        cam.startCapture(lastCamWidth, lastCamHeight, lastCamFps)
+                        return@execute
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+            // If local capturer couldn't recover, signal clean stop so Web auto-recovers a fresh session
+            stopStreamOnWorker()
+            onStreamStateChanged(false, reason)
         }
     }
 }

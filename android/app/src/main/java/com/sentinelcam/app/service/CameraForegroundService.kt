@@ -73,6 +73,9 @@ class CameraForegroundService : Service() {
     @Volatile
     private var mediaProjectionFgsPromoted: Boolean = false
 
+    @Volatile
+    private var lastAppliedFgType: Int = -1
+
     private data class ResolvedGrant(
         val allowed: Boolean,
         val denyReason: String? = null,
@@ -182,6 +185,7 @@ class CameraForegroundService : Service() {
         intercomActive = false
         cameraFgsPromoted = false
         mediaProjectionFgsPromoted = false
+        lastAppliedFgType = -1
         screenProjectionIntent = null
         activeViewerName = null
         activeViewerRole = null
@@ -1498,58 +1502,55 @@ class CameraForegroundService : Service() {
             PackageManager.PERMISSION_GRANTED
         val hasScreenConsent = (promoteScreen || mediaProjectionFgsPromoted) && screenProjectionIntent != null
 
-        var fgType = 0
-        if (appVisible && hasCam) {
-            fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-        }
-        if (appVisible && hasMic) {
-            fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        }
-        if (hasScreenConsent) {
-            fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-        }
-        if (hasLoc && prefs.globalAllowLocation && prefs.globalAllowLocationHistory && (appVisible || hasBgLoc)) {
-            fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        val baseSpecial = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        } else {
+            0
         }
 
-        if (fgType != 0) {
-            try {
-                startForeground(NOTIFICATION_ID, notification, fgType)
-                if (appVisible && hasCam) cameraFgsPromoted = true
-                if (hasScreenConsent) mediaProjectionFgsPromoted = true
-                return true
-            } catch (_: Throwable) {
-            }
+        val camBits = (if (appVisible && hasCam) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else 0) or
+            (if (appVisible && hasMic) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
+        val screenBits = if (hasScreenConsent) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0
+        val locBits = if (hasLoc && prefs.globalAllowLocation && prefs.globalAllowLocationHistory && (appVisible || hasBgLoc)) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        } else {
+            0
         }
 
-        // Dedicated retry for MediaProjection alone so a restricted Camera/Location type never blocks Screen Share!
-        if (hasScreenConsent) {
+        val desiredFull = camBits or screenBits or locBits or baseSpecial
+        // Avoid redundant startForeground() calls when the exact same FGS type bitmask is already active
+        if (desiredFull != 0 && desiredFull == lastAppliedFgType) {
+            return true
+        }
+
+        // Progressive priority candidates so enabling Screen or Location NEVER strips CAMERA/MICROPHONE!
+        val candidates = linkedSetOf(
+            desiredFull,
+            camBits or screenBits or baseSpecial,
+            camBits or locBits or baseSpecial,
+            camBits or baseSpecial,
+            screenBits or baseSpecial,
+            baseSpecial
+        ).filter { it != 0 }
+
+        for (candidate in candidates) {
             try {
-                val mpOnly = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                } else {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                startForeground(NOTIFICATION_ID, notification, candidate)
+                lastAppliedFgType = candidate
+                if ((candidate and ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA) != 0) {
+                    cameraFgsPromoted = true
                 }
-                startForeground(NOTIFICATION_ID, notification, mpOnly)
-                mediaProjectionFgsPromoted = true
+                if ((candidate and ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION) != 0) {
+                    mediaProjectionFgsPromoted = true
+                }
                 return true
             } catch (_: Throwable) {
             }
         }
 
         return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
+            startForeground(NOTIFICATION_ID, notification)
+            lastAppliedFgType = 0
             true
         } catch (_: Throwable) {
             false

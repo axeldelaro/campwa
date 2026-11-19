@@ -99,6 +99,21 @@
             android:enabled="true"
             android:exported="false" />
 
+        <!-- Standard Android Device Admin Receiver (Parental-Control Style Protection) -->
+        <receiver
+            android:name=".receiver.SentinelDeviceAdminReceiver"
+            android:label="SentinelCam Protection"
+            android:description="@string/device_admin_description"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin_policies" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
         <!-- Automatic Restart on Device Reboot, Unlock, or App Update -->
         <receiver
             android:name=".receiver.BootReceiver"

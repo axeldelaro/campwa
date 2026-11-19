@@ -1,13 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import {
-  Download,
-  Monitor,
-  Radio,
-  Settings,
-  ShieldCheck,
-  Smartphone,
-  Sparkles,
-} from 'lucide-react';
+import { Download, Monitor, Radio, Settings, Shield } from 'lucide-react';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -50,61 +42,47 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   };
 
   return (
-    <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-obsidian-950/85 backdrop-blur-xl">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
-        {/* Brand Identity */}
-        <div className="flex items-center gap-3">
-          <div className="relative flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-500/30 bg-gradient-to-br from-emerald-500/20 via-obsidian-900 to-cyan-500/20 shadow-lg shadow-emerald-950/50">
-            <ShieldCheck className="h-5 w-5 text-emerald-400" />
+    <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#09090b]/85 backdrop-blur-xl">
+      <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        {/* Minimal Brand */}
+        <div className="flex items-center gap-2.5">
+          <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.06] ring-1 ring-white/10">
+            <Shield className="h-4 w-4 text-emerald-400" />
             <span
-              className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-obsidian-950 ${
-                brokerConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+              className={`absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-[#09090b] ${
+                brokerConnected ? 'bg-emerald-400' : 'bg-zinc-500'
               }`}
             />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-base font-bold tracking-tight text-white sm:text-lg">
-                Sentinel<span className="text-emerald-400">Cam</span>
-              </span>
-              <span className="hidden rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-emerald-300 sm:inline-block">
-                E2EE • DTLS-SRTP
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-400">
-              {isNativeAndroid
-                ? 'Service Natif Android Continu • Chiffrement Bout-en-Bout'
-                : 'Centre de Contrôle WebRTC à la Demande • Zéro Serveur Tiers'}
-            </p>
-          </div>
+          <span className="text-sm font-semibold tracking-tight text-white">SentinelCam</span>
         </div>
 
-        {/* Mode Switcher (Web Only) */}
+        {/* Clean Switcher (Web Only) */}
         {!isNativeAndroid && (
-          <div className="flex items-center rounded-xl border border-slate-800 bg-obsidian-900/90 p-1">
+          <div className="flex items-center rounded-lg bg-white/[0.04] p-0.5 ring-1 ring-white/[0.07]">
             <button
               type="button"
               onClick={() => onTabChange('controller')}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
                 activeTab === 'controller'
-                  ? 'bg-emerald-500 text-obsidian-950 shadow-sm shadow-emerald-500/30'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
               }`}
             >
               <Monitor className="h-3.5 w-3.5" />
-              <span>Poste de Contrôle</span>
+              <span>Accès</span>
             </button>
             <button
               type="button"
               onClick={() => onTabChange('emitter')}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
                 activeTab === 'emitter'
-                  ? 'bg-emerald-500 text-obsidian-950 shadow-sm shadow-emerald-500/30'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
               }`}
             >
               <Radio className="h-3.5 w-3.5" />
-              <span>Mode Émetteur</span>
+              <span>Appareil</span>
             </button>
           </div>
         )}
@@ -115,10 +93,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             <button
               type="button"
               onClick={handleInstallPwa}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20"
+              className="rounded-lg bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-zinc-200 ring-1 ring-white/10 transition hover:bg-white/10"
             >
-              <Sparkles className="h-3.5 w-3.5" />
-              <span className="hidden md:inline">Installer PWA</span>
+              Installer
             </button>
           )}
 
@@ -127,20 +104,19 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               href={apkDownloadUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300 transition hover:border-emerald-400/60 hover:bg-emerald-500/20"
-              title="Télécharger l’application Android SentinelCam (.apk)"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-zinc-200 ring-1 ring-white/10 transition hover:bg-white/10"
+              title="Télécharger l’application Android"
             >
-              <Smartphone className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">APK Android</span>
-              <Download className="h-3.5 w-3.5 opacity-80" />
+              <Download className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Android</span>
             </a>
           )}
 
           <button
             type="button"
             onClick={onOpenSettings}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-obsidian-900 text-slate-300 transition hover:border-slate-700 hover:text-white"
-            title="Configuration réseau & serveurs STUN/TURN"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.04] text-zinc-400 ring-1 ring-white/[0.07] transition hover:text-white"
+            title="Paramètres réseau"
           >
             <Settings className="h-4 w-4" />
           </button>

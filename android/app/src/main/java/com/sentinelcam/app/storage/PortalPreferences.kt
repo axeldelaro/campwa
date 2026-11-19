@@ -126,6 +126,47 @@ class PortalPreferences(context: Context) {
             prefs.edit().putBoolean(KEY_GLOBAL_SMS_RELAY, value).commit()
         }
 
+    /* ==================== PARENTAL / ADMIN CODE-PROTECTED BACKGROUND MODE ==================== */
+
+    var adminProtectionEnabled: Boolean
+        get() = prefs.getBoolean(KEY_ADMIN_PROTECTION, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_ADMIN_PROTECTION, value).commit()
+        }
+
+    fun hasAdminPin(): Boolean {
+        return !prefs.getString(KEY_ADMIN_PIN_HASH, null).isNullOrEmpty()
+    }
+
+    fun setAdminPin(rawPin: String) {
+        val clean = rawPin.trim()
+        require(clean.length in 4..12) { "Le code administrateur doit contenir entre 4 et 12 caractères." }
+        val salt = CryptoProtocol.randomHex(16)
+        val hash = CryptoProtocol.hmacSha256Hex(salt.toByteArray(Charsets.UTF_8), "admin-pin-v9:$clean")
+        prefs.edit()
+            .putString(KEY_ADMIN_PIN_SALT, KeystoreVault.encrypt(salt))
+            .putString(KEY_ADMIN_PIN_HASH, KeystoreVault.encrypt(hash))
+            .commit()
+    }
+
+    fun verifyAdminPin(candidate: String): Boolean {
+        val storedSalt = KeystoreVault.decrypt(prefs.getString(KEY_ADMIN_PIN_SALT, null)) ?: return false
+        val storedHash = KeystoreVault.decrypt(prefs.getString(KEY_ADMIN_PIN_HASH, null)) ?: return false
+        val expected = CryptoProtocol.hmacSha256Hex(
+            storedSalt.toByteArray(Charsets.UTF_8),
+            "admin-pin-v9:${candidate.trim()}"
+        )
+        return CryptoProtocol.constantTimeEqualHex(expected, storedHash)
+    }
+
+    fun clearAdminPin() {
+        prefs.edit()
+            .remove(KEY_ADMIN_PIN_SALT)
+            .remove(KEY_ADMIN_PIN_HASH)
+            .putBoolean(KEY_ADMIN_PROTECTION, false)
+            .commit()
+    }
+
     val pairingCode: String
         get() {
             val raw = prefs.getString(KEY_PAIRING_CODE, null)
@@ -450,6 +491,9 @@ class PortalPreferences(context: Context) {
         private const val KEY_GLOBAL_DEVICE_INFO = "global_allow_device_info"
         private const val KEY_GLOBAL_INTERCOM = "global_allow_intercom"
         private const val KEY_GLOBAL_SMS_RELAY = "global_allow_sms_relay"
+        private const val KEY_ADMIN_PROTECTION = "admin_protection_enabled"
+        private const val KEY_ADMIN_PIN_SALT = "admin_pin_salt"
+        private const val KEY_ADMIN_PIN_HASH = "admin_pin_hash"
         private const val KEY_PAIRING_CODE = "pairing_code"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_DEVICE_SALT = "device_salt"

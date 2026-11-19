@@ -584,6 +584,9 @@ export interface NativePortalState {
   gpsLastFixTs?: number;
   hardwareKeystoreReady?: boolean;
   pfsEnabled?: boolean;
+  adminProtectionEnabled?: boolean;
+  hasAdminPin?: boolean;
+  deviceAdminActive?: boolean;
   autoStartOnBoot: boolean;
   failedAttempts: number;
   lockoutRemainingMs: number;

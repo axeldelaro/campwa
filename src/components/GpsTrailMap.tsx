@@ -319,7 +319,7 @@ export const GpsTrailMap: React.FC<GpsTrailMapProps> = ({
             Position actuelle
           </span>
         </div>
-        <span>100% OpenStreetMap • Trace chiffrée E2EE</span>
+        <span>OpenStreetMap</span>
       </div>
     </div>
   );

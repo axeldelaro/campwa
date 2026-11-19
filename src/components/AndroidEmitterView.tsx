@@ -99,6 +99,13 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const [allowIntercom, setAllowIntercom] = useState(true);
   const [allowSmsRelay, setAllowSmsRelay] = useState(false);
 
+  // Parental / Admin Background Protection state
+  const [adminPinInput, setAdminPinInput] = useState('');
+  const [adminUnlockInput, setAdminUnlockInput] = useState('');
+  const [adminUnlocked, setAdminUnlocked] = useState(false);
+  const [verifiedAdminPin, setVerifiedAdminPin] = useState('');
+  const [adminError, setAdminError] = useState<string | null>(null);
+
   const webEngineRef = useRef<BrowserEmitterEngine | null>(null);
 
   useEffect(() => {
@@ -365,11 +372,15 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
 
   const handleToggleService = async () => {
     if (!portal) return;
+    if (portal.serviceRunning && portal.adminProtectionEnabled && portal.hasAdminPin && !adminUnlocked) {
+      setAdminError('Déverrouillez avec le code administrateur pour arrêter le service.');
+      return;
+    }
     setBusy(true);
     try {
       if (isNativeAndroid) {
         const next = portal.serviceRunning
-          ? await SentinelNative.stopPortalService()
+          ? await SentinelNative.stopPortalService({ adminPin: verifiedAdminPin })
           : await SentinelNative.startPortalService();
         setPortal(next);
       } else if (webEngineRef.current) {
@@ -378,6 +389,68 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           : await webEngineRef.current.startPortal();
         setPortal(next);
       }
+    } catch (err) {
+      setAdminError(err instanceof Error ? err.message : 'Code administrateur requis.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleEnableAdminProtection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isNativeAndroid) return;
+    setAdminError(null);
+    const pin = adminPinInput.trim();
+    if (pin.length < 4 || pin.length > 12) {
+      setAdminError('Choisissez un code de 4 à 12 caractères.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const next = await SentinelNative.enableAdminProtection({ pin });
+      setPortal(next);
+      setVerifiedAdminPin(pin);
+      setAdminPinInput('');
+      setAdminUnlocked(false);
+    } catch (err) {
+      setAdminError(err instanceof Error ? err.message : 'Activation impossible.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUnlockAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isNativeAndroid) return;
+    setAdminError(null);
+    setBusy(true);
+    try {
+      const res = await SentinelNative.verifyAdminPin({ pin: adminUnlockInput.trim() });
+      if (res.valid) {
+        setVerifiedAdminPin(adminUnlockInput.trim());
+        setAdminUnlocked(true);
+        setAdminUnlockInput('');
+      } else {
+        setAdminError('Code administrateur incorrect.');
+      }
+    } catch {
+      setAdminError('Vérification impossible.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDisableAdminProtection = async () => {
+    if (!isNativeAndroid) return;
+    setAdminError(null);
+    setBusy(true);
+    try {
+      const next = await SentinelNative.disableAdminProtection({ pin: verifiedAdminPin });
+      setPortal(next);
+      setAdminUnlocked(false);
+      setVerifiedAdminPin('');
+    } catch (err) {
+      setAdminError(err instanceof Error ? err.message : 'Désactivation refusée.');
     } finally {
       setBusy(false);
     }
@@ -1437,76 +1510,123 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             </div>
           </div>
 
-          {/* Cybersecurity Shield & Live Audit Log Card */}
-          <div className="rounded-3xl border border-emerald-500/25 bg-obsidian-900/95 p-5 shadow-2xl">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Lock className="h-4 w-4 text-emerald-400" />
-                <h2 className="text-sm font-extrabold text-white">
-                  Bouclier Cybersécurité v8.0
-                </h2>
+          {/* Parental / Administrator Background Protection Card */}
+          {isNativeAndroid && (
+            <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Lock className="h-4 w-4 text-emerald-400" />
+                  <h2 className="text-sm font-semibold text-white">
+                    Protection Administrateur
+                  </h2>
+                </div>
+                <span
+                  className={`rounded-md px-2 py-0.5 text-[10px] font-medium ${
+                    portal.adminProtectionEnabled
+                      ? 'bg-emerald-500/15 text-emerald-300'
+                      : 'bg-white/[0.05] text-zinc-400'
+                  }`}
+                >
+                  {portal.adminProtectionEnabled
+                    ? portal.deviceAdminActive
+                      ? 'Active (Admin Android)'
+                      : 'Verrouillée par code'
+                    : 'Désactivée'}
+                </span>
               </div>
-              <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
-                ZERO-SERVER E2EE
-              </span>
-            </div>
 
-            <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
-              <div className="rounded-xl border border-slate-800 bg-obsidian-950 p-2.5">
-                <div className="font-bold text-emerald-300">ECDH P-256 (PFS)</div>
-                <div className="text-slate-400">Clés éphémères par session</div>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-obsidian-950 p-2.5">
-                <div className="font-bold text-cyan-300">AES-256-GCM + AAD</div>
-                <div className="text-slate-400">Anti-rejeu 120s & intégrité</div>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-obsidian-950 p-2.5">
-                <div className="font-bold text-violet-300">
-                  {portal.hardwareKeystoreReady !== false ? 'Keystore Matériel' : 'Stockage Privé'}
-                </div>
-                <div className="text-slate-400">Codes chiffrés au repos</div>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-obsidian-950 p-2.5">
-                <div className="font-bold text-amber-300">Anti-Brute-Force</div>
-                <div className="text-slate-400">
-                  {portal.failedAttempts > 0
-                    ? `${portal.failedAttempts} rejet(s) récent(s)`
-                    : '0 tentative suspecte'}
-                </div>
-              </div>
-            </div>
+              <p className="mt-1.5 text-xs text-zinc-400">
+                Maintient le service actif en arrière-plan et protège l’arrêt ou la désinstallation
+                par un code administrateur (type contrôle parental).
+              </p>
 
-            {portal.logs.length > 0 && (
-              <div className="mt-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3">
-                <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  Journal d’audit récent
+              {adminError && (
+                <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                  {adminError}
                 </div>
-                <div className="max-h-28 space-y-1 overflow-y-auto font-mono text-[10px]">
-                  {portal.logs.slice(0, 8).map((entry, idx) => (
-                    <div key={`${entry.timestamp}-${idx}`} className="flex items-start gap-2">
-                      <span className="shrink-0 text-slate-500">
-                        {new Date(entry.timestamp).toLocaleTimeString('fr-FR', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </span>
-                      <span
-                        className={
-                          entry.level === 'warn'
-                            ? 'text-amber-300'
-                            : entry.level === 'security'
-                            ? 'text-emerald-300'
-                            : 'text-slate-300'
-                        }
-                      >
-                        {entry.message}
-                      </span>
-                    </div>
-                  ))}
+              )}
+
+              {!portal.adminProtectionEnabled ? (
+                <form onSubmit={(e) => void handleEnableAdminProtection(e)} className="mt-3 flex gap-2">
+                  <input
+                    type="password"
+                    inputMode="text"
+                    value={adminPinInput}
+                    onChange={(e) => setAdminPinInput(e.target.value)}
+                    placeholder="Définir un code admin (4–12 car.)"
+                    className="flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={busy || adminPinInput.trim().length < 4}
+                    className="shrink-0 rounded-xl bg-white px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:opacity-35"
+                  >
+                    Activer
+                  </button>
+                </form>
+              ) : !adminUnlocked ? (
+                <form onSubmit={(e) => void handleUnlockAdmin(e)} className="mt-3 flex gap-2">
+                  <input
+                    type="password"
+                    inputMode="text"
+                    value={adminUnlockInput}
+                    onChange={(e) => setAdminUnlockInput(e.target.value)}
+                    placeholder="Code administrateur pour modifier ou arrêter"
+                    className="flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={busy || !adminUnlockInput.trim()}
+                    className="shrink-0 rounded-xl bg-white px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:opacity-35"
+                  >
+                    Déverrouiller
+                  </button>
+                </form>
+              ) : (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5">
+                  <span className="text-xs text-emerald-200">Session administrateur déverrouillée</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAdminUnlocked(false)}
+                      className="rounded-lg border border-white/10 bg-zinc-950 px-2.5 py-1 text-[11px] font-medium text-zinc-300 hover:text-white"
+                    >
+                      Verrouiller
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void handleDisableAdminProtection()}
+                      className="rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/25"
+                    >
+                      Désactiver
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+
+              {portal.logs.length > 0 && (
+                <div className="mt-4 border-t border-white/[0.06] pt-3">
+                  <div className="mb-1.5 text-[11px] font-medium text-zinc-500">Activité récente</div>
+                  <div className="max-h-24 space-y-1 overflow-y-auto font-mono text-[10px]">
+                    {portal.logs.slice(0, 6).map((entry, idx) => (
+                      <div key={`${entry.timestamp}-${idx}`} className="flex items-start gap-2">
+                        <span className="shrink-0 text-zinc-500">
+                          {new Date(entry.timestamp).toLocaleTimeString('fr-FR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                        <span className={entry.level === 'warn' ? 'text-amber-300' : 'text-zinc-300'}>
+                          {entry.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

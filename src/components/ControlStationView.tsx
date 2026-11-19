@@ -32,7 +32,6 @@ import {
   Route,
   Search,
   Send,
-  Share2,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
@@ -693,25 +692,19 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     ? `https://wa.me/${cleanWaDigits}?text=${encodeURIComponent(composedPreviewText)}`
     : `https://wa.me/?text=${encodeURIComponent(composedPreviewText)}`;
 
-  /* ==================== SCREEN 1: INSTANT 6-CHAR CODE ENTRY ==================== */
+  /* ==================== SCREEN 1: CLEAN 6-CHAR CODE ENTRY ==================== */
   if (!isSessionOpen) {
     return (
-      <div className="mx-auto flex min-h-[78vh] max-w-lg flex-col justify-center px-4 py-8">
-        <div className="rounded-3xl border border-slate-800/90 bg-obsidian-900/90 p-6 shadow-2xl backdrop-blur sm:p-8">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-emerald-500/30 bg-emerald-500/10 shadow-lg shadow-emerald-500/10">
-            <Smartphone className="h-7 w-7 text-emerald-400" />
-          </div>
-
-          <h1 className="mt-4 text-center text-2xl font-extrabold tracking-tight text-white">
-            Connexion Instantanée
+      <div className="mx-auto flex min-h-[76vh] max-w-md flex-col justify-center px-4 py-10">
+        <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-6 sm:p-7">
+          <h1 className="text-center text-xl font-semibold tracking-tight text-white">
+            Connexion
           </h1>
-          <p className="mt-1.5 text-center text-xs text-slate-400">
-            Tapez un <strong>code principal</strong>, un <strong>code fixe temporaire</strong> ou
-            votre <strong>code profil ami</strong> (6 caractères) pour accéder aux éléments autorisés
-            par le propriétaire.
+          <p className="mt-1 text-center text-xs text-zinc-400">
+            Code d’accès à 6 caractères
           </p>
 
-          <div className="mt-6 grid grid-cols-6 gap-2 sm:gap-2.5" onPaste={handlePaste}>
+          <div className="mt-6 grid grid-cols-6 gap-2" onPaste={handlePaste}>
             {codeChars.map((ch, idx) => (
               <input
                 key={idx}
@@ -726,55 +719,51 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 value={ch}
                 onChange={(e) => handleCharChange(idx, e.target.value)}
                 onKeyDown={(e) => handleKeyDown(idx, e)}
-                className="h-14 w-full rounded-2xl border border-slate-700 bg-obsidian-950 text-center font-mono text-2xl font-extrabold uppercase text-emerald-300 shadow-inner transition focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-                placeholder="•"
+                className="h-14 w-full rounded-xl border border-white/10 bg-zinc-950 text-center font-mono text-xl font-semibold uppercase text-white transition focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                placeholder="·"
               />
             ))}
           </div>
 
-          <label className="mt-4 flex cursor-pointer items-center justify-center gap-2 text-xs text-slate-300">
+          <label className="mt-4 flex cursor-pointer items-center justify-center gap-2 text-xs text-zinc-400">
             <input
               type="checkbox"
               checked={autoWakeOnConnect}
               onChange={(e) => setAutoWakeOnConnect(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500 focus:ring-emerald-500"
+              className="h-3.5 w-3.5 rounded border-zinc-700 bg-zinc-950 text-emerald-500 focus:ring-0"
             />
-            <span>Ouvrir la vidéo automatiquement dès la connexion</span>
+            <span>Ouvrir la vidéo automatiquement</span>
           </label>
 
           <button
             type="button"
             disabled={fullCode.length !== 6}
             onClick={() => void handleConnect(fullCode)}
-            className="mt-5 flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 px-6 py-3.5 text-sm font-extrabold text-obsidian-950 shadow-xl shadow-emerald-500/20 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+            className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-35"
           >
             {portalState === 'connecting' ? (
               <>
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                <span>Connexion instantanée ({fullCode})...</span>
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                <span>Connexion…</span>
               </>
             ) : (
-              <>
-                <Zap className="h-4 w-4" />
-                <span>Se connecter maintenant</span>
-              </>
+              <span>Se connecter</span>
             )}
           </button>
 
           {fullCode.length === 6 && (
-            <div className="mt-3 space-y-2">
+            <div className="mt-2.5 space-y-2">
               <button
                 type="button"
                 onClick={() => void handleSendPushInvite()}
-                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-cyan-500/35 bg-cyan-500/10 px-4 py-3 text-xs font-bold text-cyan-300 transition hover:bg-cyan-500/20"
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.07]"
               >
-                <BellRing className="h-4 w-4" />
-                <span>Envoyer un Push / Lien d’invitation (si appli fermée)</span>
-                <Share2 className="h-3.5 w-3.5 opacity-75" />
+                <BellRing className="h-3.5 w-3.5 text-zinc-400" />
+                <span>Réveiller l’appareil</span>
               </button>
 
               {pushSentFeedback && (
-                <div className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300">
+                <div className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300">
                   <Check className="h-3.5 w-3.5" />
                   <span>{pushSentFeedback}</span>
                 </div>
@@ -785,9 +774,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   <button
                     type="button"
                     onClick={handleDisconnect}
-                    className="text-[11px] text-slate-400 underline hover:text-white"
+                    className="text-xs text-zinc-500 hover:text-zinc-300"
                   >
-                    Annuler la tentative en cours
+                    Annuler
                   </button>
                 </div>
               )}
@@ -795,60 +784,54 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           )}
 
           {authError && (
-            <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-rose-500/35 bg-rose-500/10 p-3.5 text-xs text-rose-200">
+            <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
               <div>
-                <div className="font-bold">
+                <div className="font-medium">
                   {authError.reason === 'ACCESS_EXPIRED'
-                    ? 'Pass temporaire expiré'
+                    ? 'Accès expiré'
                     : authError.reason === 'ACCESS_REVOKED'
-                    ? 'Accès suspendu ou révoqué'
+                    ? 'Accès révoqué'
                     : 'Connexion refusée'}
                 </div>
-                <div className="mt-0.5 text-rose-300/90">{authError.message}</div>
+                <div className="mt-0.5 text-rose-300/80">{authError.message}</div>
               </div>
             </div>
           )}
 
           {savedDevices.length > 0 && (
-            <div className="mt-6 border-t border-slate-800/90 pt-5">
-              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Accès mémorisés (Connexion en 1 clic)
-              </div>
-              <div className="mt-2.5 space-y-2">
+            <div className="mt-6 border-t border-white/[0.07] pt-4">
+              <div className="text-[11px] font-medium text-zinc-500">Appareils récents</div>
+              <div className="mt-2 space-y-1.5">
                 {savedDevices.map((dev) => (
                   <div
                     key={dev.pairingCode}
                     onClick={() => void handleConnect(dev.pairingCode)}
-                    className="group flex cursor-pointer items-center justify-between rounded-2xl border border-slate-800 bg-obsidian-950/80 px-4 py-3 transition hover:border-emerald-500/50 hover:bg-obsidian-950"
+                    className="flex cursor-pointer items-center justify-between rounded-xl border border-white/[0.06] bg-zinc-950/70 px-3.5 py-2.5 transition hover:border-white/15"
                   >
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 font-mono text-xs font-bold text-emerald-400">
-                        {dev.pairingCode.slice(0, 2)}
-                      </div>
-                      <div>
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-sm font-bold text-white">{dev.deviceName}</span>
-                          <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] font-bold text-emerald-300">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <Smartphone className="h-4 w-4 shrink-0 text-zinc-500" />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-xs font-medium text-white">
+                            {dev.deviceName}
+                          </span>
+                          <span className="font-mono text-[11px] text-zinc-400">
                             {dev.pairingCode}
                           </span>
-                          {dev.accessRole && dev.accessRole !== 'owner' && (
-                            <span className="rounded-full bg-cyan-500/15 px-2 py-0.5 text-[10px] font-bold text-cyan-300">
-                              {dev.accessRole === 'friend' ? 'Ami' : 'Pass'} : {dev.accessName}
-                            </span>
-                          )}
                         </div>
-                        <div className="text-[11px] text-slate-500">
-                          Connexion instantanée • {dev.sasSymbols}
-                        </div>
+                        {dev.accessRole && dev.accessRole !== 'owner' && (
+                          <div className="text-[10px] text-zinc-500">{dev.accessName}</div>
+                        )}
                       </div>
                     </div>
                     <button
                       type="button"
                       onClick={(e) => handleForgetDevice(dev.pairingCode, e)}
-                      className="rounded-lg p-1.5 text-slate-500 transition hover:bg-rose-500/15 hover:text-rose-400"
+                      className="rounded-lg p-1 text-zinc-500 transition hover:text-rose-400"
+                      title="Supprimer"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 ))}
@@ -860,59 +843,61 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     );
   }
 
-  /* ==================== SCREEN 2: CONNECTED LIVE CONTROL STATION ==================== */
+  /* ==================== SCREEN 2: CONNECTED WORKSPACE ==================== */
   return (
     <div className="mx-auto max-w-5xl space-y-4 px-4 py-5 sm:px-6">
-      {/* Top Status & Permissions Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 bg-obsidian-900/90 px-4 py-3 shadow-lg">
+      {/* Compact Device Status Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/[0.07] bg-zinc-900/70 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="flex items-center gap-2">
             <span
-              className={`h-2.5 w-2.5 rounded-full ${
+              className={`h-2 w-2 rounded-full ${
                 isStreaming
-                  ? 'bg-rose-500 animate-ping'
+                  ? 'bg-rose-500 animate-pulse'
                   : portalState === 'connecting'
-                  ? 'bg-cyan-400 animate-pulse'
+                  ? 'bg-amber-400 animate-pulse'
                   : 'bg-emerald-400'
               }`}
             />
-            <span className="text-sm font-bold text-white">
-              {telemetry?.deviceName || sasInfo?.deviceName || 'Smartphone Android'}
+            <span className="text-sm font-semibold text-white">
+              {telemetry?.deviceName || sasInfo?.deviceName || 'Smartphone'}
             </span>
-            <span className="rounded-md bg-slate-800 px-2 py-0.5 font-mono text-xs font-bold text-emerald-300">
+            <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-zinc-300">
               {fullCode}
             </span>
           </div>
 
           {accessGrant && accessGrant.role !== 'owner' && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/35 bg-cyan-500/10 px-2.5 py-1 text-xs font-bold text-cyan-300">
+            <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.05] px-2 py-0.5 text-[11px] text-zinc-300">
               {accessGrant.role === 'friend' ? (
-                <UserCheck className="h-3.5 w-3.5" />
+                <UserCheck className="h-3 w-3 text-emerald-400" />
               ) : (
-                <Clock className="h-3.5 w-3.5" />
+                <Clock className="h-3 w-3 text-zinc-400" />
               )}
               <span>
-                {accessGrant.role === 'friend' ? 'Ami' : 'Pass'} : {accessGrant.name}
-                {remainingLabel ? ` • ${remainingLabel}` : ''}
+                {accessGrant.name}
+                {remainingLabel ? ` · ${remainingLabel}` : ''}
               </span>
             </span>
           )}
 
           {telemetry && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-800 bg-obsidian-950 px-2.5 py-1 font-mono text-xs text-slate-200">
+            <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">
               {telemetry.isCharging ? (
                 <BatteryCharging className="h-3.5 w-3.5 text-emerald-400" />
               ) : (
-                <Battery className="h-3.5 w-3.5 text-slate-400" />
+                <Battery className="h-3.5 w-3.5 text-zinc-500" />
               )}
-              {telemetry.batteryLevel}% • {telemetry.networkType}
+              <span className="font-mono">{telemetry.batteryLevel}%</span>
+              <span className="text-zinc-600">·</span>
+              <span>{telemetry.networkType}</span>
             </span>
           )}
 
           {isStreaming && stats && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 font-mono text-xs text-cyan-300">
-              <Activity className="h-3.5 w-3.5" />
-              {stats.rttMs} ms • {stats.bitrateKbps} kbps
+            <span className="hidden items-center gap-1 font-mono text-[11px] text-zinc-500 sm:inline-flex">
+              <Activity className="h-3 w-3" />
+              {stats.rttMs} ms
             </span>
           )}
         </div>
@@ -922,75 +907,54 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             <button
               type="button"
               onClick={() => setSasModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 font-mono text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/20"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 transition hover:bg-white/[0.07]"
+              title="Code de vérification"
             >
-              <Lock className="h-3.5 w-3.5" />
-              <span>
-                {telemetry?.pfsEnabled ? 'PFS P-256 • ' : 'E2EE '}
-                {sasInfo.sasCode}
-              </span>
+              <Lock className="h-3 w-3 text-emerald-400" />
+              <span>{sasInfo.sasCode}</span>
             </button>
           )}
 
           <button
             type="button"
             onClick={handleDisconnect}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-rose-500/40 hover:text-rose-300"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-rose-500/40 hover:text-rose-300"
           >
             <Unplug className="h-3.5 w-3.5" />
-            <span>Déconnecter</span>
+            <span>Quitter</span>
           </button>
         </div>
       </div>
 
-      {/* ==================== WALKIE-TALKIE (ONE-WAY PHONE LOUDSPEAKER) BAR ==================== */}
+      {/* Compact Talkie-Walkie Bar */}
       <div
-        className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-3.5 shadow-lg transition ${
+        className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 transition ${
           talkieActive
-            ? 'border-emerald-400/70 bg-emerald-500/15 shadow-emerald-500/15'
-            : 'border-slate-800/90 bg-obsidian-900/90'
+            ? 'border-emerald-500/50 bg-emerald-500/10'
+            : 'border-white/[0.07] bg-zinc-900/70'
         }`}
       >
-        <div className="flex items-center gap-3">
-          <div
-            className={`flex h-10 w-10 items-center justify-center rounded-xl border ${
-              talkieActive
-                ? 'border-emerald-400 bg-emerald-500 text-obsidian-950 animate-pulse'
-                : 'border-slate-700 bg-obsidian-950 text-emerald-400'
-            }`}
-          >
-            <Volume2 className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2 text-xs font-extrabold text-white">
-              <span>Talkie Haut-Parleur (1 sens → Téléphone)</span>
-              {talkieActive && (
-                <span className="rounded-full bg-emerald-500 px-2 py-0.5 font-mono text-[10px] font-black uppercase text-obsidian-950">
-                  EN ÉMISSION
-                </span>
-              )}
-            </div>
-            {talkieActive ? (
-              <div className="mt-1.5 flex items-center gap-2">
-                <div className="h-2 w-36 overflow-hidden rounded-full bg-obsidian-950 sm:w-48">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-cyan-300 transition-all duration-75"
-                    style={{ width: `${Math.max(8, talkieLevel)}%` }}
-                  />
-                </div>
-                <span className="font-mono text-[10px] text-emerald-300">Voix diffusée</span>
+        <div className="flex items-center gap-2.5">
+          <Volume2
+            className={`h-4 w-4 ${talkieActive ? 'text-emerald-400 animate-pulse' : 'text-zinc-400'}`}
+          />
+          <span className="text-xs font-medium text-white">Haut-parleur</span>
+          {talkieActive ? (
+            <div className="flex items-center gap-2">
+              <div className="h-1.5 w-28 overflow-hidden rounded-full bg-zinc-950 sm:w-40">
+                <div
+                  className="h-full rounded-full bg-emerald-400 transition-all duration-75"
+                  style={{ width: `${Math.max(8, talkieLevel)}%` }}
+                />
               </div>
-            ) : (
-              <p className="text-[11px] text-slate-400">
-                {canUseIntercom
-                  ? 'Maintenez pour parler sur le haut-parleur du smartphone (fonctionne même caméra éteinte).'
-                  : 'Désactivé par le propriétaire du smartphone.'}
-              </p>
-            )}
-          </div>
+              <span className="text-[11px] text-emerald-300">En cours</span>
+            </div>
+          ) : (
+            !canUseIntercom && <span className="text-[11px] text-zinc-500">Désactivé</span>
+          )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             disabled={!canUseIntercom}
@@ -998,47 +962,43 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             onPointerUp={handleTalkiePressEnd}
             onPointerLeave={handleTalkiePressEnd}
             onPointerCancel={handleTalkiePressEnd}
-            className={`inline-flex select-none touch-none items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-extrabold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+            className={`inline-flex select-none touch-none items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-35 ${
               talkieActive && !talkieLocked
-                ? 'scale-[0.98] bg-rose-500 text-white shadow-lg shadow-rose-500/30'
-                : 'bg-gradient-to-r from-emerald-500 to-cyan-400 text-obsidian-950 shadow-md hover:brightness-110'
+                ? 'bg-rose-500 text-white'
+                : 'bg-white text-zinc-950 hover:bg-zinc-200'
             }`}
           >
-            <Mic className="h-4 w-4" />
-            <span>
-              {talkieActive && !talkieLocked ? 'Parlez maintenant...' : 'Maintenir pour parler'}
-            </span>
+            <Mic className="h-3.5 w-3.5" />
+            <span>{talkieActive && !talkieLocked ? 'Parlez…' : 'Maintenir pour parler'}</span>
           </button>
 
           <button
             type="button"
             disabled={!canUseIntercom}
             onClick={handleToggleTalkieLock}
-            className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
               talkieLocked
-                ? 'border-rose-400 bg-rose-500/20 text-rose-200 hover:bg-rose-500/30'
-                : 'border-slate-700 bg-obsidian-950 text-slate-300 hover:border-emerald-400/50 hover:text-white'
+                ? 'border-rose-500/50 bg-rose-500/15 text-rose-200'
+                : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
             }`}
-            title="Activer ou couper le Talkie en mode mains libres sans maintenir le bouton"
           >
-            <Volume2 className="h-3.5 w-3.5" />
-            <span>{talkieLocked ? 'Couper Talkie' : 'Mains libres'}</span>
+            <span>{talkieLocked ? 'Couper' : 'Mains libres'}</span>
           </button>
         </div>
       </div>
 
-      {/* Viewer Navigation Tabs: Caméra & Écran | Contacts | GPS & Appareil */}
-      <div className="flex flex-wrap items-center gap-2">
+      {/* Clean Navigation Tabs */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-white/[0.07] pb-3">
         <button
           type="button"
           onClick={() => setViewerTab('media')}
-          className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-bold transition ${
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition ${
             viewerTab === 'media'
-              ? 'border-emerald-400 bg-emerald-500 text-obsidian-950'
-              : 'border-slate-800 bg-obsidian-900 text-slate-300 hover:text-white'
+              ? 'bg-white text-zinc-950'
+              : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
           }`}
         >
-          <Video className="h-4 w-4" />
+          <Video className="h-3.5 w-3.5" />
           <span>Caméra & Écran</span>
         </button>
 
@@ -1051,28 +1011,28 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               setViewerTab('contacts');
             }
           }}
-          className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-bold transition ${
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition ${
             viewerTab === 'contacts'
-              ? 'border-amber-400 bg-amber-400 text-obsidian-950'
-              : 'border-slate-800 bg-obsidian-900 text-slate-300 hover:text-white'
+              ? 'bg-white text-zinc-950'
+              : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
           }`}
         >
-          <BookUser className="h-4 w-4" />
-          <span>{canViewContacts ? 'Contacts & SMS' : 'SMS Urgence'}</span>
+          <BookUser className="h-3.5 w-3.5" />
+          <span>{canViewContacts ? 'Contacts & SMS' : 'SMS'}</span>
         </button>
 
         <button
           type="button"
           disabled={!canViewLocation && !canViewDeviceInfo}
           onClick={handleOpenDeviceTab}
-          className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
             viewerTab === 'device'
-              ? 'border-cyan-400 bg-cyan-400 text-obsidian-950'
-              : 'border-slate-800 bg-obsidian-900 text-slate-300 hover:text-white'
+              ? 'bg-white text-zinc-950'
+              : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
           }`}
         >
-          <MapPin className="h-4 w-4" />
-          <span>{canViewLocation ? 'GPS & Infos Appareil' : 'Infos Appareil'}</span>
+          <MapPin className="h-3.5 w-3.5" />
+          <span>{canViewLocation ? 'GPS & Infos' : 'Infos'}</span>
         </button>
       </div>
 
@@ -1349,13 +1309,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             <div className="flex items-center gap-2.5">
               <BookUser className="h-5 w-5 text-amber-400" />
               <div>
-                <h2 className="text-sm font-extrabold text-white">
-                  Répertoire Contacts Partagé (E2EE)
-                </h2>
-                <p className="text-xs text-slate-400">
-                  {contactsTotal > 0
-                    ? `${contacts.length} affiché(s) sur ${contactsTotal} contact(s)`
-                    : 'Recherchez un nom ou un numéro sur le téléphone autorisé.'}
+                <h2 className="text-sm font-semibold text-white">Contacts</h2>
+                <p className="text-xs text-zinc-400">
+                  {contactsTotal > 0 ? `${contacts.length} / ${contactsTotal}` : 'Répertoire partagé'}
                 </p>
               </div>
             </div>
@@ -1499,32 +1455,28 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 </div>
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-sm font-extrabold text-white">
-                      Historique GPS Continu & Position
-                    </h2>
+                    <h2 className="text-sm font-semibold text-white">Localisation & Trajets</h2>
                     {telemetry?.gpsTrackerState && telemetry.gpsTrackerState !== 'disabled' && (
                       <span
-                        className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-bold ${
+                        className={`rounded-md px-2 py-0.5 text-[10px] font-medium ${
                           telemetry.gpsTrackerState === 'moving'
-                            ? 'bg-emerald-500/20 text-emerald-300'
+                            ? 'bg-emerald-500/15 text-emerald-300'
                             : telemetry.gpsTrackerState === 'stationary'
-                            ? 'bg-sky-500/20 text-sky-300'
-                            : 'bg-amber-500/20 text-amber-300'
+                            ? 'bg-sky-500/15 text-sky-300'
+                            : 'bg-amber-500/15 text-amber-300'
                         }`}
                       >
                         {telemetry.gpsTrackerState === 'moving'
-                          ? 'EN MOUVEMENT • GPS ACTIF'
+                          ? 'En mouvement'
                           : telemetry.gpsTrackerState === 'stationary'
-                          ? 'IMMOBILE • VEILLE 0% GPS'
+                          ? 'À l’arrêt'
                           : telemetry.gpsTrackerState === 'battery_saver'
-                          ? 'ÉCO BATTERIE (<15%)'
-                          : 'PERMISSION REQUISE'}
+                          ? 'Éco batterie'
+                          : 'Autorisation requise'}
                       </span>
                     )}
                   </div>
-                  <p className="text-[11px] text-slate-400">
-                    Enregistré localement même hors-ligne / sans serveur, puis synchronisé en E2EE.
-                  </p>
+                  <p className="text-[11px] text-zinc-400">Historique continu des déplacements</p>
                 </div>
               </div>
 

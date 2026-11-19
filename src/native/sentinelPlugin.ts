@@ -29,7 +29,10 @@ export interface SentinelNativePluginContract {
   }): Promise<NativePortalState>;
   completeOnboardingAndStart(options: { autoStartOnBoot: boolean }): Promise<NativePortalState>;
   startPortalService(): Promise<NativePortalState>;
-  stopPortalService(): Promise<NativePortalState>;
+  stopPortalService(options?: { adminPin?: string }): Promise<NativePortalState>;
+  enableAdminProtection(options: { pin: string }): Promise<NativePortalState>;
+  verifyAdminPin(options: { pin: string }): Promise<{ valid: boolean }>;
+  disableAdminProtection(options: { pin: string }): Promise<NativePortalState>;
   regeneratePairingCode(): Promise<NativePortalState>;
   resetPairedController(): Promise<NativePortalState>;
   setAutoStartOnBoot(options: { enabled: boolean }): Promise<NativePortalState>;

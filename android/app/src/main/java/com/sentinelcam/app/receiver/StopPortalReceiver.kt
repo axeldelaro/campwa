@@ -3,6 +3,7 @@ package com.sentinelcam.app.receiver
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.sentinelcam.app.MainActivity
 import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.storage.PortalPreferences
 
@@ -17,8 +18,16 @@ class StopPortalReceiver : BroadcastReceiver() {
             ACTION_USER_STOP_PORTAL -> {
                 try {
                     val prefs = PortalPreferences(context)
+                    if (prefs.adminProtectionEnabled && prefs.hasAdminPin()) {
+                        // Parental/Admin Lock active: open app to request Admin PIN instead of stopping silently
+                        val open = Intent(context.applicationContext, MainActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        }
+                        context.applicationContext.startActivity(open)
+                        return
+                    }
                     prefs.userManuallyStopped = true
-                    prefs.appendLog("security", "Portail mis en pause depuis la notification.")
+                    prefs.appendLog("security", "Service mis en pause depuis la notification.")
                     CameraForegroundService.stopPortal(context)
                 } catch (_: Throwable) {
                 }

@@ -56,7 +56,7 @@ export const App: React.FC = () => {
     : '#';
 
   return (
-    <div className="min-h-screen bg-obsidian-950 bg-tactical-grid text-slate-100">
+    <div className="min-h-screen bg-[#09090b] text-zinc-100">
       <HeaderBar
         isNativeAndroid={nativeAndroid}
         activeTab={activeTab}
@@ -68,28 +68,25 @@ export const App: React.FC = () => {
 
       {!nativeAndroid && inviteCode && (
         <div className="mx-auto mt-6 max-w-md px-4">
-          <div className="rounded-3xl border border-emerald-500/40 bg-emerald-500/10 p-6 text-center shadow-2xl">
-            <BellRing className="mx-auto h-10 w-10 text-emerald-400 animate-bounce" />
-            <h2 className="mt-3 text-lg font-extrabold text-white">
-              Invitation d’ouverture SentinelCam
-            </h2>
-            <p className="mt-1 text-xs text-slate-300">
-              Appuyez sur le bouton ci-dessous pour réveiller automatiquement l’application Android
-              SentinelCam (Code <span className="font-mono font-bold text-emerald-300">{inviteCode}</span>).
+          <div className="rounded-2xl border border-white/10 bg-zinc-900/90 p-5 text-center">
+            <BellRing className="mx-auto h-7 w-7 text-emerald-400" />
+            <h2 className="mt-3 text-base font-semibold text-white">Ouvrir SentinelCam</h2>
+            <p className="mt-1 text-xs text-zinc-400">
+              Code <span className="font-mono text-white">{inviteCode}</span>
             </p>
             <a
               href={androidIntentHref}
-              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-6 py-3.5 text-sm font-extrabold text-obsidian-950 shadow-lg transition hover:bg-emerald-400"
+              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-white px-5 py-2.5 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200"
             >
-              <ExternalLink className="h-4 w-4" />
-              <span>Ouvrir l’application SentinelCam</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+              <span>Lancer l’application</span>
             </a>
             <button
               type="button"
               onClick={() => setInviteCode(null)}
-              className="mt-3 text-xs text-slate-400 underline hover:text-white"
+              className="mt-3 text-xs text-zinc-500 hover:text-zinc-300"
             >
-              Continuer vers le Poste de Contrôle Web
+              Continuer sur le Web
             </button>
           </div>
         </div>
@@ -106,19 +103,22 @@ export const App: React.FC = () => {
         )}
       </main>
 
-      <footer className="border-t border-slate-900/90 py-5 text-center text-[11px] text-slate-500">
-        <div className="mx-auto max-w-7xl px-4">
-          SentinelCam v8.0 • Cybersécurité PFS ECDH P-256 • Écran HD Fixé • Relais SMS Urgence • GPS Hors-Ligne •{' '}
-          <a
-            href="https://github.com/axeldelaro/campwa/releases/latest"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-emerald-400/80 hover:text-emerald-300 hover:underline"
-          >
-            Télécharger l’APK Android
-          </a>
-        </div>
-      </footer>
+      {!nativeAndroid && (
+        <footer className="border-t border-white/[0.05] py-5 text-center text-xs text-zinc-600">
+          <div className="mx-auto flex max-w-5xl items-center justify-center gap-4 px-4">
+            <span>SentinelCam</span>
+            <span>·</span>
+            <a
+              href={APK_RELEASE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-zinc-400 transition hover:text-white"
+            >
+              Application Android
+            </a>
+          </div>
+        </footer>
+      )}
 
       <SettingsModal
         open={settingsOpen}

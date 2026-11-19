@@ -744,6 +744,27 @@ export class SentinelWebRtcController {
       this.callbacks.onStateChange('locked');
     } else if (this.authenticated && !this.pc && !this.desiredStreaming) {
       this.callbacks.onStateChange('standby');
+    } else if (
+      this.authenticated &&
+      this.desiredStreaming &&
+      this.desiredMediaMode === 'camera' &&
+      msg.portalState === 'standby' &&
+      (!this.pc || this.pc.connectionState !== 'connected')
+    ) {
+      // Auto-recover camera seamlessly if a system permission dialog briefly interrupted capture
+      if (this.streamRecoverTimer === null) {
+        this.streamRecoverTimer = window.setTimeout(() => {
+          this.streamRecoverTimer = null;
+          if (this.authenticated && this.desiredStreaming && this.desiredMediaMode === 'camera') {
+            void this.startCameraStream(
+              this.desiredFacing,
+              this.desiredAudio,
+              this.desiredQuality,
+              'camera'
+            );
+          }
+        }, 900);
+      }
     }
   }
 

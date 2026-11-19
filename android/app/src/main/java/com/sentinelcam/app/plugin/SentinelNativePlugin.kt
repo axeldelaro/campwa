@@ -3,6 +3,7 @@ package com.sentinelcam.app.plugin
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -25,6 +26,7 @@ import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
 import com.sentinelcam.app.crypto.KeystoreVault
+import com.sentinelcam.app.receiver.SentinelDeviceAdminReceiver
 import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.storage.PortalPreferences
 import org.json.JSONObject
@@ -363,8 +365,79 @@ class SentinelNativePlugin : Plugin() {
 
     @PluginMethod
     fun stopPortalService(call: PluginCall) {
+        if (prefs.adminProtectionEnabled && prefs.hasAdminPin()) {
+            val pin = call.getString("adminPin") ?: ""
+            if (!prefs.verifyAdminPin(pin)) {
+                call.reject("Code administrateur requis pour arrêter le service.")
+                return
+            }
+        }
         prefs.userManuallyStopped = true
         CameraForegroundService.stopPortal(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun enableAdminProtection(call: PluginCall) {
+        try {
+            val pin = call.getString("pin")?.trim().orEmpty()
+            if (pin.length < 4 || pin.length > 12) {
+                call.reject("Choisissez un code administrateur de 4 à 12 caractères.")
+                return
+            }
+            prefs.setAdminPin(pin)
+            prefs.adminProtectionEnabled = true
+            prefs.userManuallyStopped = false
+            prefs.appendLog("security", "Verrouillage administrateur configuré.")
+
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val comp = SentinelDeviceAdminReceiver.getComponentName(context)
+            if (!dpm.isAdminActive(comp)) {
+                val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                    putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, comp)
+                    putExtra(
+                        DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                        "Protège le service en arrière-plan contre l’arrêt ou la désinstallation sans code administrateur."
+                    )
+                }
+                startActivityForResult(call, intent, "deviceAdminCallback")
+            } else {
+                call.resolve(buildPortalStateObject())
+            }
+        } catch (t: Throwable) {
+            call.reject(t.message ?: "Impossible d’activer le mode administrateur.")
+        }
+    }
+
+    @ActivityCallback
+    fun deviceAdminCallback(call: PluginCall?, @Suppress("UNUSED_PARAMETER") result: ActivityResult) {
+        call?.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun verifyAdminPin(call: PluginCall) {
+        val pin = call.getString("pin") ?: ""
+        val valid = !prefs.hasAdminPin() || prefs.verifyAdminPin(pin)
+        call.resolve(JSObject().apply { put("valid", valid) })
+    }
+
+    @PluginMethod
+    fun disableAdminProtection(call: PluginCall) {
+        val pin = call.getString("pin") ?: ""
+        if (prefs.hasAdminPin() && !prefs.verifyAdminPin(pin)) {
+            call.reject("Code administrateur incorrect.")
+            return
+        }
+        try {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val comp = SentinelDeviceAdminReceiver.getComponentName(context)
+            if (dpm.isAdminActive(comp)) {
+                dpm.removeActiveAdmin(comp)
+            }
+        } catch (_: Throwable) {
+        }
+        prefs.clearAdminPin()
+        prefs.appendLog("security", "Protection administrateur désactivée par code.")
         call.resolve(buildPortalStateObject())
     }
 
@@ -627,6 +700,17 @@ class SentinelNativePlugin : Plugin() {
             put("gpsLastFixTs", CameraForegroundService.gpsLastFixTs)
             put("hardwareKeystoreReady", KeystoreVault.isHardwareKeystoreReady())
             put("pfsEnabled", CameraForegroundService.lastSessionPfs)
+            put("adminProtectionEnabled", prefs.adminProtectionEnabled)
+            put("hasAdminPin", prefs.hasAdminPin())
+            put(
+                "deviceAdminActive",
+                try {
+                    val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                    dpm.isAdminActive(SentinelDeviceAdminReceiver.getComponentName(context))
+                } catch (_: Throwable) {
+                    false
+                }
+            )
             put("autoStartOnBoot", prefs.autoStartOnBoot)
             put("failedAttempts", prefs.failedAttempts)
             put("lockoutRemainingMs", lockoutRem)
