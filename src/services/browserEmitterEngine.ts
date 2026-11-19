@@ -51,6 +51,8 @@ interface PersistedWebEmitterConfig {
     allowScreenShare: boolean;
     allowContacts: boolean;
     allowLocation: boolean;
+    allowLocationHistory: boolean;
+    gpsTrackingMode: 'eco' | 'balanced' | 'precision';
     allowDeviceInfo: boolean;
     allowIntercom: boolean;
   };
@@ -109,6 +111,8 @@ export class BrowserEmitterEngine {
             allowScreenShare: parsed.globalShares?.allowScreenShare ?? false,
             allowContacts: parsed.globalShares?.allowContacts ?? false,
             allowLocation: parsed.globalShares?.allowLocation ?? false,
+            allowLocationHistory: parsed.globalShares?.allowLocationHistory ?? true,
+            gpsTrackingMode: parsed.globalShares?.gpsTrackingMode ?? 'eco',
             allowDeviceInfo: parsed.globalShares?.allowDeviceInfo ?? true,
             allowIntercom: parsed.globalShares?.allowIntercom ?? true,
           },
@@ -131,6 +135,8 @@ export class BrowserEmitterEngine {
         allowScreenShare: false,
         allowContacts: false,
         allowLocation: false,
+        allowLocationHistory: true,
+        gpsTrackingMode: 'eco',
         allowDeviceInfo: true,
         allowIntercom: true,
       },
@@ -208,6 +214,10 @@ export class BrowserEmitterEngine {
       mediaMode: this.mediaMode,
       micEnabled: this.micEnabled,
       intercomActive: this.intercomActive,
+      gpsTrackerState: this.config.globalShares.allowLocation ? 'stationary' : 'disabled',
+      gpsPointsCount: 0,
+      gpsTodayPointsCount: 0,
+      gpsLastFixTs: 0,
       autoStartOnBoot: false,
       failedAttempts: this.config.failedAttempts,
       lockoutRemainingMs,
@@ -697,6 +707,32 @@ export class BrowserEmitterEngine {
 
       case 'CMD_GET_LOCATION':
         await this.handleGetLocation(handle, msg, grant.allowLocation);
+        break;
+
+      case 'CMD_GET_LOCATION_HISTORY':
+        await handle.signaling.send(
+          {
+            type: 'DATA_LOCATION_HISTORY',
+            requestId: msg.requestId,
+            chunkIndex: 0,
+            totalChunks: 1,
+            points: [],
+            rawPointCount: 0,
+            totalDistanceMeters: 0,
+            maxSpeedKmh: 0,
+            stopsCount: 0,
+            trackerState: grant.allowLocation ? 'stationary' : 'disabled',
+            trackingMode: this.config.globalShares.gpsTrackingMode,
+            error: grant.allowLocation
+              ? undefined
+              : 'Le propriétaire n’a pas autorisé le partage de la localisation GPS.',
+            ts: Date.now(),
+          },
+          'sess'
+        );
+        break;
+
+      case 'CMD_CLEAR_LOCATION_HISTORY':
         break;
 
       case 'CMD_GET_DEVICE_INFO':

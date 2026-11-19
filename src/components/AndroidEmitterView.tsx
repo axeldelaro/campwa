@@ -35,7 +35,12 @@ import {
 import { generateSecurePairingCode, normalizePairingCode } from '../crypto/cryptoEngine';
 import { SentinelNative } from '../native/sentinelPlugin';
 import { BrowserEmitterEngine } from '../services/browserEmitterEngine';
-import type { AccessProfile, AccessProfileInput, NativePortalState } from '../types/sentinel';
+import type {
+  AccessProfile,
+  AccessProfileInput,
+  GpsTrackingMode,
+  NativePortalState,
+} from '../types/sentinel';
 
 interface AndroidEmitterViewProps {
   isNativeAndroid: boolean;
@@ -235,6 +240,65 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         const next = await webEngineRef.current.setGlobalShareSettings({ allowLocation: targetVal });
         setPortal(next);
       }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleLocationHistory = async () => {
+    if (!portal) return;
+    setBusy(true);
+    try {
+      const targetVal = !(portal.globalShares.allowLocationHistory ?? true);
+      if (isNativeAndroid) {
+        const next = await SentinelNative.setGlobalShareSettings({
+          allowLocationHistory: targetVal,
+        });
+        setPortal(next);
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.setGlobalShareSettings({
+          allowLocationHistory: targetVal,
+        });
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSetGpsTrackingMode = async (mode: GpsTrackingMode) => {
+    if (!portal) return;
+    setBusy(true);
+    try {
+      if (isNativeAndroid) {
+        const next = await SentinelNative.setGlobalShareSettings({ gpsTrackingMode: mode });
+        setPortal(next);
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.setGlobalShareSettings({ gpsTrackingMode: mode });
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRequestBackgroundLocation = async () => {
+    if (!isNativeAndroid) return;
+    setBusy(true);
+    try {
+      const next = await SentinelNative.requestBackgroundLocationPermission();
+      setPortal(next);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleClearLocationHistory = async () => {
+    if (!isNativeAndroid) return;
+    setBusy(true);
+    try {
+      const next = await SentinelNative.clearLocationHistory();
+      setPortal(next);
     } finally {
       setBusy(false);
     }
@@ -1129,33 +1193,148 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                 </button>
               </div>
 
-              {/* GPS Location Control */}
-              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
-                <div className="flex items-start gap-3">
-                  <MapPin className="mt-0.5 h-5 w-5 shrink-0 text-rose-400" />
-                  <div>
-                    <div className="text-xs font-bold text-white">Localisation GPS à la demande</div>
-                    <div className="text-[11px] text-slate-400">
-                      {shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
-                        ? 'Position GPS consultable à la demande sur carte.'
-                        : 'Désactivé — position masquée.'}
+              {/* GPS Location & Offline Trail History Control */}
+              <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <MapPin className="mt-0.5 h-5 w-5 shrink-0 text-rose-400" />
+                    <div>
+                      <div className="text-xs font-bold text-white">
+                        Localisation & Historique GPS Continu
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        {shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
+                          ? 'Trace précise enregistrée hors-ligne (SQLite) avec mise en veille GPS automatique à l’arrêt.'
+                          : 'Désactivé — position masquée et capteur GPS coupé.'}
+                      </div>
                     </div>
                   </div>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleToggleLocationShare()}
+                    className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                      shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
+                        ? 'border-rose-500/40 bg-rose-500/20 text-rose-200'
+                        : 'border-slate-700 bg-obsidian-900 text-slate-300 hover:border-rose-400'
+                    }`}
+                  >
+                    {shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
+                      ? 'Activé'
+                      : 'Activer'}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void handleToggleLocationShare()}
-                  className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                    shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
-                      ? 'border-rose-500/40 bg-rose-500/20 text-rose-200'
-                      : 'border-slate-700 bg-obsidian-900 text-slate-300 hover:border-rose-400'
-                  }`}
-                >
-                  {shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
-                    ? 'Activé'
-                    : 'Activer'}
-                </button>
+
+                {shares.allowLocation && (portal.permissions.location || !isNativeAndroid) && (
+                  <div className="mt-3 space-y-2.5 border-t border-slate-800/80 pt-3">
+                    {/* Offline History Toggle + Live Stats */}
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-[11px] font-bold text-slate-200">
+                          Historique continu hors-ligne (30 jours)
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          {portal.gpsTodayPointsCount ?? 0} pts aujourd’hui •{' '}
+                          {portal.gpsPointsCount ?? 0} pts stockés localement
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleToggleLocationHistory()}
+                          className={`rounded-lg border px-2.5 py-1 text-[10px] font-bold transition ${
+                            shares.allowLocationHistory !== false
+                              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                              : 'border-slate-700 bg-obsidian-900 text-slate-400'
+                          }`}
+                        >
+                          {shares.allowLocationHistory !== false ? 'Journal ON' : 'Journal OFF'}
+                        </button>
+                        {isNativeAndroid && (portal.gpsPointsCount ?? 0) > 0 && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handleClearLocationHistory()}
+                            className="rounded-lg border border-slate-700 bg-obsidian-900 px-2 py-1 text-[10px] font-bold text-slate-400 hover:border-rose-500/40 hover:text-rose-300"
+                            title="Effacer l’historique GPS local"
+                          >
+                            Vider
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Battery-Smart Mode Selector */}
+                    {shares.allowLocationHistory !== false && (
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap items-center justify-between gap-1 text-[10px]">
+                          <span className="font-bold text-slate-400">
+                            Profil batterie (GPS coupé à l’arrêt + bouclier &lt;15%)
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-mono font-bold ${
+                              portal.gpsTrackerState === 'moving'
+                                ? 'bg-emerald-500/20 text-emerald-300'
+                                : portal.gpsTrackerState === 'stationary'
+                                ? 'bg-sky-500/20 text-sky-300'
+                                : portal.gpsTrackerState === 'battery_saver'
+                                ? 'bg-amber-500/20 text-amber-300'
+                                : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
+                            {portal.gpsTrackerState === 'moving'
+                              ? 'En mouvement'
+                              : portal.gpsTrackerState === 'stationary'
+                              ? 'Immobile • 0% GPS'
+                              : portal.gpsTrackerState === 'battery_saver'
+                              ? 'Éco Batterie'
+                              : 'Prêt'}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {(
+                            [
+                              { id: 'eco', label: 'Ultra-Éco', sub: '20s / 20m' },
+                              { id: 'balanced', label: 'Équilibré', sub: '10s / 12m' },
+                              { id: 'precision', label: 'Précis', sub: '4s / 6m' },
+                            ] as const
+                          ).map((opt) => {
+                            const active = (shares.gpsTrackingMode ?? 'eco') === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void handleSetGpsTrackingMode(opt.id)}
+                                className={`rounded-xl border px-2 py-1.5 text-center transition ${
+                                  active
+                                    ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-200'
+                                    : 'border-slate-800 bg-obsidian-900 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                                }`}
+                              >
+                                <div className="text-[11px] font-bold">{opt.label}</div>
+                                <div className="font-mono text-[9px] opacity-75">{opt.sub}</div>
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {isNativeAndroid && portal.permissions.backgroundLocation === false && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handleRequestBackgroundLocation()}
+                            className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20"
+                          >
+                            <Zap className="h-3.5 w-3.5" />
+                            <span>Autoriser le GPS en arrière-plan (« Toujours autoriser »)</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* System Device Info Control */}

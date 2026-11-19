@@ -122,17 +122,18 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v6.0.${{ github.run_number }}
-          name: "SentinelCam v6.0.${{ github.run_number }} (Talkie-Walkie Haut-Parleur 1-Sens + Partages à la Carte)"
+          tag_name: v7.0.${{ github.run_number }}
+          name: "SentinelCam v7.0.${{ github.run_number }} (Historique GPS Continu Hors-Ligne & Ultra-Éco Batterie)"
           body: |
-            ### 📢 SentinelCam v6.0 — Talkie-Walkie Haut-Parleur 1-Sens (Web → Smartphone) (`v6.0.${{ github.run_number }}`)
+            ### 🛰️ SentinelCam v7.0 — Historique GPS Précis Hors-Ligne & Optimisation Batterie Ultra-Éco (`v7.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Talkie-Walkie 1-Sens sur le Haut-Parleur** : Parlez directement depuis le site Web dans le haut-parleur principal du smartphone Android (bouton *Maintenir pour parler* + mode *Mains libres* + VU-mètre vocal en direct).
-            - **Zéro Larsen & Ultra-Faible Latence** : Le micro sortant du téléphone est coupé automatiquement pendant la diffusion vocale, avec bascule instantanée (0 ms) si la caméra est allumée ou ouverture d'un canal audio-seul (0 % caméra) en mode Éco-Veille.
-            - **Contrôle Utilisateur Absolu** : Interrupteur global *Haut-Parleur Talkie* sur le téléphone, permission dédiée par Pass temporaire / Profil Ami, et notification Android visible en direct.
-            - **Partages à la Carte Inclus** : Caméra HD, Partage d'Écran (`MediaProjection`), Contacts, Localisation GPS et Infos Système sous contrôle 100 % volontaire du propriétaire.
+            - **Historique GPS Continu 100 % Hors-Ligne (SQLite local)** : Enregistre chaque trajet avec précision (virages, vitesse, altitude, arrêts & durée de stationnement) même sans réseau ni serveur MQTT (rétention glissante 30 jours / 25 000 points), synchronisé en E2EE dès reconnexion.
+            - **Moteur GPS Anti-Drain Batterie (Veille 0 % à l’arrêt)** : Coupe automatiquement la puce GPS dès que le téléphone est immobile, passe sur le coprocesseur matériel `TYPE_SIGNIFICANT_MOTION` + capteur passif gratuit, et inclut un **bouclier batterie < 15 %** + 3 profils réglables (*Ultra-Éco*, *Équilibré*, *Précis*).
+            - **Optimisation Batterie Globale du Portail** : Suppression des réveils CPU inutiles en veille (boucle adaptative 30s, KeepAlive 15 min, pause complète des reconnexions sans réseau).
+            - **Carte Interactive OpenStreetMap (Leaflet) & Export GPX / CSV** : Tracé complet par période (*Aujourd’hui*, *24 h*, *7 j*, *30 j*), statistiques trajet (km, vitesse max, arrêts), journal cliquable et export `.gpx` / `.csv` en 1 clic.
+            - **Toutes les fonctions v6.0 incluses** : Talkie-Walkie Haut-Parleur 1-Sens, Caméra HD, Partage d’Écran, Contacts, Pass temporaires & Profils Amis.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

@@ -15,6 +15,7 @@ import {
   Download,
   ExternalLink,
   FlipHorizontal,
+  Gauge,
   HardDrive,
   Lock,
   Mail,
@@ -23,9 +24,11 @@ import {
   Mic,
   MicOff,
   Monitor,
+  Navigation,
   Phone,
   Power,
   RefreshCw,
+  Route,
   Search,
   Share2,
   ShieldAlert,
@@ -48,6 +51,8 @@ import type {
   AuthErrMsg,
   CameraFacingMode,
   DeviceTelemetry,
+  GpsTrackPoint,
+  LocationHistoryBundle,
   MediaSourceMode,
   PairedDeviceRecord,
   PortalOperationalState,
@@ -58,6 +63,7 @@ import type {
   StreamQualityPreset,
   StreamRealtimeStats,
 } from '../types/sentinel';
+import { GpsTrailMap } from './GpsTrailMap';
 import { SecuritySasModal } from './SecuritySasModal';
 
 interface ControlStationViewProps {
@@ -112,6 +118,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [locationData, setLocationData] = useState<SharedLocationData | null>(null);
   const [locationLoading, setLocationLoading] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [historyRange, setHistoryRange] = useState<'today' | '24h' | '7d' | '30d'>('24h');
+  const [historyBundle, setHistoryBundle] = useState<LocationHistoryBundle | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [focusedTrackPoint, setFocusedTrackPoint] = useState<GpsTrackPoint | null>(null);
 
   const [deviceInfo, setDeviceInfo] = useState<SharedDeviceInfoData | null>(null);
   const [deviceInfoLoading, setDeviceInfoLoading] = useState(false);
@@ -222,6 +232,29 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           setLocationData(data.location);
         }
       },
+      onLocationHistoryData: (bundle) => {
+        setHistoryLoading(false);
+        setHistoryBundle(bundle);
+        if (bundle.error) {
+          setLocationError(bundle.error);
+        } else if (bundle.points.length > 0) {
+          const last = bundle.points[bundle.points.length - 1];
+          setLocationData((prev) =>
+            prev && prev.timestamp > last.timestamp
+              ? prev
+              : {
+                  latitude: last.latitude,
+                  longitude: last.longitude,
+                  accuracyMeters: last.accuracyMeters,
+                  speedKmh: last.speedKmh,
+                  batteryLevel: last.batteryLevel,
+                  dwellSeconds: last.dwellSeconds,
+                  provider: last.provider,
+                  timestamp: last.timestamp,
+                }
+          );
+        }
+      },
       onDeviceInfoData: (data) => {
         setDeviceInfoLoading(false);
         if (data.info) {
@@ -268,6 +301,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setViewerTab('media');
     setContacts([]);
     setLocationData(null);
+    setHistoryBundle(null);
+    setFocusedTrackPoint(null);
     setDeviceInfo(null);
     setCodeChars(normalized.split(''));
     try {
@@ -480,7 +515,71 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     }
     if (!locationData && accessGrant?.allowLocation) {
       void handleFetchLocation();
+      void handleFetchLocationHistory(historyRange);
     }
+  };
+
+  const handleFetchLocationHistory = async (range: 'today' | '24h' | '7d' | '30d') => {
+    setHistoryRange(range);
+    setHistoryLoading(true);
+    setFocusedTrackPoint(null);
+    const now = Date.now();
+    let fromTs = now - 24 * 3600 * 1000;
+    if (range === 'today') {
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      fromTs = start.getTime();
+    } else if (range === '7d') {
+      fromTs = now - 7 * 24 * 3600 * 1000;
+    } else if (range === '30d') {
+      fromTs = now - 30 * 24 * 3600 * 1000;
+    }
+    await controllerRef.current?.requestLocationHistory(fromTs, now, 1800);
+    window.setTimeout(() => setHistoryLoading(false), 12000);
+  };
+
+  const handleExportGpx = () => {
+    const pts = historyBundle?.points ?? [];
+    if (pts.length === 0) return;
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const name = esc(telemetry?.deviceName || 'SentinelCam');
+    const trkpts = pts
+      .map(
+        (p) =>
+          `      <trkpt lat="${p.latitude.toFixed(6)}" lon="${p.longitude.toFixed(6)}"><time>${new Date(
+            p.timestamp
+          ).toISOString()}</time><desc>±${p.accuracyMeters}m | ${p.speedKmh.toFixed(
+            1
+          )} km/h | Bat ${p.batteryLevel}%</desc></trkpt>`
+      )
+      .join('\n');
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="SentinelCam v7.0" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk>\n    <name>${name} (${historyRange})</name>\n    <trkseg>\n${trkpts}\n    </trkseg>\n  </trk>\n</gpx>`;
+    const blob = new Blob([gpx], { type: 'application/gpx+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sentinelcam-trace-${historyRange}-${new Date().toISOString().slice(0, 10)}.gpx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportCsv = () => {
+    const pts = historyBundle?.points ?? [];
+    if (pts.length === 0) return;
+    const header = 'date_iso,latitude,longitude,precision_m,vitesse_kmh,batterie_pct,arret_sec,source';
+    const rows = pts.map(
+      (p) =>
+        `${new Date(p.timestamp).toISOString()},${p.latitude.toFixed(6)},${p.longitude.toFixed(6)},${
+          p.accuracyMeters
+        },${p.speedKmh.toFixed(1)},${p.batteryLevel},${p.dwellSeconds},${p.provider}`
+    );
+    const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sentinelcam-trace-${historyRange}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleCopySmall = async (value: string, id: string) => {
@@ -1288,26 +1387,68 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       )}
 
-      {/* ==================== VIEWER TAB 3: GPS LOCATION & DEVICE INFO ==================== */}
+      {/* ==================== VIEWER TAB 3: GPS TRAIL HISTORY & DEVICE INFO ==================== */}
       {viewerTab === 'device' && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {/* GPS Location Card */}
+        <div className="space-y-4">
+          {/* GPS Continuous Offline History & Interactive Map Card */}
           <div className="rounded-3xl border border-slate-800 bg-obsidian-900/90 p-5 shadow-2xl">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <MapPin className="h-5 w-5 text-rose-400" />
-                <h2 className="text-sm font-extrabold text-white">Localisation GPS</h2>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-rose-500/35 bg-rose-500/15 text-rose-400">
+                  <Route className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-sm font-extrabold text-white">
+                      Historique GPS Continu & Position
+                    </h2>
+                    {telemetry?.gpsTrackerState && telemetry.gpsTrackerState !== 'disabled' && (
+                      <span
+                        className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-bold ${
+                          telemetry.gpsTrackerState === 'moving'
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : telemetry.gpsTrackerState === 'stationary'
+                            ? 'bg-sky-500/20 text-sky-300'
+                            : 'bg-amber-500/20 text-amber-300'
+                        }`}
+                      >
+                        {telemetry.gpsTrackerState === 'moving'
+                          ? 'EN MOUVEMENT • GPS ACTIF'
+                          : telemetry.gpsTrackerState === 'stationary'
+                          ? 'IMMOBILE • VEILLE 0% GPS'
+                          : telemetry.gpsTrackerState === 'battery_saver'
+                          ? 'ÉCO BATTERIE (<15%)'
+                          : 'PERMISSION REQUISE'}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Enregistré localement même hors-ligne / sans serveur, puis synchronisé en E2EE.
+                  </p>
+                </div>
               </div>
+
               {canViewLocation && (
-                <button
-                  type="button"
-                  disabled={locationLoading}
-                  onClick={() => void handleFetchLocation()}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/35 bg-rose-500/15 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-500/25"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${locationLoading ? 'animate-spin' : ''}`} />
-                  <span>Localiser</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={locationLoading}
+                    onClick={() => void handleFetchLocation()}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-sky-500/35 bg-sky-500/15 px-3 py-1.5 text-xs font-bold text-sky-200 hover:bg-sky-500/25"
+                  >
+                    <Navigation className={`h-3.5 w-3.5 ${locationLoading ? 'animate-spin' : ''}`} />
+                    <span>Position actuelle</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={historyLoading}
+                    onClick={() => void handleFetchLocationHistory(historyRange)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/35 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/25"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${historyLoading ? 'animate-spin' : ''}`} />
+                    <span>Sync trace</span>
+                  </button>
+                </div>
               )}
             </div>
 
@@ -1315,47 +1456,197 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               <p className="mt-4 rounded-xl border border-slate-800 bg-obsidian-950 p-4 text-xs text-slate-400">
                 Le propriétaire n’a pas autorisé le partage de la localisation GPS pour cet accès.
               </p>
-            ) : locationError ? (
-              <p className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-xs text-rose-200">
-                {locationError}
-              </p>
-            ) : locationData ? (
-              <div className="mt-4 space-y-3">
-                <div className="overflow-hidden rounded-2xl border border-slate-800 bg-obsidian-950">
-                  <iframe
-                    title="Carte GPS SentinelCam"
-                    src={`https://www.openstreetmap.org/export/embed.html?bbox=${
-                      locationData.longitude - 0.008
-                    }%2C${locationData.latitude - 0.006}%2C${
-                      locationData.longitude + 0.008
-                    }%2C${locationData.latitude + 0.006}&layer=mapnik&marker=${
-                      locationData.latitude
-                    }%2C${locationData.longitude}`}
-                    className="h-52 w-full border-0"
-                  />
+            ) : (
+              <div className="mt-4 space-y-4">
+                {/* Range Selector + Export Buttons */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-800 bg-obsidian-950 p-1">
+                    {(
+                      [
+                        { id: 'today', label: 'Aujourd’hui' },
+                        { id: '24h', label: '24 h' },
+                        { id: '7d', label: '7 jours' },
+                        { id: '30d', label: '30 jours' },
+                      ] as const
+                    ).map((r) => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => void handleFetchLocationHistory(r.id)}
+                        className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                          historyRange === r.id
+                            ? 'bg-emerald-500 text-obsidian-950'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(historyBundle?.points.length ?? 0) > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleExportGpx}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-emerald-500/50 hover:text-emerald-300"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          <span>Export GPX</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleExportCsv}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-cyan-500/50 hover:text-cyan-300"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          <span>Export CSV</span>
+                        </button>
+                      </>
+                    )}
+                    {locationData && (
+                      <a
+                        href={`https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-xl bg-emerald-500 px-3 py-1.5 text-xs font-extrabold text-obsidian-950 hover:bg-emerald-400"
+                      >
+                        <span>Google Maps</span>
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                  </div>
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-obsidian-950 p-3 text-xs">
-                  <div className="font-mono text-slate-200">
-                    {locationData.latitude.toFixed(5)}, {locationData.longitude.toFixed(5)}
-                    <div className="text-[10px] text-slate-500">
-                      Précision ±{locationData.accuracyMeters}m •{' '}
-                      {new Date(locationData.timestamp).toLocaleTimeString('fr-FR')}
+
+                {locationError && (
+                  <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
+                    {locationError}
+                  </div>
+                )}
+
+                {/* Trip KPI Stats */}
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                  <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      Distance
+                    </div>
+                    <div className="mt-1 font-mono text-lg font-extrabold text-emerald-300">
+                      {((historyBundle?.totalDistanceMeters ?? 0) / 1000).toFixed(2)} km
                     </div>
                   </div>
-                  <a
-                    href={`https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-extrabold text-obsidian-950 hover:bg-emerald-400"
-                  >
-                    <span>Google Maps</span>
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
+                  <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      Points tracés
+                    </div>
+                    <div className="mt-1 font-mono text-lg font-extrabold text-sky-300">
+                      {historyBundle?.rawPointCount ?? telemetry?.gpsPointsCount ?? 0}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      Arrêts (&ge;2m)
+                    </div>
+                    <div className="mt-1 font-mono text-lg font-extrabold text-amber-300">
+                      {historyBundle?.stopsCount ?? 0}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3">
+                    <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      <Gauge className="h-3 w-3" />
+                      <span>Vitesse max</span>
+                    </div>
+                    <div className="mt-1 font-mono text-lg font-extrabold text-cyan-300">
+                      {(historyBundle?.maxSpeedKmh ?? 0).toFixed(1)} km/h
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div className="py-10 text-center text-xs text-slate-500">
-                Cliquez sur « Localiser » pour interroger le GPS du smartphone.
+
+                {/* Interactive Leaflet OpenStreetMap Trail Map */}
+                <GpsTrailMap
+                  points={historyBundle?.points ?? []}
+                  liveLocation={locationData}
+                  focusedPoint={focusedTrackPoint}
+                />
+
+                {/* Latest Live Position Summary Bar */}
+                {locationData && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-obsidian-950 px-3.5 py-2.5 text-xs">
+                    <div className="flex items-center gap-2 font-mono text-slate-200">
+                      <MapPin className="h-4 w-4 text-sky-400" />
+                      <span>
+                        {locationData.latitude.toFixed(6)}, {locationData.longitude.toFixed(6)}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      Précision ±{locationData.accuracyMeters} m •{' '}
+                      {new Date(locationData.timestamp).toLocaleString('fr-FR')}
+                    </div>
+                  </div>
+                )}
+
+                {/* Chronological Stops & Key Points List */}
+                {(historyBundle?.points.length ?? 0) > 0 && (
+                  <div className="rounded-2xl border border-slate-800 bg-obsidian-950/90 p-3.5">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-extrabold text-white">
+                        Journal chronologique (cliquez un point pour centrer la carte)
+                      </span>
+                      <span className="font-mono text-[10px] text-slate-500">
+                        {historyBundle?.points.length} affichés
+                      </span>
+                    </div>
+                    <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
+                      {[...(historyBundle?.points ?? [])]
+                        .reverse()
+                        .slice(0, 80)
+                        .map((pt, idx) => {
+                          const isStop = pt.dwellSeconds >= 120;
+                          return (
+                            <button
+                              key={`${pt.timestamp}-${idx}`}
+                              type="button"
+                              onClick={() => setFocusedTrackPoint(pt)}
+                              className="flex w-full items-center justify-between gap-2 rounded-xl border border-slate-800/80 bg-obsidian-900/70 px-3 py-2 text-left text-xs transition hover:border-emerald-500/40 hover:bg-obsidian-900"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <span
+                                  className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                                    isStop ? 'bg-amber-400' : 'bg-emerald-400'
+                                  }`}
+                                />
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="font-mono font-bold text-white">
+                                      {new Date(pt.timestamp).toLocaleString('fr-FR', {
+                                        day: '2-digit',
+                                        month: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                      })}
+                                    </span>
+                                    {isStop && (
+                                      <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">
+                                        Arrêt {Math.round(pt.dwellSeconds / 60)} min
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="truncate font-mono text-[10px] text-slate-400">
+                                    {pt.latitude.toFixed(5)}, {pt.longitude.toFixed(5)} • ±
+                                    {pt.accuracyMeters}m
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="shrink-0 text-right font-mono text-[10px] text-slate-400">
+                                <div className="text-cyan-300">{pt.speedKmh.toFixed(1)} km/h</div>
+                                <div>Bat {pt.batteryLevel}%</div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

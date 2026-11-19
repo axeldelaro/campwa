@@ -25,6 +25,8 @@ import com.sentinelcam.app.MainActivity
 import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.data.DeviceDataHelper
+import com.sentinelcam.app.location.LocationHistoryStore
+import com.sentinelcam.app.location.SmartLocationTracker
 import com.sentinelcam.app.receiver.KeepAliveReceiver
 import com.sentinelcam.app.receiver.StopPortalReceiver
 import com.sentinelcam.app.signaling.MqttSignalingEngine
@@ -53,6 +55,8 @@ class CameraForegroundService : Service() {
     private val channelKeysById = ConcurrentHashMap<String, BootstrapKeys>()
     private var signalingEngine: MqttSignalingEngine? = null
     private var webRtcEngine: NativeWebRtcEngine? = null
+    private var locationStore: LocationHistoryStore? = null
+    private var locationTracker: SmartLocationTracker? = null
     private var startedAtMs: Long = System.currentTimeMillis()
     private var telemetryLoopStarted: Boolean = false
 
@@ -89,6 +93,12 @@ class CameraForegroundService : Service() {
         instance = this
         prefs = PortalPreferences(this)
         startedAtMs = System.currentTimeMillis()
+        val store = LocationHistoryStore(applicationContext)
+        locationStore = store
+        locationTracker = SmartLocationTracker(applicationContext, store) {
+            refreshGpsStaticState()
+            notifyStateListeners()
+        }
         createNotificationChannel()
     }
 
@@ -137,6 +147,7 @@ class CameraForegroundService : Service() {
         }
 
         ensureSignalingRunning(forceRebuild = false)
+        syncLocationTrackerState()
         notifyStateListeners()
         return START_STICKY
     }
@@ -184,6 +195,13 @@ class CameraForegroundService : Service() {
         val rtc = webRtcEngine
         webRtcEngine = null
         try { rtc?.shutdownEngine() } catch (_: Throwable) {}
+
+        val tracker = locationTracker
+        locationTracker = null
+        try { tracker?.destroy() } catch (_: Throwable) {}
+        try { locationStore?.close() } catch (_: Throwable) {}
+        locationStore = null
+        gpsTrackerState = "disabled"
 
         releaseStreamingLocks()
 
@@ -395,7 +413,30 @@ class CameraForegroundService : Service() {
         }
     }
 
+    private fun syncLocationTrackerState() {
+        try {
+            val shouldTrack = prefs.globalAllowLocation && prefs.globalAllowLocationHistory
+            locationTracker?.configureAndSync(shouldTrack, prefs.gpsTrackingMode)
+            refreshGpsStaticState()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun refreshGpsStaticState() {
+        try {
+            gpsTrackerState = locationTracker?.trackerState ?: "disabled"
+            val stats = locationStore?.getStats()
+            if (stats != null) {
+                gpsPointsCount = stats.totalPoints
+                gpsTodayPointsCount = stats.todayPoints
+                gpsLastFixTs = stats.latestTimestamp ?: 0L
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     fun syncChannelsHot() {
+        syncLocationTrackerState()
         val engine = signalingEngine
         if (engine == null) {
             ensureSignalingRunning(forceRebuild = false)
@@ -417,15 +458,16 @@ class CameraForegroundService : Service() {
         serviceScope.launch(Dispatchers.IO) {
             var tick = 0
             while (isActive) {
-                delay(3_000L)
+                val viewerActive = isStreaming || (System.currentTimeMillis() - lastViewerSeenMs) < 35_000L
+                // Ultra-Eco battery optimization: sleep 30s when completely idle, 3s when viewer active
+                delay(if (viewerActive) 3_000L else 30_000L)
                 if (!isRunning) continue
-                enforceActiveViewerValidity()
+                if (isStreaming) {
+                    enforceActiveViewerValidity()
+                }
                 tick++
-                if (tick % 2 == 0) {
-                    val viewerActive = isStreaming || (System.currentTimeMillis() - lastViewerSeenMs) < 35_000L
-                    if (viewerActive) {
-                        broadcastPresenceNow(activeStreamChannelId)
-                    }
+                if (viewerActive && tick % 2 == 0) {
+                    broadcastPresenceNow(activeStreamChannelId)
                 }
             }
         }
@@ -646,6 +688,10 @@ class CameraForegroundService : Service() {
             put("allowDeviceInfo", grant.allowDeviceInfo)
             put("allowIntercom", grant.allowIntercom)
             put("intercomActive", intercomActive)
+            put("gpsTrackerState", gpsTrackerState)
+            put("gpsTrackingMode", prefs.gpsTrackingMode)
+            put("gpsPointsCount", gpsPointsCount)
+            put("gpsTodayPointsCount", gpsTodayPointsCount)
             put("ts", System.currentTimeMillis())
         }
     }
@@ -915,19 +961,135 @@ class CameraForegroundService : Service() {
                             mode = "sess"
                         )
                     } else {
+                        val tracker = locationTracker
+                        if (tracker != null) {
+                            tracker.requestSingleFreshFix { rec, err ->
+                                signalingEngine?.send(
+                                    channelId = channelId,
+                                    payload = JSONObject().apply {
+                                        put("type", "DATA_LOCATION")
+                                        put("requestId", reqId)
+                                        put("location", rec?.toFullLocationJson() ?: JSONObject.NULL)
+                                        put("trackerState", gpsTrackerState)
+                                        put("trackingMode", prefs.gpsTrackingMode)
+                                        if (err != null) put("error", err)
+                                        put("ts", System.currentTimeMillis())
+                                    },
+                                    mode = "sess"
+                                )
+                            }
+                        } else {
+                            serviceScope.launch(Dispatchers.IO) {
+                                val (locJson, err) = DeviceDataHelper.readBestKnownLocation(applicationContext)
+                                signalingEngine?.send(
+                                    channelId = channelId,
+                                    payload = JSONObject().apply {
+                                        put("type", "DATA_LOCATION")
+                                        put("requestId", reqId)
+                                        put("location", locJson ?: JSONObject.NULL)
+                                        if (err != null) put("error", err)
+                                        put("ts", System.currentTimeMillis())
+                                    },
+                                    mode = "sess"
+                                )
+                            }
+                        }
+                    }
+                }
+
+                "CMD_GET_LOCATION_HISTORY" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val nowMs = System.currentTimeMillis()
+                    val fromTs = msg.optLong("fromTs", nowMs - 24L * 3600L * 1000L)
+                    val toTs = msg.optLong("toTs", nowMs)
+                    val maxPoints = msg.optInt("maxPoints", 1800).coerceIn(50, 2500)
+
+                    if (!grant.allowLocation) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_LOCATION_HISTORY")
+                                put("requestId", reqId)
+                                put("chunkIndex", 0)
+                                put("totalChunks", 1)
+                                put("points", org.json.JSONArray())
+                                put("rawPointCount", 0)
+                                put("totalDistanceMeters", 0.0)
+                                put("maxSpeedKmh", 0.0)
+                                put("stopsCount", 0)
+                                put("trackerState", gpsTrackerState)
+                                put("trackingMode", prefs.gpsTrackingMode)
+                                put("error", "Le propriétaire n’a pas autorisé le partage de la localisation GPS.")
+                                put("ts", nowMs)
+                            },
+                            mode = "sess"
+                        )
+                    } else {
                         serviceScope.launch(Dispatchers.IO) {
-                            val (locJson, err) = DeviceDataHelper.readBestKnownLocation(applicationContext)
-                            signalingEngine?.send(
-                                channelId = channelId,
-                                payload = JSONObject().apply {
-                                    put("type", "DATA_LOCATION")
-                                    put("requestId", reqId)
-                                    put("location", locJson ?: JSONObject.NULL)
-                                    if (err != null) put("error", err)
-                                    put("ts", System.currentTimeMillis())
-                                },
-                                mode = "sess"
-                            )
+                            val store = locationStore
+                            val res = store?.queryRange(fromTs, toTs, maxPoints)
+                            if (res == null || res.points.isEmpty()) {
+                                signalingEngine?.send(
+                                    channelId = channelId,
+                                    payload = JSONObject().apply {
+                                        put("type", "DATA_LOCATION_HISTORY")
+                                        put("requestId", reqId)
+                                        put("chunkIndex", 0)
+                                        put("totalChunks", 1)
+                                        put("points", org.json.JSONArray())
+                                        put("rawPointCount", 0)
+                                        put("totalDistanceMeters", 0.0)
+                                        put("maxSpeedKmh", 0.0)
+                                        put("stopsCount", 0)
+                                        put("trackerState", gpsTrackerState)
+                                        put("trackingMode", prefs.gpsTrackingMode)
+                                        put("ts", System.currentTimeMillis())
+                                    },
+                                    mode = "sess"
+                                )
+                            } else {
+                                // Send compact E2EE chunks (240 points/chunk) so even 30-day offline logs transfer smoothly
+                                val chunkSize = 240
+                                val totalChunks = ((res.points.size + chunkSize - 1) / chunkSize).coerceAtLeast(1)
+                                for (chunkIdx in 0 until totalChunks) {
+                                    val start = chunkIdx * chunkSize
+                                    val end = minOf(start + chunkSize, res.points.size)
+                                    val arr = org.json.JSONArray()
+                                    for (i in start until end) {
+                                        arr.put(res.points[i].toCompactJsonArray())
+                                    }
+                                    signalingEngine?.send(
+                                        channelId = channelId,
+                                        payload = JSONObject().apply {
+                                            put("type", "DATA_LOCATION_HISTORY")
+                                            put("requestId", reqId)
+                                            put("chunkIndex", chunkIdx)
+                                            put("totalChunks", totalChunks)
+                                            put("points", arr)
+                                            put("rawPointCount", res.rawPointCount)
+                                            put("totalDistanceMeters", Math.round(res.totalDistanceMeters).toDouble())
+                                            put("maxSpeedKmh", res.maxSpeedKmh)
+                                            put("stopsCount", res.stopsCount)
+                                            put("trackerState", gpsTrackerState)
+                                            put("trackingMode", prefs.gpsTrackingMode)
+                                            put("ts", System.currentTimeMillis())
+                                        },
+                                        mode = "sess"
+                                    )
+                                    if (totalChunks > 1) delay(45L)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                "CMD_CLEAR_LOCATION_HISTORY" -> {
+                    if (channelId == OWNER_CHANNEL_ID) {
+                        serviceScope.launch(Dispatchers.IO) {
+                            locationStore?.clearAll()
+                            refreshGpsStaticState()
+                            broadcastPresenceNow(channelId)
+                            notifyStateListeners()
                         }
                     }
                 }
@@ -1093,6 +1255,10 @@ class CameraForegroundService : Service() {
                 put("allowDeviceInfo", grant.allowDeviceInfo)
                 put("allowIntercom", grant.allowIntercom)
                 put("intercomActive", intercomActive)
+                put("gpsTrackerState", gpsTrackerState)
+                put("gpsTrackingMode", prefs.gpsTrackingMode)
+                put("gpsPointsCount", gpsPointsCount)
+                put("gpsTodayPointsCount", gpsTodayPointsCount)
                 put("ts", now)
             },
             mode = "boot"
@@ -1229,6 +1395,13 @@ class CameraForegroundService : Service() {
             PackageManager.PERMISSION_GRANTED
         val hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
+        val hasLoc = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val hasBgLoc = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
         val hasScreenConsent = (promoteScreen || mediaProjectionFgsPromoted) && screenProjectionIntent != null
 
         var fgType = 0
@@ -1240,6 +1413,9 @@ class CameraForegroundService : Service() {
         }
         if (hasScreenConsent) {
             fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        }
+        if (hasLoc && prefs.globalAllowLocation && prefs.globalAllowLocationHistory && (appVisible || hasBgLoc)) {
+            fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
@@ -1373,6 +1549,41 @@ class CameraForegroundService : Service() {
         @Volatile
         var activeViewerExpiresAt: Long? = null
             private set
+
+        @Volatile
+        var gpsTrackerState: String = "disabled"
+            private set
+
+        @Volatile
+        var gpsPointsCount: Int = 0
+            private set
+
+        @Volatile
+        var gpsTodayPointsCount: Int = 0
+            private set
+
+        @Volatile
+        var gpsLastFixTs: Long = 0L
+            private set
+
+        fun clearLocationHistory(context: Context) {
+            try {
+                val running = instance
+                if (running != null) {
+                    running.locationStore?.clearAll()
+                    running.refreshGpsStaticState()
+                } else {
+                    val store = LocationHistoryStore(context.applicationContext)
+                    store.clearAll()
+                    store.close()
+                    gpsPointsCount = 0
+                    gpsTodayPointsCount = 0
+                    gpsLastFixTs = 0L
+                }
+                notifyStateListeners()
+            } catch (_: Throwable) {
+            }
+        }
 
         fun hasActiveScreenProjectionConsent(): Boolean = screenProjectionIntent != null
 

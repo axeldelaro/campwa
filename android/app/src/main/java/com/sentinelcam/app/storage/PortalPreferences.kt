@@ -91,6 +91,20 @@ class PortalPreferences(context: Context) {
             prefs.edit().putBoolean(KEY_GLOBAL_LOCATION, value).commit()
         }
 
+    var globalAllowLocationHistory: Boolean
+        get() = prefs.getBoolean(KEY_GLOBAL_LOCATION_HISTORY, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GLOBAL_LOCATION_HISTORY, value).commit()
+        }
+
+    /** "eco" | "balanced" | "precision" */
+    var gpsTrackingMode: String
+        get() = prefs.getString(KEY_GPS_TRACKING_MODE, "eco") ?: "eco"
+        set(value) {
+            val clean = if (value in listOf("eco", "balanced", "precision")) value else "eco"
+            prefs.edit().putString(KEY_GPS_TRACKING_MODE, clean).commit()
+        }
+
     var globalAllowDeviceInfo: Boolean
         get() = prefs.getBoolean(KEY_GLOBAL_DEVICE_INFO, true)
         set(value) {
@@ -411,6 +425,8 @@ class PortalPreferences(context: Context) {
         private const val KEY_GLOBAL_SCREEN = "global_allow_screen_share"
         private const val KEY_GLOBAL_CONTACTS = "global_allow_contacts"
         private const val KEY_GLOBAL_LOCATION = "global_allow_location"
+        private const val KEY_GLOBAL_LOCATION_HISTORY = "global_allow_location_history"
+        private const val KEY_GPS_TRACKING_MODE = "gps_tracking_mode"
         private const val KEY_GLOBAL_DEVICE_INFO = "global_allow_device_info"
         private const val KEY_GLOBAL_INTERCOM = "global_allow_intercom"
         private const val KEY_PAIRING_CODE = "pairing_code"

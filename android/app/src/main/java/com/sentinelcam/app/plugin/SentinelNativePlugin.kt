@@ -56,6 +56,12 @@ import org.json.JSONObject
                 Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.ACCESS_COARSE_LOCATION
             ]
+        ),
+        Permission(
+            alias = "backgroundLocation",
+            strings = [
+                "android.permission.ACCESS_BACKGROUND_LOCATION"
+            ]
         )
     ]
 )
@@ -150,7 +156,38 @@ class SentinelNativePlugin : Plugin() {
             Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
         prefs.globalAllowLocation = fine || coarse
+        if ((fine || coarse) && CameraForegroundService.isRunning) {
+            CameraForegroundService.startFromUi(context)
+        }
         CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun requestBackgroundLocationPermission(call: PluginCall) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                requestPermissionForAlias("backgroundLocation", call, "backgroundLocationCallback")
+            } else {
+                call.resolve(buildPortalStateObject())
+            }
+        } catch (_: Throwable) {
+            call.resolve(buildPortalStateObject())
+        }
+    }
+
+    @PermissionCallback
+    fun backgroundLocationCallback(call: PluginCall) {
+        if (CameraForegroundService.isRunning) {
+            CameraForegroundService.startFromUi(context)
+        }
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun clearLocationHistory(call: PluginCall) {
+        CameraForegroundService.clearLocationHistory(context)
         call.resolve(buildPortalStateObject())
     }
 
@@ -196,7 +233,22 @@ class SentinelNativePlugin : Plugin() {
             prefs.globalAllowContacts = call.getBoolean("allowContacts", false) ?: false
         }
         if (call.data.has("allowLocation")) {
-            prefs.globalAllowLocation = call.getBoolean("allowLocation", false) ?: false
+            val enabled = call.getBoolean("allowLocation", false) ?: false
+            prefs.globalAllowLocation = enabled
+            if (enabled && CameraForegroundService.isRunning) {
+                CameraForegroundService.startFromUi(context)
+            }
+        }
+        if (call.data.has("allowLocationHistory")) {
+            val enabled = call.getBoolean("allowLocationHistory", true) ?: true
+            prefs.globalAllowLocationHistory = enabled
+            if (enabled && prefs.globalAllowLocation && CameraForegroundService.isRunning) {
+                CameraForegroundService.startFromUi(context)
+            }
+        }
+        if (call.data.has("gpsTrackingMode")) {
+            val mode = call.getString("gpsTrackingMode") ?: "eco"
+            prefs.gpsTrackingMode = mode
         }
         if (call.data.has("allowDeviceInfo")) {
             prefs.globalAllowDeviceInfo = call.getBoolean("allowDeviceInfo", true) ?: true
@@ -409,6 +461,15 @@ class SentinelNativePlugin : Plugin() {
                 Manifest.permission.ACCESS_COARSE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
 
+        val bgLocationGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            locationGranted
+        }
+
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         val batteryIgnored = pm.isIgnoringBatteryOptimizations(context.packageName)
 
@@ -419,6 +480,7 @@ class SentinelNativePlugin : Plugin() {
             put("batteryOptimizationIgnored", batteryIgnored)
             put("contacts", contactsGranted)
             put("location", locationGranted)
+            put("backgroundLocation", bgLocationGranted)
             put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
         }
     }
@@ -485,6 +547,8 @@ class SentinelNativePlugin : Plugin() {
             put("allowScreenShare", prefs.globalAllowScreenShare)
             put("allowContacts", prefs.globalAllowContacts)
             put("allowLocation", prefs.globalAllowLocation)
+            put("allowLocationHistory", prefs.globalAllowLocationHistory)
+            put("gpsTrackingMode", prefs.gpsTrackingMode)
             put("allowDeviceInfo", prefs.globalAllowDeviceInfo)
             put("allowIntercom", prefs.globalAllowIntercom)
             put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
@@ -509,6 +573,10 @@ class SentinelNativePlugin : Plugin() {
             put("mediaMode", CameraForegroundService.currentMediaMode)
             put("micEnabled", CameraForegroundService.currentMic)
             put("intercomActive", CameraForegroundService.intercomActive)
+            put("gpsTrackerState", CameraForegroundService.gpsTrackerState)
+            put("gpsPointsCount", CameraForegroundService.gpsPointsCount)
+            put("gpsTodayPointsCount", CameraForegroundService.gpsTodayPointsCount)
+            put("gpsLastFixTs", CameraForegroundService.gpsLastFixTs)
             put("autoStartOnBoot", prefs.autoStartOnBoot)
             put("failedAttempts", prefs.failedAttempts)
             put("lockoutRemainingMs", lockoutRem)

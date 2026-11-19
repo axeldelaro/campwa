@@ -30,7 +30,8 @@ class KeepAliveReceiver : BroadcastReceiver() {
 
     companion object {
         private const val REQ_CODE = 8402
-        private const val PULSE_INTERVAL_MS = 120_000L // 2 minutes
+        private const val ECO_CONNECTED_INTERVAL_MS = 900_000L // 15 min when healthy (zero Doze drain)
+        private const val RECOVERY_INTERVAL_MS = 300_000L // 5 min if disconnected or stopped
 
         fun scheduleNextPulse(context: Context) {
             try {
@@ -43,9 +44,16 @@ class KeepAliveReceiver : BroadcastReceiver() {
                     intent,
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
-                val triggerAt = SystemClock.elapsedRealtime() + PULSE_INTERVAL_MS
+                val healthy = CameraForegroundService.isRunning && CameraForegroundService.mqttConnected
+                val intervalMs = if (healthy) ECO_CONNECTED_INTERVAL_MS else RECOVERY_INTERVAL_MS
+                val triggerAt = SystemClock.elapsedRealtime() + intervalMs
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+                    if (healthy) {
+                        // Inexact/eco wakeup lets Android batch alarms for maximum battery life
+                        am.setWindow(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, 120_000L, pi)
+                    } else {
+                        am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+                    }
                 } else {
                     am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
                 }

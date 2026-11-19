@@ -1,6 +1,7 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import type {
   AccessProfileInput,
+  GpsTrackingMode,
   NativePermissionStatus,
   NativePortalState,
 } from '../types/sentinel';
@@ -11,12 +12,16 @@ export interface SentinelNativePluginContract {
   requestBatteryExemption(): Promise<{ batteryOptimizationIgnored: boolean }>;
   requestContactsPermission(): Promise<NativePortalState>;
   requestLocationPermission(): Promise<NativePortalState>;
+  requestBackgroundLocationPermission(): Promise<NativePortalState>;
+  clearLocationHistory(): Promise<NativePortalState>;
   requestScreenSharePermission(): Promise<NativePortalState>;
   revokeScreenSharePermission(): Promise<NativePortalState>;
   setGlobalShareSettings(options: {
     allowScreenShare?: boolean;
     allowContacts?: boolean;
     allowLocation?: boolean;
+    allowLocationHistory?: boolean;
+    gpsTrackingMode?: GpsTrackingMode;
     allowDeviceInfo?: boolean;
     allowIntercom?: boolean;
   }): Promise<NativePortalState>;

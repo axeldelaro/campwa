@@ -8,10 +8,21 @@ export type StreamQualityPreset = 'sd' | 'hd';
 
 export type AccessProfileRole = 'owner' | 'friend' | 'guest';
 
+export type GpsTrackingMode = 'eco' | 'balanced' | 'precision';
+
+export type GpsTrackerState =
+  | 'disabled'
+  | 'no_permission'
+  | 'moving'
+  | 'stationary'
+  | 'battery_saver';
+
 export interface GlobalShareSettings {
   allowScreenShare: boolean;
   allowContacts: boolean;
   allowLocation: boolean;
+  allowLocationHistory: boolean;
+  gpsTrackingMode: GpsTrackingMode;
   allowDeviceInfo: boolean;
   allowIntercom: boolean;
   screenShareReady: boolean;
@@ -62,8 +73,35 @@ export interface SharedLocationData {
   latitude: number;
   longitude: number;
   accuracyMeters: number;
+  speedKmh?: number;
+  bearing?: number;
+  altitude?: number;
+  batteryLevel?: number;
+  dwellSeconds?: number;
   provider: string;
   timestamp: number;
+}
+
+export interface GpsTrackPoint {
+  timestamp: number;
+  latitude: number;
+  longitude: number;
+  accuracyMeters: number;
+  speedKmh: number;
+  batteryLevel: number;
+  dwellSeconds: number;
+  provider: string;
+}
+
+export interface LocationHistoryBundle {
+  points: GpsTrackPoint[];
+  rawPointCount: number;
+  totalDistanceMeters: number;
+  maxSpeedKmh: number;
+  stopsCount: number;
+  trackerState: GpsTrackerState;
+  trackingMode: GpsTrackingMode;
+  error?: string;
 }
 
 export interface SharedDeviceInfoData {
@@ -153,6 +191,10 @@ export interface DeviceTelemetry {
   allowLocation?: boolean;
   allowDeviceInfo?: boolean;
   allowIntercom?: boolean;
+  gpsTrackerState?: GpsTrackerState;
+  gpsTrackingMode?: GpsTrackingMode;
+  gpsPointsCount?: number;
+  gpsTodayPointsCount?: number;
   updatedAt: number;
 }
 
@@ -229,6 +271,10 @@ export interface HelloAckMsg {
   allowLocation?: boolean;
   allowDeviceInfo?: boolean;
   allowIntercom?: boolean;
+  gpsTrackerState?: GpsTrackerState;
+  gpsTrackingMode?: GpsTrackingMode;
+  gpsPointsCount?: number;
+  gpsTodayPointsCount?: number;
   ts: number;
 }
 
@@ -267,6 +313,10 @@ export interface PortalStatusMsg {
   allowLocation?: boolean;
   allowDeviceInfo?: boolean;
   allowIntercom?: boolean;
+  gpsTrackerState?: GpsTrackerState;
+  gpsTrackingMode?: GpsTrackingMode;
+  gpsPointsCount?: number;
+  gpsTodayPointsCount?: number;
   ts: number;
 }
 
@@ -342,6 +392,39 @@ export interface DataLocationMsg {
   type: 'DATA_LOCATION';
   requestId: string;
   location: SharedLocationData | null;
+  trackerState?: GpsTrackerState;
+  trackingMode?: GpsTrackingMode;
+  error?: string;
+  ts: number;
+}
+
+export interface CmdGetLocationHistoryMsg {
+  type: 'CMD_GET_LOCATION_HISTORY';
+  requestId: string;
+  fromTs: number;
+  toTs: number;
+  maxPoints?: number;
+  ts: number;
+}
+
+export interface CmdClearLocationHistoryMsg {
+  type: 'CMD_CLEAR_LOCATION_HISTORY';
+  ts: number;
+}
+
+export interface DataLocationHistoryMsg {
+  type: 'DATA_LOCATION_HISTORY';
+  requestId: string;
+  chunkIndex: number;
+  totalChunks: number;
+  /** Compact tuples: [ts, lat, lng, acc, speedKmh, bat, dwellSec, providerCode] */
+  points: [number, number, number, number, number, number, number, string][];
+  rawPointCount: number;
+  totalDistanceMeters: number;
+  maxSpeedKmh: number;
+  stopsCount: number;
+  trackerState?: GpsTrackerState;
+  trackingMode?: GpsTrackingMode;
   error?: string;
   ts: number;
 }
@@ -410,6 +493,9 @@ export type SignalMessage =
   | DataContactsMsg
   | CmdGetLocationMsg
   | DataLocationMsg
+  | CmdGetLocationHistoryMsg
+  | CmdClearLocationHistoryMsg
+  | DataLocationHistoryMsg
   | CmdGetDeviceInfoMsg
   | DataDeviceInfoMsg
   | SdpOfferMsg
@@ -426,6 +512,7 @@ export interface NativePermissionStatus {
   batteryOptimizationIgnored: boolean;
   contacts: boolean;
   location: boolean;
+  backgroundLocation?: boolean;
   screenShareReady: boolean;
 }
 
@@ -454,6 +541,10 @@ export interface NativePortalState {
   mediaMode: MediaSourceMode;
   micEnabled: boolean;
   intercomActive: boolean;
+  gpsTrackerState?: GpsTrackerState;
+  gpsPointsCount?: number;
+  gpsTodayPointsCount?: number;
+  gpsLastFixTs?: number;
   autoStartOnBoot: boolean;
   failedAttempts: number;
   lockoutRemainingMs: number;

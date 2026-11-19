@@ -32,7 +32,7 @@ private object SharedOkHttpPool {
     val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(7, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(45, TimeUnit.SECONDS)
+        .pingInterval(60, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 }
@@ -150,11 +150,27 @@ class MqttSignalingEngine(
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            if (!destroyed) nudgeReconnect()
+            if (!destroyed) {
+                reconnectBackoffMs = 5_000L
+                nudgeReconnect()
+            }
         }
 
         override fun onLost(network: Network) {
             if (!destroyed) emitHealth()
+        }
+    }
+
+    @Volatile
+    private var reconnectBackoffMs: Long = 5_000L
+
+    private fun hasInternetConnectivity(): Boolean {
+        return try {
+            val active = connectivityManager.activeNetwork ?: return false
+            val caps = connectivityManager.getNetworkCapabilities(active) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Throwable) {
+            true
         }
     }
 
@@ -232,17 +248,32 @@ class MqttSignalingEngine(
         connectPushWakeStream()
 
         scope.launch {
-            var tick = 0
+            var lastPingMs = System.currentTimeMillis()
             while (isActive && !destroyed) {
+                var nextSleepMs = 30_000L
                 try {
-                    maintainEcoSockets()
-                    if (tick > 0 && tick % 8 == 0) {
-                        sendMqttPingActive()
+                    if (!hasInternetConnectivity()) {
+                        // Zero battery drain when offline / airplane mode: wait for NetworkCallback.onAvailable
+                        nextSleepMs = 60_000L
+                    } else {
+                        maintainEcoSockets()
+                        val now = System.currentTimeMillis()
+                        if (primaryNode.mqttReady || failoverNode.mqttReady) {
+                            reconnectBackoffMs = 5_000L
+                            if (now - lastPingMs >= 60_000L) {
+                                sendMqttPingActive()
+                                lastPingMs = now
+                            }
+                            nextSleepMs = 30_000L
+                        } else {
+                            // Exponential backoff avoids radio wake storms on weak signal
+                            nextSleepMs = reconnectBackoffMs
+                            reconnectBackoffMs = (reconnectBackoffMs * 2L).coerceAtMost(45_000L)
+                        }
                     }
-                    tick++
                 } catch (_: Throwable) {
                 }
-                delay(6_000L)
+                delay(nextSleepMs)
             }
         }
     }
@@ -279,7 +310,7 @@ class MqttSignalingEngine(
         if (destroyed) return
         val now = System.currentTimeMillis()
 
-        if (primaryNode.mqttReady && primaryNode.lastActivityMs > 0L && (now - primaryNode.lastActivityMs) > 95_000L) {
+        if (primaryNode.mqttReady && primaryNode.lastActivityMs > 0L && (now - primaryNode.lastActivityMs) > 140_000L) {
             closeNodeQuietly(primaryNode)
         }
 
@@ -318,7 +349,7 @@ class MqttSignalingEngine(
                     }
                     node.lastActivityMs = System.currentTimeMillis()
                     val clientId = "sc_d_${CryptoProtocol.randomHex(5)}"
-                    val connectPacket = buildMqttConnectPacket(clientId, keepAliveSec = 60)
+                    val connectPacket = buildMqttConnectPacket(clientId, keepAliveSec = 90)
                     webSocket.send(connectPacket.toByteString())
                 }
 

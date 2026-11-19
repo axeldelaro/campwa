@@ -108,7 +108,7 @@ export const App: React.FC = () => {
 
       <footer className="border-t border-slate-900/90 py-5 text-center text-[11px] text-slate-500">
         <div className="mx-auto max-w-7xl px-4">
-          SentinelCam v6.0 • Talkie Haut-Parleur 1-Sens • Partages à la Carte • Pass & Amis •{' '}
+          SentinelCam v7.0 • Historique GPS Hors-Ligne & Ultra-Éco • Talkie HP • Partages à la Carte •{' '}
           <a
             href="https://github.com/axeldelaro/campwa/releases/latest"
             target="_blank"

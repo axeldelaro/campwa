@@ -16,11 +16,14 @@ import type {
   CameraFacingMode,
   DataContactsMsg,
   DataDeviceInfoMsg,
+  DataLocationHistoryMsg,
   DataLocationMsg,
   DerivedBootstrapKeys,
   DeviceTelemetry,
+  GpsTrackPoint,
   HelloAckMsg,
   IceCandidateMsg,
+  LocationHistoryBundle,
   MediaSourceMode,
   PortalOperationalState,
   PortalStatusMsg,
@@ -55,6 +58,7 @@ export interface ControllerCallbacks {
   onStatsUpdate: (stats: StreamRealtimeStats | null) => void;
   onContactsData?: (data: DataContactsMsg) => void;
   onLocationData?: (data: DataLocationMsg) => void;
+  onLocationHistoryData?: (data: LocationHistoryBundle) => void;
   onDeviceInfoData?: (data: DataDeviceInfoMsg) => void;
   onStreamError?: (message: string) => void;
   onTalkieStateChange?: (active: boolean) => void;
@@ -93,6 +97,20 @@ export class SentinelWebRtcController {
   private localSdpFingerprint = '';
   private remoteSdpFingerprint = '';
   private pendingCandidates: IceCandidateMsg[] = [];
+  private historyReassembly = new Map<
+    string,
+    {
+      totalChunks: number;
+      chunks: Map<number, GpsTrackPoint[]>;
+      rawPointCount: number;
+      totalDistanceMeters: number;
+      maxSpeedKmh: number;
+      stopsCount: number;
+      trackerState: LocationHistoryBundle['trackerState'];
+      trackingMode: LocationHistoryBundle['trackingMode'];
+      error?: string;
+    }
+  >();
 
   private statsTimer: number | null = null;
   private retryTimer: number | null = null;
@@ -426,6 +444,36 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async requestLocationHistory(
+    fromTs: number,
+    toTs: number,
+    maxPoints = 1800
+  ): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_LOCATION_HISTORY',
+        requestId: randomHex(8),
+        fromTs,
+        toTs,
+        maxPoints,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async clearRemoteLocationHistory(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_CLEAR_LOCATION_HISTORY',
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   public async requestDeviceInfo(): Promise<void> {
     if (!this.signaling || !this.authenticated) return;
     await this.signaling.send(
@@ -470,6 +518,10 @@ export class SentinelWebRtcController {
 
       case 'DATA_LOCATION':
         this.callbacks.onLocationData?.(msg);
+        break;
+
+      case 'DATA_LOCATION_HISTORY':
+        this.handleLocationHistoryChunk(msg);
         break;
 
       case 'DATA_DEVICE_INFO':
@@ -565,6 +617,10 @@ export class SentinelWebRtcController {
       allowLocation: accessGrant.allowLocation,
       allowDeviceInfo: accessGrant.allowDeviceInfo,
       allowIntercom: accessGrant.allowIntercom,
+      gpsTrackerState: msg.gpsTrackerState,
+      gpsTrackingMode: msg.gpsTrackingMode,
+      gpsPointsCount: msg.gpsPointsCount,
+      gpsTodayPointsCount: msg.gpsTodayPointsCount,
       updatedAt: Date.now(),
     });
 
@@ -616,6 +672,10 @@ export class SentinelWebRtcController {
       allowLocation: msg.allowLocation,
       allowDeviceInfo: msg.allowDeviceInfo,
       allowIntercom: msg.allowIntercom,
+      gpsTrackerState: msg.gpsTrackerState,
+      gpsTrackingMode: msg.gpsTrackingMode,
+      gpsPointsCount: msg.gpsPointsCount,
+      gpsTodayPointsCount: msg.gpsTodayPointsCount,
       updatedAt: Date.now(),
     });
 
@@ -623,6 +683,79 @@ export class SentinelWebRtcController {
       this.callbacks.onStateChange('locked');
     } else if (this.authenticated && !this.pc && !this.desiredStreaming) {
       this.callbacks.onStateChange('standby');
+    }
+  }
+
+  private handleLocationHistoryChunk(msg: DataLocationHistoryMsg): void {
+    const providerDecode = (code: string): string => {
+      switch (code) {
+        case 'g':
+          return 'gps';
+        case 'n':
+          return 'network';
+        case 'f':
+          return 'fused';
+        default:
+          return 'passive';
+      }
+    };
+
+    const parsed: GpsTrackPoint[] = (msg.points ?? []).map((tuple) => ({
+      timestamp: Number(tuple[0] ?? 0),
+      latitude: Number(tuple[1] ?? 0),
+      longitude: Number(tuple[2] ?? 0),
+      accuracyMeters: Number(tuple[3] ?? 0),
+      speedKmh: Number(tuple[4] ?? 0),
+      batteryLevel: Number(tuple[5] ?? 100),
+      dwellSeconds: Number(tuple[6] ?? 0),
+      provider: providerDecode(String(tuple[7] ?? 'g')),
+    }));
+
+    const reqId = msg.requestId || 'default';
+    const total = Math.max(1, msg.totalChunks || 1);
+
+    let bucket = this.historyReassembly.get(reqId);
+    if (!bucket) {
+      if (this.historyReassembly.size > 6) {
+        const oldestKey = this.historyReassembly.keys().next().value;
+        if (oldestKey) this.historyReassembly.delete(oldestKey);
+      }
+      bucket = {
+        totalChunks: total,
+        chunks: new Map(),
+        rawPointCount: msg.rawPointCount ?? parsed.length,
+        totalDistanceMeters: msg.totalDistanceMeters ?? 0,
+        maxSpeedKmh: msg.maxSpeedKmh ?? 0,
+        stopsCount: msg.stopsCount ?? 0,
+        trackerState: msg.trackerState ?? 'disabled',
+        trackingMode: msg.trackingMode ?? 'eco',
+        error: msg.error,
+      };
+      this.historyReassembly.set(reqId, bucket);
+    }
+
+    bucket.chunks.set(msg.chunkIndex ?? 0, parsed);
+    if (msg.error) bucket.error = msg.error;
+
+    if (bucket.chunks.size >= bucket.totalChunks) {
+      this.historyReassembly.delete(reqId);
+      const merged: GpsTrackPoint[] = [];
+      for (let i = 0; i < bucket.totalChunks; i++) {
+        const part = bucket.chunks.get(i);
+        if (part) merged.push(...part);
+      }
+      merged.sort((a, b) => a.timestamp - b.timestamp);
+
+      this.callbacks.onLocationHistoryData?.({
+        points: merged,
+        rawPointCount: bucket.rawPointCount,
+        totalDistanceMeters: bucket.totalDistanceMeters,
+        maxSpeedKmh: bucket.maxSpeedKmh,
+        stopsCount: bucket.stopsCount,
+        trackerState: bucket.trackerState,
+        trackingMode: bucket.trackingMode,
+        error: bucket.error,
+      });
     }
   }
 
