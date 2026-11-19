@@ -14,6 +14,12 @@ data class AuditLogItem(
     val message: String
 )
 
+data class AppLockRule(
+    val packageName: String,
+    val appName: String,
+    val blockedUntilMs: Long
+)
+
 data class AccessProfileRecord(
     val id: String,
     val name: String,
@@ -30,6 +36,7 @@ data class AccessProfileRecord(
     val allowDeviceInfo: Boolean,
     val allowIntercom: Boolean,
     val allowSmsRelay: Boolean = false,
+    val allowDeviceControl: Boolean = false,
     val lastAccessAt: Long?
 )
 
@@ -125,6 +132,94 @@ class PortalPreferences(context: Context) {
         set(value) {
             prefs.edit().putBoolean(KEY_GLOBAL_SMS_RELAY, value).commit()
         }
+
+    var globalAllowDeviceControl: Boolean
+        get() = prefs.getBoolean(KEY_GLOBAL_DEVICE_CONTROL, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GLOBAL_DEVICE_CONTROL, value).commit()
+        }
+
+    var screenPausedUntilMs: Long
+        get() = prefs.getLong(KEY_SCREEN_PAUSED_UNTIL, 0L)
+        set(value) {
+            prefs.edit().putLong(KEY_SCREEN_PAUSED_UNTIL, value).commit()
+        }
+
+    /* ==================== TIMED APP LOCK RULES (PERSISTENT & OFFLINE-SAFE) ==================== */
+
+    fun getActiveAppLockRules(nowMs: Long = System.currentTimeMillis()): List<AppLockRule> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_APP_LOCK_RULES, null) ?: return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                val active = ArrayList<AppLockRule>()
+                var expiredAny = false
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val pkg = o.optString("packageName", "")
+                    val until = o.optLong("blockedUntilMs", 0L)
+                    if (pkg.isNotEmpty() && until > nowMs) {
+                        active.add(
+                            AppLockRule(
+                                packageName = pkg,
+                                appName = o.optString("appName", pkg),
+                                blockedUntilMs = until
+                            )
+                        )
+                    } else {
+                        expiredAny = true
+                    }
+                }
+                if (expiredAny) {
+                    saveAppLockRulesLocked(active)
+                }
+                active
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+    }
+
+    fun setAppLockRule(packageName: String, appName: String, blockedUntilMs: Long) {
+        synchronized(LOCK) {
+            val now = System.currentTimeMillis()
+            val list = getActiveAppLockRules(now).filter { it.packageName != packageName }.toMutableList()
+            if (blockedUntilMs > now) {
+                list.add(AppLockRule(packageName = packageName, appName = appName.ifBlank { packageName }, blockedUntilMs = blockedUntilMs))
+            }
+            saveAppLockRulesLocked(list)
+        }
+    }
+
+    fun removeAppLockRule(packageName: String) {
+        synchronized(LOCK) {
+            val list = getActiveAppLockRules().filter { it.packageName != packageName }
+            saveAppLockRulesLocked(list)
+        }
+    }
+
+    fun clearAllAppLocks() {
+        synchronized(LOCK) {
+            prefs.edit()
+                .remove(KEY_APP_LOCK_RULES)
+                .putLong(KEY_SCREEN_PAUSED_UNTIL, 0L)
+                .commit()
+        }
+    }
+
+    private fun saveAppLockRulesLocked(list: List<AppLockRule>) {
+        val arr = JSONArray()
+        for (r in list) {
+            arr.put(
+                JSONObject().apply {
+                    put("packageName", r.packageName)
+                    put("appName", r.appName)
+                    put("blockedUntilMs", r.blockedUntilMs)
+                }
+            )
+        }
+        prefs.edit().putString(KEY_APP_LOCK_RULES, arr.toString()).commit()
+    }
 
     /* ==================== PARENTAL / ADMIN CODE-PROTECTED BACKGROUND MODE ==================== */
 
@@ -299,6 +394,7 @@ class PortalPreferences(context: Context) {
                             allowDeviceInfo = o.optBoolean("allowDeviceInfo", true),
                             allowIntercom = o.optBoolean("allowIntercom", true),
                             allowSmsRelay = o.optBoolean("allowSmsRelay", false),
+                            allowDeviceControl = o.optBoolean("allowDeviceControl", false),
                             lastAccessAt = lastVal
                         )
                     )
@@ -328,7 +424,8 @@ class PortalPreferences(context: Context) {
         allowLocation: Boolean,
         allowDeviceInfo: Boolean,
         allowIntercom: Boolean,
-        allowSmsRelay: Boolean = false
+        allowSmsRelay: Boolean = false,
+        allowDeviceControl: Boolean = false
     ): AccessProfileRecord {
         synchronized(LOCK) {
             val cleanCode = CryptoProtocol.normalizePairingCode(rawCode)
@@ -363,6 +460,7 @@ class PortalPreferences(context: Context) {
                 allowDeviceInfo = allowDeviceInfo,
                 allowIntercom = allowIntercom,
                 allowSmsRelay = allowSmsRelay,
+                allowDeviceControl = allowDeviceControl,
                 lastAccessAt = existing?.lastAccessAt
             )
 
@@ -425,6 +523,7 @@ class PortalPreferences(context: Context) {
                     put("allowDeviceInfo", p.allowDeviceInfo)
                     put("allowIntercom", p.allowIntercom)
                     put("allowSmsRelay", p.allowSmsRelay)
+                    put("allowDeviceControl", p.allowDeviceControl)
                     put("lastAccessAt", p.lastAccessAt ?: JSONObject.NULL)
                 }
             )
@@ -491,6 +590,9 @@ class PortalPreferences(context: Context) {
         private const val KEY_GLOBAL_DEVICE_INFO = "global_allow_device_info"
         private const val KEY_GLOBAL_INTERCOM = "global_allow_intercom"
         private const val KEY_GLOBAL_SMS_RELAY = "global_allow_sms_relay"
+        private const val KEY_GLOBAL_DEVICE_CONTROL = "global_allow_device_control"
+        private const val KEY_SCREEN_PAUSED_UNTIL = "screen_paused_until_ms"
+        private const val KEY_APP_LOCK_RULES = "app_lock_rules_v11"
         private const val KEY_ADMIN_PROTECTION = "admin_protection_enabled"
         private const val KEY_ADMIN_PIN_SALT = "admin_pin_salt"
         private const val KEY_ADMIN_PIN_HASH = "admin_pin_hash"

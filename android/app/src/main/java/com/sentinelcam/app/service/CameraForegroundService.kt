@@ -22,6 +22,8 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.sentinelcam.app.MainActivity
+import com.sentinelcam.app.control.AppLockMonitor
+import com.sentinelcam.app.control.ScreenTimeHelper
 import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.data.DeviceActionHelper
@@ -59,6 +61,7 @@ class CameraForegroundService : Service() {
     private var webRtcEngine: NativeWebRtcEngine? = null
     private var locationStore: LocationHistoryStore? = null
     private var locationTracker: SmartLocationTracker? = null
+    private var appLockMonitor: AppLockMonitor? = null
     private var startedAtMs: Long = System.currentTimeMillis()
     private var telemetryLoopStarted: Boolean = false
 
@@ -91,7 +94,8 @@ class CameraForegroundService : Service() {
         val allowLocation: Boolean = false,
         val allowDeviceInfo: Boolean = true,
         val allowIntercom: Boolean = true,
-        val allowSmsRelay: Boolean = false
+        val allowSmsRelay: Boolean = false,
+        val allowDeviceControl: Boolean = false
     )
 
     override fun onCreate() {
@@ -105,6 +109,7 @@ class CameraForegroundService : Service() {
             refreshGpsStaticState()
             notifyStateListeners()
         }
+        appLockMonitor = AppLockMonitor(applicationContext, prefs).also { it.start() }
         createNotificationChannel()
     }
 
@@ -209,6 +214,8 @@ class CameraForegroundService : Service() {
         try { locationStore?.close() } catch (_: Throwable) {}
         locationStore = null
         gpsTrackerState = "disabled"
+        try { appLockMonitor?.destroy() } catch (_: Throwable) {}
+        appLockMonitor = null
         try { DeviceActionHelper.releaseAll(applicationContext) } catch (_: Throwable) {}
 
         releaseStreamingLocks()
@@ -445,6 +452,7 @@ class CameraForegroundService : Service() {
 
     fun syncChannelsHot() {
         syncLocationTrackerState()
+        try { appLockMonitor?.refreshSchedule() } catch (_: Throwable) {}
         val engine = signalingEngine
         if (engine == null) {
             ensureSignalingRunning(forceRebuild = false)
@@ -493,6 +501,7 @@ class CameraForegroundService : Service() {
         val globalDevInfo = prefs.globalAllowDeviceInfo
         val globalIntercom = prefs.globalAllowIntercom
         val globalSms = prefs.globalAllowSmsRelay
+        val globalControl = prefs.globalAllowDeviceControl
 
         if (channelId == OWNER_CHANNEL_ID) {
             return ResolvedGrant(
@@ -507,7 +516,8 @@ class CameraForegroundService : Service() {
                 allowLocation = globalLocation,
                 allowDeviceInfo = globalDevInfo,
                 allowIntercom = globalIntercom,
-                allowSmsRelay = globalSms
+                allowSmsRelay = globalSms,
+                allowDeviceControl = globalControl
             )
         }
 
@@ -553,7 +563,8 @@ class CameraForegroundService : Service() {
             allowLocation = globalLocation && prof.allowLocation,
             allowDeviceInfo = globalDevInfo && prof.allowDeviceInfo,
             allowIntercom = globalIntercom && prof.allowIntercom,
-            allowSmsRelay = globalSms && prof.allowSmsRelay
+            allowSmsRelay = globalSms && prof.allowSmsRelay,
+            allowDeviceControl = globalControl && prof.allowDeviceControl
         )
     }
 
@@ -700,9 +711,12 @@ class CameraForegroundService : Service() {
             put("allowDeviceInfo", grant.allowDeviceInfo)
             put("allowIntercom", grant.allowIntercom)
             put("allowSmsRelay", grant.allowSmsRelay)
+            put("allowDeviceControl", grant.allowDeviceControl)
             put("intercomActive", intercomActive)
             put("torchEnabled", DeviceActionHelper.torchEnabled)
             put("ringingActive", DeviceActionHelper.ringingActive)
+            put("activeAppLocksCount", prefs.getActiveAppLockRules().size)
+            put("screenPausedUntilMs", prefs.screenPausedUntilMs.takeIf { it > System.currentTimeMillis() } ?: 0L)
             put("pfsEnabled", lastSessionPfs)
             put("gpsTrackerState", gpsTrackerState)
             put("gpsTrackingMode", prefs.gpsTrackingMode)
@@ -1232,6 +1246,181 @@ class CameraForegroundService : Service() {
                     }
                 }
 
+                "CMD_LOCK_SCREEN" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_CONTROL_RESULT")
+                                put("requestId", reqId)
+                                put("action", "lock_screen")
+                                put("success", false)
+                                put("error", "Le contrôle d’écran n’est pas autorisé pour cet accès.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        val (ok, err) = ScreenTimeHelper.lockScreenNow(applicationContext)
+                        if (ok) {
+                            prefs.appendLog("security", "Écran verrouillé à distance par ${grant.name}.")
+                        }
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_CONTROL_RESULT")
+                                put("requestId", reqId)
+                                put("action", "lock_screen")
+                                put("success", ok)
+                                if (err != null) put("error", err)
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                        notifyStateListeners()
+                    }
+                }
+
+                "CMD_GET_SCREEN_TIME" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_SCREEN_TIME")
+                                put("requestId", reqId)
+                                put("error", "Le contrôle du temps d’écran n’est pas autorisé pour cet accès.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val report = ScreenTimeHelper.readScreenTimeReport(applicationContext, prefs)
+                            report.put("type", "DATA_SCREEN_TIME")
+                            report.put("requestId", reqId)
+                            report.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, report, mode = "sess")
+                        }
+                    }
+                }
+
+                "CMD_SET_APP_LOCK" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val pkg = msg.optString("packageName", "").trim()
+                    val appName = msg.optString("appName", pkg).trim()
+                    val durationMin = msg.optInt("durationMinutes", 0)
+                    val explicitUntil = msg.optLong("untilMs", 0L)
+
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_CONTROL_RESULT")
+                                put("requestId", reqId)
+                                put("action", "app_lock")
+                                put("success", false)
+                                put("error", "Le verrouillage d’applications n’est pas autorisé pour cet accès.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else if (pkg.isNotEmpty() && !ScreenTimeHelper.isProtectedSystemPackage(applicationContext, pkg)) {
+                        val now = System.currentTimeMillis()
+                        val targetUntil = when {
+                            explicitUntil > now -> explicitUntil
+                            durationMin > 0 -> now + durationMin * 60_000L
+                            else -> 0L
+                        }
+                        if (targetUntil > now) {
+                            prefs.setAppLockRule(pkg, appName, targetUntil)
+                            prefs.appendLog("security", "Application verrouillée : $appName ($durationMin min)")
+                        } else {
+                            prefs.removeAppLockRule(pkg)
+                            prefs.appendLog("security", "Application débloquée : $appName")
+                        }
+                        appLockMonitor?.refreshSchedule()
+
+                        serviceScope.launch(Dispatchers.IO) {
+                            val report = ScreenTimeHelper.readScreenTimeReport(applicationContext, prefs)
+                            report.put("type", "DATA_SCREEN_TIME")
+                            report.put("requestId", reqId)
+                            report.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, report, mode = "sess")
+
+                            signalingEngine?.send(
+                                channelId = channelId,
+                                payload = JSONObject().apply {
+                                    put("type", "DATA_CONTROL_RESULT")
+                                    put("requestId", reqId)
+                                    put("action", "app_lock")
+                                    put("success", true)
+                                    put("ts", System.currentTimeMillis())
+                                },
+                                mode = "sess"
+                            )
+                            broadcastPresenceNow(channelId)
+                            notifyStateListeners()
+                        }
+                    }
+                }
+
+                "CMD_SET_SCREEN_PAUSE" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val durationMin = msg.optInt("durationMinutes", 0)
+                    val lockImmediately = msg.optBoolean("lockImmediately", true)
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_CONTROL_RESULT")
+                                put("requestId", reqId)
+                                put("action", "screen_pause")
+                                put("success", false)
+                                put("error", "Le contrôle d’écran n’est pas autorisé pour cet accès.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        val now = System.currentTimeMillis()
+                        val targetUntil = if (durationMin > 0) now + durationMin * 60_000L else 0L
+                        prefs.screenPausedUntilMs = targetUntil
+                        appLockMonitor?.refreshSchedule()
+                        if (targetUntil > now) {
+                            prefs.appendLog("security", "Appareil mis en pause ($durationMin min).")
+                            if (lockImmediately) {
+                                ScreenTimeHelper.lockScreenNow(applicationContext)
+                            }
+                        } else {
+                            prefs.appendLog("security", "Pause de l’appareil levée.")
+                        }
+
+                        serviceScope.launch(Dispatchers.IO) {
+                            val report = ScreenTimeHelper.readScreenTimeReport(applicationContext, prefs)
+                            report.put("type", "DATA_SCREEN_TIME")
+                            report.put("requestId", reqId)
+                            report.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, report, mode = "sess")
+
+                            signalingEngine?.send(
+                                channelId = channelId,
+                                payload = JSONObject().apply {
+                                    put("type", "DATA_CONTROL_RESULT")
+                                    put("requestId", reqId)
+                                    put("action", "screen_pause")
+                                    put("success", true)
+                                    put("ts", System.currentTimeMillis())
+                                },
+                                mode = "sess"
+                            )
+                            broadcastPresenceNow(channelId)
+                            notifyStateListeners()
+                        }
+                    }
+                }
+
                 "SDP_ANSWER" -> {
                     val sessionId = msg.optString("sessionId", "")
                     val sdp = msg.optString("sdp", "")
@@ -1379,9 +1568,12 @@ class CameraForegroundService : Service() {
                 put("allowDeviceInfo", grant.allowDeviceInfo)
                 put("allowIntercom", grant.allowIntercom)
                 put("allowSmsRelay", grant.allowSmsRelay)
+                put("allowDeviceControl", grant.allowDeviceControl)
                 put("intercomActive", intercomActive)
                 put("torchEnabled", DeviceActionHelper.torchEnabled)
                 put("ringingActive", DeviceActionHelper.ringingActive)
+                put("activeAppLocksCount", prefs.getActiveAppLockRules().size)
+                put("screenPausedUntilMs", prefs.screenPausedUntilMs.takeIf { it > System.currentTimeMillis() } ?: 0L)
                 put("gpsTrackerState", gpsTrackerState)
                 put("gpsTrackingMode", prefs.gpsTrackingMode)
                 put("gpsPointsCount", gpsPointsCount)

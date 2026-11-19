@@ -26,6 +26,7 @@ export interface GlobalShareSettings {
   allowDeviceInfo: boolean;
   allowIntercom: boolean;
   allowSmsRelay?: boolean;
+  allowDeviceControl?: boolean;
   screenShareReady: boolean;
 }
 
@@ -45,6 +46,7 @@ export interface AccessProfile {
   allowDeviceInfo: boolean;
   allowIntercom: boolean;
   allowSmsRelay?: boolean;
+  allowDeviceControl?: boolean;
   lastAccessAt: number | null;
 }
 
@@ -63,6 +65,7 @@ export interface AccessProfileInput {
   allowDeviceInfo: boolean;
   allowIntercom: boolean;
   allowSmsRelay?: boolean;
+  allowDeviceControl?: boolean;
 }
 
 export interface SharedContactItem {
@@ -167,6 +170,7 @@ export interface ActiveAccessGrant {
   allowDeviceInfo: boolean;
   allowIntercom: boolean;
   allowSmsRelay: boolean;
+  allowDeviceControl: boolean;
 }
 
 export interface DeviceTelemetry {
@@ -199,6 +203,9 @@ export interface DeviceTelemetry {
   allowDeviceInfo?: boolean;
   allowIntercom?: boolean;
   allowSmsRelay?: boolean;
+  allowDeviceControl?: boolean;
+  activeAppLocksCount?: number;
+  screenPausedUntilMs?: number;
   pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
@@ -286,6 +293,9 @@ export interface HelloAckMsg {
   allowDeviceInfo?: boolean;
   allowIntercom?: boolean;
   allowSmsRelay?: boolean;
+  allowDeviceControl?: boolean;
+  activeAppLocksCount?: number;
+  screenPausedUntilMs?: number;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
@@ -331,6 +341,9 @@ export interface PortalStatusMsg {
   allowDeviceInfo?: boolean;
   allowIntercom?: boolean;
   allowSmsRelay?: boolean;
+  allowDeviceControl?: boolean;
+  activeAppLocksCount?: number;
+  screenPausedUntilMs?: number;
   pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
@@ -496,6 +509,68 @@ export interface CmdRingDeviceMsg {
   ts: number;
 }
 
+export interface AppUsageEntry {
+  packageName: string;
+  appName: string;
+  usageSecondsToday: number;
+  lastUsedAt: number;
+  blockedUntilMs: number;
+}
+
+export interface DataScreenTimeMsg {
+  type: 'DATA_SCREEN_TIME';
+  requestId: string;
+  hasUsageAccess?: boolean;
+  hasOverlayPermission?: boolean;
+  deviceAdminActive?: boolean;
+  totalScreenTimeSec?: number;
+  currentPackage?: string | null;
+  currentAppName?: string | null;
+  screenPausedUntilMs?: number;
+  apps?: AppUsageEntry[];
+  error?: string;
+  ts: number;
+}
+
+export interface DataControlResultMsg {
+  type: 'DATA_CONTROL_RESULT';
+  requestId: string;
+  action: 'lock_screen' | 'app_lock' | 'screen_pause';
+  success: boolean;
+  error?: string;
+  ts: number;
+}
+
+export interface CmdLockScreenMsg {
+  type: 'CMD_LOCK_SCREEN';
+  requestId: string;
+  ts: number;
+}
+
+export interface CmdGetScreenTimeMsg {
+  type: 'CMD_GET_SCREEN_TIME';
+  requestId: string;
+  ts: number;
+}
+
+export interface CmdSetAppLockMsg {
+  type: 'CMD_SET_APP_LOCK';
+  requestId: string;
+  packageName: string;
+  appName: string;
+  durationMinutes: number;
+  untilMs?: number;
+  ts: number;
+}
+
+export interface CmdSetScreenPauseMsg {
+  type: 'CMD_SET_SCREEN_PAUSE';
+  requestId: string;
+  durationMinutes: number;
+  lockImmediately?: boolean;
+  ts: number;
+}
+
 export interface CmdSpeakTextMsg {
   type: 'CMD_SPEAK_TEXT';
   text: string;
@@ -562,6 +637,12 @@ export type SignalMessage =
   | CmdToggleTorchMsg
   | CmdRingDeviceMsg
   | CmdSpeakTextMsg
+  | CmdLockScreenMsg
+  | CmdGetScreenTimeMsg
+  | CmdSetAppLockMsg
+  | CmdSetScreenPauseMsg
+  | DataScreenTimeMsg
+  | DataControlResultMsg
   | SdpOfferMsg
   | SdpAnswerMsg
   | IceCandidateMsg
@@ -578,6 +659,8 @@ export interface NativePermissionStatus {
   location: boolean;
   backgroundLocation?: boolean;
   sms?: boolean;
+  usageAccess?: boolean;
+  overlay?: boolean;
   screenShareReady: boolean;
 }
 
@@ -615,6 +698,8 @@ export interface NativePortalState {
   adminProtectionEnabled?: boolean;
   hasAdminPin?: boolean;
   deviceAdminActive?: boolean;
+  activeAppLocksCount?: number;
+  screenPausedUntilMs?: number;
   autoStartOnBoot: boolean;
   failedAttempts: number;
   lockoutRemainingMs: number;

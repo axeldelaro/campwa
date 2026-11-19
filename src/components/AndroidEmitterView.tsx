@@ -98,6 +98,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const [allowDeviceInfo, setAllowDeviceInfo] = useState(true);
   const [allowIntercom, setAllowIntercom] = useState(true);
   const [allowSmsRelay, setAllowSmsRelay] = useState(false);
+  const [allowDeviceControl, setAllowDeviceControl] = useState(false);
 
   // Parental / Admin Background Protection state
   const [adminPinInput, setAdminPinInput] = useState('');
@@ -391,6 +392,30 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     }
   };
 
+  const handleToggleDeviceControl = async () => {
+    if (!portal || !requireAdminUnlocked()) return;
+    setBusy(true);
+    try {
+      const targetVal = !(portal.globalShares.allowDeviceControl ?? true);
+      if (isNativeAndroid) {
+        const next = await SentinelNative.setGlobalShareSettings({ allowDeviceControl: targetVal });
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRequestUsageAccess = async () => {
+    if (!isNativeAndroid || !requireAdminUnlocked()) return;
+    await SentinelNative.requestUsageAccessPermission();
+  };
+
+  const handleRequestOverlay = async () => {
+    if (!isNativeAndroid || !requireAdminUnlocked()) return;
+    await SentinelNative.requestOverlayPermission();
+  };
+
   const handleToggleService = async () => {
     if (!portal) return;
     if (portal.serviceRunning && portal.adminProtectionEnabled && portal.hasAdminPin && !adminUnlocked) {
@@ -547,6 +572,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       allowDeviceInfo,
       allowIntercom,
       allowSmsRelay,
+      allowDeviceControl,
     };
 
     setBusy(true);
@@ -833,6 +859,17 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         <MessageSquare className="h-3.5 w-3.5 text-orange-400" />
         <span>Relais SMS</span>
       </label>
+
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowDeviceControl}
+          onChange={(e) => setAllowDeviceControl(e.target.checked)}
+          className="h-4 w-4 rounded border-slate-700 bg-obsidian-900 text-emerald-500"
+        />
+        <Lock className="h-3.5 w-3.5 text-sky-400" />
+        <span>Contrôle</span>
+      </label>
     </div>
   );
 
@@ -908,7 +945,12 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               )}
               {prof.allowSmsRelay && (
                 <span className="rounded-md bg-orange-500/15 px-1.5 py-0.5 text-orange-300">
-                  SMS Urgence
+                  SMS
+                </span>
+              )}
+              {prof.allowDeviceControl && (
+                <span className="rounded-md bg-sky-500/15 px-1.5 py-0.5 text-sky-300">
+                  Contrôle
                 </span>
               )}
             </div>
@@ -1502,6 +1544,71 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                     : 'Activer'}
                 </button>
               </div>
+
+              {/* Screen Time & Remote App Lock Control */}
+              {isNativeAndroid && (
+                <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <Lock className="mt-0.5 h-5 w-5 shrink-0 text-sky-400" />
+                      <div>
+                        <div className="text-xs font-bold text-white">
+                          Verrouillage d’écran & Temps d’écran
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          {shares.allowDeviceControl !== false
+                            ? (portal.activeAppLocksCount ?? 0) > 0
+                              ? `${portal.activeAppLocksCount} application(s) verrouillée(s) actuellement.`
+                              : 'Permet de verrouiller l’écran, voir le temps d’écran et bloquer des applis.'
+                            : 'Désactivé.'}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void handleToggleDeviceControl()}
+                      className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                        shares.allowDeviceControl !== false
+                          ? 'border-sky-500/40 bg-sky-500/20 text-sky-200'
+                          : 'border-slate-700 bg-obsidian-900 text-slate-300'
+                      }`}
+                    >
+                      {shares.allowDeviceControl !== false ? 'Activé' : 'Activer'}
+                    </button>
+                  </div>
+
+                  {shares.allowDeviceControl !== false && (
+                    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-800/80 pt-3">
+                      <button
+                        type="button"
+                        onClick={() => void handleRequestUsageAccess()}
+                        className={`flex items-center justify-between rounded-xl border px-2.5 py-2 text-[11px] font-medium transition ${
+                          portal.permissions.usageAccess
+                            ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300'
+                            : 'border-amber-500/35 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
+                        }`}
+                      >
+                        <span>Temps d’écran</span>
+                        <span>{portal.permissions.usageAccess ? 'OK' : 'Autoriser'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleRequestOverlay()}
+                        className={`flex items-center justify-between rounded-xl border px-2.5 py-2 text-[11px] font-medium transition ${
+                          portal.permissions.overlay
+                            ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300'
+                            : 'border-amber-500/35 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
+                        }`}
+                      >
+                        <span>Écran de blocage</span>
+                        <span>{portal.permissions.overlay ? 'OK' : 'Autoriser'}</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* System Device Info Control */}
               <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">

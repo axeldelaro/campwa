@@ -122,20 +122,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v10.0.${{ github.run_number }}
-          name: "SentinelCam v10.0.${{ github.run_number }} (SMS Libre • Torche • Sonnerie • REC • Zoom • Texte Vocal • Admin Code)"
+          tag_name: v11.0.${{ github.run_number }}
+          name: "SentinelCam v11.0.${{ github.run_number }} (Verrouillage Écran • Temps d’Écran • Verrouillage d’Applis à Distance)"
           body: |
-            ### SentinelCam v10.0 (`v10.0.${{ github.run_number }}`)
+            ### SentinelCam v11.0 (`v11.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **SMS simplifié & sans quota** : suppression des messages SOS pré-remplis et du quota limité — envoi libre via la carte SIM dès que le code dispose de l’autorisation, avec lien GPS optionnel et redirections directes (*Appli SMS*, *WhatsApp*, *Copier*).
-            - **Protection Administrateur renforcée** : verrouillage automatique dès passage en arrière-plan, code administrateur requis pour tout changement de réglage, arrêt du service ou désactivation de l’administrateur Android (qui bloque la désinstallation système).
-            - **Nouveaux outils intégrés** :
-              - **Lampe torche** (flash LED arrière pilotable à distance).
-              - **Sonnerie / Localiser l’appareil** (sonnerie d’alarme 15 s audible même en vibreur, avec arrêt instantané).
-              - **Texte vocal (TTS)** : écrire un message lu à voix haute sur le haut-parleur du téléphone.
-              - **Enregistrement vidéo local (`REC` `.webm`)** et **Zoom numérique (`1×` à `4×`)** dans le lecteur Web.
+            - **Verrouillage d’écran immédiat à distance (`lockNow`)** : verrouillez instantanément l’écran du smartphone en 1 clic depuis l’onglet *Contrôle* du site Web (via l’Administrateur d’appareil Android).
+            - **Pause globale de l’appareil** : mettez l’ensemble des applications en pause pendant une durée choisie (*15 min*, *30 min*, *1 h*, *2 h* ou durée libre) avec décompte en direct et levée instantanée.
+            - **Contrôle du temps d’écran aujourd’hui (`UsageStatsManager`)** : temps total d’écran, application actuellement ouverte et détail précis par application.
+            - **Verrouillage d’applications à distance pendant une durée définie** : bloquez n’importe quelle application installée (YouTube, TikTok, Instagram, jeux…) pour *15 min*, *30 min*, *1 h*, *2 h*, *jusqu’à minuit* ou une durée personnalisée. Fonctionne même hors-ligne avec écran de verrouillage natif, décompte en direct, 0 % conso écran éteint et déblocage anticipé possible via code administrateur.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

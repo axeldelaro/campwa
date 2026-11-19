@@ -54,8 +54,10 @@ import type { BrokerHealth } from '../services/signalingService';
 import { SentinelWebRtcController } from '../services/webrtcController';
 import type {
   ActiveAccessGrant,
+  AppUsageEntry,
   AuthErrMsg,
   CameraFacingMode,
+  DataScreenTimeMsg,
   DeviceTelemetry,
   GpsTrackPoint,
   LocationHistoryBundle,
@@ -77,7 +79,16 @@ interface ControlStationViewProps {
   initialCode?: string | null;
 }
 
-type ViewerTab = 'media' | 'contacts' | 'device';
+type ViewerTab = 'media' | 'control' | 'contacts' | 'device';
+
+function formatUsageDuration(totalSec: number): string {
+  const s = Math.max(0, Math.floor(totalSec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m.toString().padStart(2, '0')}m`;
+  if (m > 0) return `${m} min`;
+  return s > 0 ? '< 1 min' : '0 min';
+}
 
 function formatCountdown(expiresAt: number | null, nowMs: number): string | null {
   if (expiresAt === null) return null;
@@ -150,6 +161,15 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
+  // Screen Lock, Screen Time & Timed App Lock Control state
+  const [screenTime, setScreenTime] = useState<DataScreenTimeMsg | null>(null);
+  const [screenTimeLoading, setScreenTimeLoading] = useState(false);
+  const [controlFeedback, setControlFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [appSearch, setAppSearch] = useState('');
+  const [lockingPkg, setLockingPkg] = useState<string | null>(null);
+  const [customLockMins, setCustomLockMins] = useState('45');
+  const [customPauseMins, setCustomPauseMins] = useState('30');
+
   const [sasInfo, setSasInfo] = useState<{
     deviceName: string;
     sasCode: string;
@@ -203,6 +223,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             allowDeviceInfo: t.allowDeviceInfo ?? prev?.allowDeviceInfo ?? true,
             allowIntercom: t.allowIntercom ?? prev?.allowIntercom ?? true,
             allowSmsRelay: t.allowSmsRelay ?? prev?.allowSmsRelay ?? false,
+            allowDeviceControl: t.allowDeviceControl ?? prev?.allowDeviceControl ?? true,
           }));
         }
       },
@@ -300,6 +321,26 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           });
         }
       },
+      onScreenTimeData: (data) => {
+        setScreenTimeLoading(false);
+        setScreenTime(data);
+        if (data.error) {
+          setControlFeedback({ ok: false, text: data.error });
+        }
+      },
+      onControlResult: (res) => {
+        if (res.success) {
+          const msg =
+            res.action === 'lock_screen'
+              ? 'Écran verrouillé.'
+              : res.action === 'screen_pause'
+              ? 'État de pause mis à jour.'
+              : 'Règle d’application mise à jour.';
+          setControlFeedback({ ok: true, text: msg });
+        } else {
+          setControlFeedback({ ok: false, text: res.error || 'Action refusée.' });
+        }
+      },
       onStreamError: (msg) => {
         setStreamNotice(msg);
       },
@@ -342,6 +383,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setLocationData(null);
     setHistoryBundle(null);
     setFocusedTrackPoint(null);
+    setScreenTime(null);
+    setControlFeedback(null);
     setDeviceInfo(null);
     setCodeChars(normalized.split(''));
     try {
@@ -662,6 +705,48 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const canViewDeviceInfo = accessGrant ? accessGrant.allowDeviceInfo : true;
   const canUseIntercom = accessGrant ? accessGrant.allowIntercom : true;
   const canUseSmsRelay = accessGrant ? accessGrant.allowSmsRelay : false;
+  const canUseDeviceControl = accessGrant ? accessGrant.allowDeviceControl : true;
+
+  const handleFetchScreenTime = async () => {
+    setScreenTimeLoading(true);
+    setControlFeedback(null);
+    await controllerRef.current?.requestScreenTime();
+    window.setTimeout(() => setScreenTimeLoading(false), 8000);
+  };
+
+  const handleOpenControlTab = () => {
+    setViewerTab('control');
+    if (canUseDeviceControl) {
+      void handleFetchScreenTime();
+    }
+  };
+
+  const handleLockScreenNow = async () => {
+    setControlFeedback(null);
+    await controllerRef.current?.lockRemoteScreen();
+  };
+
+  const handleSetScreenPause = async (minutes: number) => {
+    setControlFeedback(null);
+    await controllerRef.current?.setRemoteScreenPause(minutes, minutes > 0);
+  };
+
+  const handleApplyAppLock = async (app: AppUsageEntry, minutes: number, explicitUntilMs?: number) => {
+    setControlFeedback(null);
+    setLockingPkg(null);
+    await controllerRef.current?.setRemoteAppLock({
+      packageName: app.packageName,
+      appName: app.appName,
+      durationMinutes: minutes,
+      untilMs: explicitUntilMs,
+    });
+  };
+
+  const getUntilMidnightMs = (): number => {
+    const d = new Date();
+    d.setHours(23, 59, 59, 999);
+    return d.getTime();
+  };
 
   const openSmsComposer = (phone = '', name = '') => {
     setSmsPhone(phone);
@@ -1132,6 +1217,25 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
         <button
           type="button"
+          disabled={!canUseDeviceControl}
+          onClick={handleOpenControlTab}
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
+            viewerTab === 'control'
+              ? 'bg-white text-zinc-950'
+              : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
+          }`}
+        >
+          <Lock className="h-3.5 w-3.5" />
+          <span>Contrôle</span>
+          {(telemetry?.activeAppLocksCount ?? 0) > 0 && (
+            <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 font-mono text-[10px] text-emerald-400">
+              {telemetry?.activeAppLocksCount}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
           onClick={() => {
             if (canViewContacts) {
               handleOpenContactsTab();
@@ -1486,7 +1590,314 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </>
       )}
 
-      {/* ==================== VIEWER TAB 2: SHARED CONTACTS ==================== */}
+      {/* ==================== VIEWER TAB 2: SCREEN LOCK, SCREEN TIME & APP LOCKS ==================== */}
+      {viewerTab === 'control' && (
+        <div className="space-y-4">
+          {controlFeedback && (
+            <div
+              className={`flex items-center justify-between gap-2 rounded-xl border px-4 py-2.5 text-xs ${
+                controlFeedback.ok
+                  ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
+                  : 'border-rose-500/35 bg-rose-500/10 text-rose-200'
+              }`}
+            >
+              <span>{controlFeedback.text}</span>
+              <button
+                type="button"
+                onClick={() => setControlFeedback(null)}
+                className="text-zinc-400 hover:text-white"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* Missing Android permissions helper banner */}
+          {screenTime && (!screenTime.hasUsageAccess || !screenTime.hasOverlayPermission || !screenTime.deviceAdminActive) && (
+            <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">
+              <div className="font-semibold">Autorisations à activer sur le smartphone :</div>
+              <div className="mt-1.5 flex flex-wrap gap-2 text-[11px]">
+                {!screenTime.deviceAdminActive && (
+                  <span className="rounded-md bg-black/30 px-2 py-1">
+                    Protection Administrateur (verrouillage écran)
+                  </span>
+                )}
+                {!screenTime.hasUsageAccess && (
+                  <span className="rounded-md bg-black/30 px-2 py-1">
+                    Temps d’écran (accès aux données d’utilisation)
+                  </span>
+                )}
+                {!screenTime.hasOverlayPermission && (
+                  <span className="rounded-md bg-black/30 px-2 py-1">
+                    Écran de blocage (affichage par-dessus les applis)
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Screen Lock & Timed Global Device Pause */}
+          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-white">Écran & Pause de l’appareil</h2>
+                <p className="mt-0.5 text-xs text-zinc-400">
+                  Verrouillage immédiat ou mise en pause temporaire de toutes les applications
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleLockScreenNow()}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200"
+              >
+                <Lock className="h-3.5 w-3.5" />
+                <span>Verrouiller l’écran</span>
+              </button>
+            </div>
+
+            {((screenTime?.screenPausedUntilMs ?? telemetry?.screenPausedUntilMs ?? 0) > nowMs) ? (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-500/35 bg-rose-500/10 px-4 py-3">
+                <div className="text-xs text-rose-200">
+                  <span className="font-semibold">Appareil en pause</span> ·{' '}
+                  {formatCountdown(
+                    screenTime?.screenPausedUntilMs || telemetry?.screenPausedUntilMs || null,
+                    nowMs
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleSetScreenPause(0)}
+                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
+                >
+                  Lever la pause
+                </button>
+              </div>
+            ) : (
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-4">
+                <span className="text-xs text-zinc-400">Pause globale :</span>
+                {[15, 30, 60, 120].map((mins) => (
+                  <button
+                    key={mins}
+                    type="button"
+                    onClick={() => void handleSetScreenPause(mins)}
+                    className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-white/25 hover:text-white"
+                  >
+                    {mins >= 60 ? `${mins / 60} h` : `${mins} min`}
+                  </button>
+                ))}
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min={1}
+                    max={1440}
+                    value={customPauseMins}
+                    onChange={(e) => setCustomPauseMins(e.target.value)}
+                    className="w-16 rounded-lg border border-white/10 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-white focus:border-emerald-400 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const m = parseInt(customPauseMins, 10);
+                      if (m > 0) void handleSetScreenPause(m);
+                    }}
+                    className="rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-white/15"
+                  >
+                    min
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Screen Time & Per-App Timed Locking */}
+          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-white">
+                  Temps d’écran & Verrouillage d’applications
+                </h2>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                  <span>
+                    Aujourd’hui :{' '}
+                    <strong className="font-mono text-white">
+                      {formatUsageDuration(screenTime?.totalScreenTimeSec ?? 0)}
+                    </strong>
+                  </span>
+                  {screenTime?.currentAppName && (
+                    <>
+                      <span>·</span>
+                      <span>
+                        Ouverte :{' '}
+                        <strong className="text-emerald-300">{screenTime.currentAppName}</strong>
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={screenTimeLoading}
+                onClick={() => void handleFetchScreenTime()}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/[0.06]"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${screenTimeLoading ? 'animate-spin' : ''}`} />
+                <span>Actualiser</span>
+              </button>
+            </div>
+
+            {/* Search installed apps */}
+            <div className="relative mt-4">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <input
+                type="text"
+                value={appSearch}
+                onChange={(e) => setAppSearch(e.target.value)}
+                placeholder="Rechercher une application (YouTube, TikTok, Instagram…)"
+                className="w-full rounded-xl border border-white/10 bg-zinc-950 py-2.5 pl-9 pr-3 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+              />
+            </div>
+
+            {screenTimeLoading && !screenTime ? (
+              <div className="flex items-center justify-center py-10 text-xs text-zinc-400">
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                Chargement du temps d’écran…
+              </div>
+            ) : (
+              <div className="mt-4 max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+                {(screenTime?.apps ?? [])
+                  .filter((a) => {
+                    const q = appSearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return (
+                      a.appName.toLowerCase().includes(q) ||
+                      a.packageName.toLowerCase().includes(q)
+                    );
+                  })
+                  .map((app) => {
+                    const isBlocked = app.blockedUntilMs > nowMs;
+                    const maxUsage = Math.max(
+                      60,
+                      ...(screenTime?.apps ?? []).map((x) => x.usageSecondsToday)
+                    );
+                    const pct = Math.min(100, Math.round((app.usageSecondsToday / maxUsage) * 100));
+                    const isChoosingDuration = lockingPkg === app.packageName;
+
+                    return (
+                      <div
+                        key={app.packageName}
+                        className={`rounded-xl border p-3 transition ${
+                          isBlocked
+                            ? 'border-rose-500/35 bg-rose-500/10'
+                            : 'border-white/[0.06] bg-zinc-950/75'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="truncate text-xs font-semibold text-white">
+                                {app.appName}
+                              </span>
+                              <span className="font-mono text-[11px] text-zinc-400">
+                                {formatUsageDuration(app.usageSecondsToday)}
+                              </span>
+                              {isBlocked && (
+                                <span className="rounded bg-rose-500/25 px-1.5 py-0.5 font-mono text-[10px] font-medium text-rose-200">
+                                  Verrouillée · {formatCountdown(app.blockedUntilMs, nowMs)}
+                                </span>
+                              )}
+                            </div>
+                            {app.usageSecondsToday > 0 && (
+                              <div className="mt-1.5 h-1 w-full max-w-xs overflow-hidden rounded-full bg-zinc-800">
+                                <div
+                                  className={`h-full rounded-full ${
+                                    isBlocked ? 'bg-rose-400' : 'bg-emerald-400/80'
+                                  }`}
+                                  style={{ width: `${Math.max(4, pct)}%` }}
+                                />
+                              </div>
+                            )}
+                          </div>
+
+                          {isBlocked ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleApplyAppLock(app, 0)}
+                              className="shrink-0 rounded-lg bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-950 hover:bg-zinc-200"
+                            >
+                              Débloquer
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setLockingPkg(isChoosingDuration ? null : app.packageName)
+                              }
+                              className="shrink-0 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium text-zinc-200 hover:border-rose-400/40 hover:text-rose-200"
+                            >
+                              {isChoosingDuration ? 'Fermer' : 'Verrouiller'}
+                            </button>
+                          )}
+                        </div>
+
+                        {isChoosingDuration && !isBlocked && (
+                          <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-white/[0.06] pt-2.5">
+                            {[15, 30, 60, 120].map((mins) => (
+                              <button
+                                key={mins}
+                                type="button"
+                                onClick={() => void handleApplyAppLock(app, mins)}
+                                className="rounded-lg border border-rose-500/30 bg-rose-500/15 px-2.5 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/25"
+                              >
+                                {mins >= 60 ? `${mins / 60} h` : `${mins} min`}
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() => void handleApplyAppLock(app, 0, getUntilMidnightMs())}
+                              className="rounded-lg border border-rose-500/30 bg-rose-500/15 px-2.5 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/25"
+                            >
+                              Jusqu’à minuit
+                            </button>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={1}
+                                max={1440}
+                                value={customLockMins}
+                                onChange={(e) => setCustomLockMins(e.target.value)}
+                                className="w-14 rounded-lg border border-white/10 bg-zinc-900 px-2 py-1 font-mono text-[11px] text-white"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const m = parseInt(customLockMins, 10);
+                                  if (m > 0) void handleApplyAppLock(app, m);
+                                }}
+                                className="rounded-lg bg-rose-500 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-rose-400"
+                              >
+                                min
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                {(screenTime?.apps?.length ?? 0) === 0 && !screenTimeLoading && (
+                  <div className="py-8 text-center text-xs text-zinc-500">
+                    Cliquez sur « Actualiser » pour lire le temps d’écran et la liste des
+                    applications.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== VIEWER TAB 3: SHARED CONTACTS ==================== */}
       {viewerTab === 'contacts' && (
         <div className="rounded-3xl border border-slate-800 bg-obsidian-900/90 p-5 shadow-2xl">
           <div className="flex flex-wrap items-center justify-between gap-3">

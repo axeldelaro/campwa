@@ -25,6 +25,7 @@ import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
+import com.sentinelcam.app.control.ScreenTimeHelper
 import com.sentinelcam.app.crypto.KeystoreVault
 import com.sentinelcam.app.receiver.SentinelDeviceAdminReceiver
 import com.sentinelcam.app.service.CameraForegroundService
@@ -209,6 +210,35 @@ class SentinelNativePlugin : Plugin() {
         }
     }
 
+    @PluginMethod
+    fun requestUsageAccessPermission(call: PluginCall) {
+        try {
+            val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Throwable) {
+        }
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun requestOverlayPermission(call: PluginCall) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:${context.packageName}")
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            }
+        } catch (_: Throwable) {
+        }
+        call.resolve(buildPortalStateObject())
+    }
+
     @PermissionCallback
     fun smsPermissionCallback(call: PluginCall) {
         val granted = ContextCompat.checkSelfPermission(
@@ -293,8 +323,12 @@ class SentinelNativePlugin : Plugin() {
             prefs.globalAllowSmsRelay = enabled
             prefs.appendLog(
                 "security",
-                if (enabled) "Relais SMS d’urgence activé." else "Relais SMS d’urgence désactivé."
+                if (enabled) "Envoi SMS activé." else "Envoi SMS désactivé."
             )
+        }
+        if (call.data.has("allowDeviceControl")) {
+            val enabled = call.getBoolean("allowDeviceControl", true) ?: true
+            prefs.globalAllowDeviceControl = enabled
         }
         CameraForegroundService.syncAccessChannels(context)
         call.resolve(buildPortalStateObject())
@@ -500,6 +534,7 @@ class SentinelNativePlugin : Plugin() {
             val allowDeviceInfo = call.getBoolean("allowDeviceInfo", true) ?: true
             val allowIntercom = call.getBoolean("allowIntercom", true) ?: true
             val allowSmsRelay = call.getBoolean("allowSmsRelay", false) ?: false
+            val allowDeviceControl = call.getBoolean("allowDeviceControl", false) ?: false
 
             prefs.upsertAccessProfile(
                 id = id,
@@ -515,7 +550,8 @@ class SentinelNativePlugin : Plugin() {
                 allowLocation = allowLocation,
                 allowDeviceInfo = allowDeviceInfo,
                 allowIntercom = allowIntercom,
-                allowSmsRelay = allowSmsRelay
+                allowSmsRelay = allowSmsRelay,
+                allowDeviceControl = allowDeviceControl
             )
             CameraForegroundService.syncAccessChannels(context)
             call.resolve(buildPortalStateObject())
@@ -617,6 +653,8 @@ class SentinelNativePlugin : Plugin() {
             put("location", locationGranted)
             put("backgroundLocation", bgLocationGranted)
             put("sms", smsGranted)
+            put("usageAccess", ScreenTimeHelper.hasUsageAccess(context))
+            put("overlay", ScreenTimeHelper.hasOverlayPermission(context))
             put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
         }
     }
@@ -675,6 +713,7 @@ class SentinelNativePlugin : Plugin() {
                     put("allowDeviceInfo", p.allowDeviceInfo)
                     put("allowIntercom", p.allowIntercom)
                     put("allowSmsRelay", p.allowSmsRelay)
+                    put("allowDeviceControl", p.allowDeviceControl)
                     put("lastAccessAt", p.lastAccessAt ?: JSONObject.NULL)
                 }
             )
@@ -689,6 +728,7 @@ class SentinelNativePlugin : Plugin() {
             put("allowDeviceInfo", prefs.globalAllowDeviceInfo)
             put("allowIntercom", prefs.globalAllowIntercom)
             put("allowSmsRelay", prefs.globalAllowSmsRelay)
+            put("allowDeviceControl", prefs.globalAllowDeviceControl)
             put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
         }
 
@@ -719,6 +759,8 @@ class SentinelNativePlugin : Plugin() {
             put("pfsEnabled", CameraForegroundService.lastSessionPfs)
             put("adminProtectionEnabled", prefs.adminProtectionEnabled)
             put("hasAdminPin", prefs.hasAdminPin())
+            put("activeAppLocksCount", prefs.getActiveAppLockRules().size)
+            put("screenPausedUntilMs", prefs.screenPausedUntilMs.takeIf { it > System.currentTimeMillis() } ?: 0L)
             put(
                 "deviceAdminActive",
                 try {

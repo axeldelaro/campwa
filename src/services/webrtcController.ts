@@ -18,9 +18,11 @@ import type {
   AuthErrMsg,
   CameraFacingMode,
   DataContactsMsg,
+  DataControlResultMsg,
   DataDeviceInfoMsg,
   DataLocationHistoryMsg,
   DataLocationMsg,
+  DataScreenTimeMsg,
   DataSmsResultMsg,
   DerivedBootstrapKeys,
   DeviceTelemetry,
@@ -65,6 +67,8 @@ export interface ControllerCallbacks {
   onLocationHistoryData?: (data: LocationHistoryBundle) => void;
   onDeviceInfoData?: (data: DataDeviceInfoMsg) => void;
   onSmsResult?: (data: DataSmsResultMsg) => void;
+  onScreenTimeData?: (data: DataScreenTimeMsg) => void;
+  onControlResult?: (data: DataControlResultMsg) => void;
   onStreamError?: (message: string) => void;
   onTalkieStateChange?: (active: boolean) => void;
   onTalkieLevel?: (level: number) => void;
@@ -540,6 +544,57 @@ export class SentinelWebRtcController {
     await this.signaling.send({ type: 'CMD_SPEAK_TEXT', text: text.trim().slice(0, 240), ts: Date.now() }, 'sess');
   }
 
+  public async lockRemoteScreen(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      { type: 'CMD_LOCK_SCREEN', requestId: randomHex(8), ts: Date.now() },
+      'sess'
+    );
+  }
+
+  public async requestScreenTime(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      { type: 'CMD_GET_SCREEN_TIME', requestId: randomHex(8), ts: Date.now() },
+      'sess'
+    );
+  }
+
+  public async setRemoteAppLock(options: {
+    packageName: string;
+    appName: string;
+    durationMinutes: number;
+    untilMs?: number;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SET_APP_LOCK',
+        requestId: randomHex(8),
+        packageName: options.packageName,
+        appName: options.appName,
+        durationMinutes: options.durationMinutes,
+        untilMs: options.untilMs,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async setRemoteScreenPause(durationMinutes: number, lockImmediately = true): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SET_SCREEN_PAUSE',
+        requestId: randomHex(8),
+        durationMinutes,
+        lockImmediately,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -584,6 +639,14 @@ export class SentinelWebRtcController {
 
       case 'DATA_SMS_RESULT':
         this.callbacks.onSmsResult?.(msg);
+        break;
+
+      case 'DATA_SCREEN_TIME':
+        this.callbacks.onScreenTimeData?.(msg);
+        break;
+
+      case 'DATA_CONTROL_RESULT':
+        this.callbacks.onControlResult?.(msg);
         break;
 
       default:
@@ -645,6 +708,7 @@ export class SentinelWebRtcController {
       allowDeviceInfo: msg.allowDeviceInfo ?? true,
       allowIntercom: msg.allowIntercom ?? true,
       allowSmsRelay: msg.allowSmsRelay ?? false,
+      allowDeviceControl: msg.allowDeviceControl ?? (msg.accessRole === 'owner' || !msg.accessRole),
     };
     this.allowIntercomGranted = accessGrant.allowIntercom;
 
@@ -692,6 +756,9 @@ export class SentinelWebRtcController {
       allowDeviceInfo: accessGrant.allowDeviceInfo,
       allowIntercom: accessGrant.allowIntercom,
       allowSmsRelay: accessGrant.allowSmsRelay,
+      allowDeviceControl: accessGrant.allowDeviceControl,
+      activeAppLocksCount: msg.activeAppLocksCount,
+      screenPausedUntilMs: msg.screenPausedUntilMs,
       pfsEnabled: Boolean(ecdhSharedSecret) || Boolean(msg.pfsEnabled),
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,
@@ -751,6 +818,9 @@ export class SentinelWebRtcController {
       allowDeviceInfo: msg.allowDeviceInfo,
       allowIntercom: msg.allowIntercom,
       allowSmsRelay: msg.allowSmsRelay,
+      allowDeviceControl: msg.allowDeviceControl,
+      activeAppLocksCount: msg.activeAppLocksCount,
+      screenPausedUntilMs: msg.screenPausedUntilMs,
       pfsEnabled: msg.pfsEnabled,
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,

@@ -14,6 +14,8 @@ export interface SentinelNativePluginContract {
   requestLocationPermission(): Promise<NativePortalState>;
   requestBackgroundLocationPermission(): Promise<NativePortalState>;
   requestSmsPermission(): Promise<NativePortalState>;
+  requestUsageAccessPermission(): Promise<NativePortalState>;
+  requestOverlayPermission(): Promise<NativePortalState>;
   clearLocationHistory(): Promise<NativePortalState>;
   requestScreenSharePermission(): Promise<NativePortalState>;
   revokeScreenSharePermission(): Promise<NativePortalState>;
@@ -26,6 +28,7 @@ export interface SentinelNativePluginContract {
     allowDeviceInfo?: boolean;
     allowIntercom?: boolean;
     allowSmsRelay?: boolean;
+    allowDeviceControl?: boolean;
   }): Promise<NativePortalState>;
   completeOnboardingAndStart(options: { autoStartOnBoot: boolean }): Promise<NativePortalState>;
   startPortalService(): Promise<NativePortalState>;
