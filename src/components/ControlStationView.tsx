@@ -9,11 +9,13 @@ import {
   Camera,
   CameraOff,
   Check,
+  Circle,
   Clock,
   Copy,
   Cpu,
   Download,
   ExternalLink,
+  Flashlight,
   FlipHorizontal,
   Gauge,
   HardDrive,
@@ -35,6 +37,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Smartphone,
+  Square,
   Trash2,
   Unplug,
   UserCheck,
@@ -43,6 +46,7 @@ import {
   VolumeX,
   X,
   Zap,
+  ZoomIn,
 } from 'lucide-react';
 import { normalizePairingCode } from '../crypto/cryptoEngine';
 import { listPairedDevices, removePairedDevice } from '../services/deviceVault';
@@ -129,14 +133,22 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [deviceInfoLoading, setDeviceInfoLoading] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // Emergency / Lost-Phone SMS Relay & Free Redirect Composer
+  // SMS Composer
   const [smsOpen, setSmsOpen] = useState(false);
   const [smsPhone, setSmsPhone] = useState('');
   const [smsContactName, setSmsContactName] = useState('');
   const [smsBody, setSmsBody] = useState('');
-  const [smsIncludeGps, setSmsIncludeGps] = useState(true);
+  const [smsIncludeGps, setSmsIncludeGps] = useState(false);
   const [smsSending, setSmsSending] = useState(false);
   const [smsResultMsg, setSmsResultMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Additional Controls: Video Zoom, Local Recording, Text-to-Speech
+  const [videoZoom, setVideoZoom] = useState<number>(1);
+  const [isRecording, setIsRecording] = useState(false);
+  const [ttsOpen, setTtsOpen] = useState(false);
+  const [ttsText, setTtsText] = useState('');
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
 
   const [sasInfo, setSasInfo] = useState<{
     deviceName: string;
@@ -278,8 +290,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         if (res.success) {
           setSmsResultMsg({
             ok: true,
-            text: `SMS envoyé depuis le smartphone vers ${res.phoneNumber} ! (Quota restant : ${res.remainingQuota}/5)`,
+            text: `SMS envoyé vers ${res.phoneNumber}.`,
           });
+          setSmsBody('');
         } else {
           setSmsResultMsg({
             ok: false,
@@ -654,10 +667,72 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setSmsPhone(phone);
     setSmsContactName(name);
     setSmsResultMsg(null);
-    if (!smsBody) {
-      setSmsBody('Bonjour, je n’ai plus accès à mon téléphone. Merci de me contacter dès que possible.');
-    }
     setSmsOpen(true);
+  };
+
+  const handleToggleRecording = () => {
+    if (isRecording) {
+      try {
+        mediaRecorderRef.current?.stop();
+      } catch {
+        // Ignore
+      }
+      setIsRecording(false);
+      return;
+    }
+
+    const stream = videoRef.current?.srcObject as MediaStream | null;
+    if (!stream || typeof MediaRecorder === 'undefined') return;
+    try {
+      recordedChunksRef.current = [];
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+        ? 'video/webm;codecs=vp9,opus'
+        : MediaRecorder.isTypeSupported('video/webm')
+        ? 'video/webm'
+        : '';
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) recordedChunksRef.current.push(ev.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'video/webm' });
+        if (blob.size > 0) {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `sentinelcam-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.webm`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+        recordedChunksRef.current = [];
+      };
+      recorder.start(500);
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+    } catch {
+      setIsRecording(false);
+    }
+  };
+
+  const handleCycleZoom = () => {
+    setVideoZoom((z) => (z >= 4 ? 1 : z + 1));
+  };
+
+  const handleToggleTorch = async () => {
+    const next = !(telemetry?.torchEnabled ?? false);
+    await controllerRef.current?.toggleTorch(next);
+  };
+
+  const handleToggleRing = async () => {
+    const next = !(telemetry?.ringingActive ?? false);
+    await controllerRef.current?.ringDevice(next, 15);
+  };
+
+  const handleSendTts = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ttsText.trim()) return;
+    await controllerRef.current?.speakText(ttsText.trim());
+    setTtsText('');
   };
 
   const buildComposedSmsText = () => {
@@ -903,6 +978,23 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={!canUseIntercom}
+            onClick={() => void handleToggleRing()}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:opacity-35 ${
+              telemetry?.ringingActive
+                ? 'border-rose-500/60 bg-rose-500/20 text-rose-200 animate-pulse'
+                : 'border-white/[0.08] bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
+            }`}
+            title="Faire sonner l’appareil pour le localiser"
+          >
+            <BellRing className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">
+              {telemetry?.ringingActive ? 'Arrêter' : 'Sonnerie'}
+            </span>
+          </button>
+
           {sasInfo && (
             <button
               type="button"
@@ -984,7 +1076,43 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           >
             <span>{talkieLocked ? 'Couper' : 'Mains libres'}</span>
           </button>
+
+          <button
+            type="button"
+            disabled={!canUseIntercom}
+            onClick={() => setTtsOpen((v) => !v)}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
+              ttsOpen
+                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
+            }`}
+            title="Faire lire un message écrit sur le haut-parleur"
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Texte vocal</span>
+          </button>
         </div>
+
+        {ttsOpen && canUseIntercom && (
+          <form onSubmit={(e) => void handleSendTts(e)} className="mt-2 flex w-full gap-2 border-t border-white/[0.06] pt-2.5">
+            <input
+              type="text"
+              maxLength={240}
+              value={ttsText}
+              onChange={(e) => setTtsText(e.target.value)}
+              placeholder="Message à lire à voix haute sur l’appareil…"
+              className="flex-1 rounded-lg border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={!ttsText.trim()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3.5 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-35"
+            >
+              <Send className="h-3.5 w-3.5" />
+              <span>Lire</span>
+            </button>
+          </form>
+        )}
       </div>
 
       {/* Clean Navigation Tabs */}
@@ -1066,9 +1194,12 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               autoPlay
               playsInline
               muted={localAudioMuted}
-              className={`h-full w-full object-contain transition-opacity duration-300 ${
+              style={{
+                transform: `${mirrorVideo && mediaMode === 'camera' ? 'scaleX(-1) ' : ''}scale(${videoZoom})`,
+              }}
+              className={`h-full w-full object-contain transition-all duration-200 ${
                 isStreaming ? 'opacity-100' : 'opacity-0'
-              } ${mirrorVideo && mediaMode === 'camera' ? 'scale-x-[-1]' : ''}`}
+              }`}
             />
 
             {!isStreaming && (
@@ -1219,12 +1350,65 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
+                onClick={() => void handleToggleTorch()}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
+                  telemetry?.torchEnabled
+                    ? 'border-amber-400/60 bg-amber-400/20 text-amber-200'
+                    : 'border-white/10 bg-zinc-950 text-zinc-300 hover:text-white'
+                }`}
+                title="Lampe torche"
+              >
+                <Flashlight className="h-3.5 w-3.5" />
+                <span>Torche</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!isStreaming}
+                onClick={handleToggleRecording}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition disabled:opacity-35 ${
+                  isRecording
+                    ? 'border-rose-500/60 bg-rose-500/20 text-rose-200 animate-pulse'
+                    : 'border-white/10 bg-zinc-950 text-zinc-300 hover:text-white'
+                }`}
+                title="Enregistrer la vidéo en local"
+              >
+                {isRecording ? (
+                  <>
+                    <Square className="h-3 w-3 fill-current" />
+                    <span>Stop REC</span>
+                  </>
+                ) : (
+                  <>
+                    <Circle className="h-3 w-3 fill-rose-500 text-rose-500" />
+                    <span>REC</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
                 disabled={!isStreaming}
                 onClick={handleCaptureSnapshot}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/35 bg-cyan-500/10 px-3.5 py-2.5 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-40"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-300 transition hover:text-white disabled:opacity-35"
               >
                 <Camera className="h-3.5 w-3.5" />
-                <span>Photo PNG</span>
+                <span>Photo</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!isStreaming}
+                onClick={handleCycleZoom}
+                className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-2 font-mono text-xs font-medium transition disabled:opacity-35 ${
+                  videoZoom > 1
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                    : 'border-white/10 bg-zinc-950 text-zinc-300 hover:text-white'
+                }`}
+                title="Zoom numérique"
+              >
+                <ZoomIn className="h-3.5 w-3.5" />
+                <span>{videoZoom}×</span>
               </button>
 
               <button
@@ -1323,7 +1507,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 className="inline-flex items-center gap-1.5 rounded-xl bg-orange-500 px-3.5 py-2 text-xs font-extrabold text-obsidian-950 shadow-lg hover:bg-orange-400"
               >
                 <MessageSquare className="h-3.5 w-3.5" />
-                <span>Envoyer un SMS d’urgence</span>
+                <span>Nouveau SMS</span>
               </button>
               {canViewContacts && (
                 <button
@@ -1785,37 +1969,27 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       )}
 
-      {/* ==================== EMERGENCY SMS RELAY & FREE REDIRECT MODAL ==================== */}
+      {/* ==================== SMS COMPOSER MODAL ==================== */}
       {smsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-3xl border border-slate-700 bg-obsidian-900 p-5 shadow-2xl">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-zinc-900 p-5 shadow-2xl">
             <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-orange-500/40 bg-orange-500/15 text-orange-300">
-                  <MessageSquare className="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-extrabold text-white">
-                    Envoyer un SMS {smsContactName ? `à ${smsContactName}` : 'd’urgence'}
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Relais SIM depuis le smartphone perdu ou redirection gratuite directe.
-                  </p>
-                </div>
-              </div>
+              <h3 className="text-sm font-semibold text-white">
+                {smsContactName ? `SMS à ${smsContactName}` : 'Envoyer un SMS'}
+              </h3>
               <button
                 type="button"
                 onClick={() => setSmsOpen(false)}
-                className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+                className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/[0.06] hover:text-white"
               >
-                <X className="h-5 w-5" />
+                <X className="h-4 w-4" />
               </button>
             </div>
 
             <form onSubmit={(e) => void handleSendRemoteSms(e)} className="mt-4 space-y-3">
               <div>
-                <label className="mb-1 block text-[11px] font-bold text-slate-300">
-                  Numéro du destinataire
+                <label className="mb-1 block text-[11px] font-medium text-zinc-400">
+                  Destinataire
                 </label>
                 <input
                   type="tel"
@@ -1823,124 +1997,98 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   value={smsPhone}
                   onChange={(e) => setSmsPhone(e.target.value)}
                   placeholder="+33 6 12 34 56 78"
-                  className="w-full rounded-xl border border-slate-700 bg-obsidian-950 px-3.5 py-2.5 font-mono text-sm text-white placeholder-slate-500 focus:border-orange-400 focus:outline-none"
+                  className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3.5 py-2.5 font-mono text-sm text-white placeholder-zinc-600 focus:border-emerald-400 focus:outline-none"
                 />
-              </div>
-
-              {/* Quick Lost-Phone Templates */}
-              <div className="flex flex-wrap gap-1.5">
-                {[
-                  'Téléphone égaré : merci de me contacter si vous le trouvez.',
-                  'Urgence : je n’ai plus accès à mon téléphone, appelle-moi sur un autre numéro.',
-                  'Voici la dernière position connue de mon smartphone.',
-                ].map((tpl, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setSmsBody(tpl)}
-                    className="rounded-lg border border-slate-700 bg-obsidian-950 px-2.5 py-1 text-[10px] font-semibold text-slate-300 hover:border-orange-400/50 hover:text-white"
-                  >
-                    Modèle {i + 1}
-                  </button>
-                ))}
               </div>
 
               <div>
                 <div className="mb-1 flex items-center justify-between text-[11px]">
-                  <label className="font-bold text-slate-300">Message</label>
-                  <span className="font-mono text-[10px] text-slate-500">
-                    {smsBody.length}/320 car.
+                  <label className="font-medium text-zinc-400">Message</label>
+                  <span className="font-mono text-[10px] text-zinc-500">
+                    {smsBody.length}/640
                   </span>
                 </div>
                 <textarea
-                  rows={3}
-                  maxLength={320}
+                  rows={4}
+                  maxLength={640}
                   required
                   value={smsBody}
                   onChange={(e) => setSmsBody(e.target.value)}
-                  placeholder="Tapez votre message..."
-                  className="w-full rounded-xl border border-slate-700 bg-obsidian-950 p-3 text-xs text-white placeholder-slate-500 focus:border-orange-400 focus:outline-none"
+                  placeholder="Écrivez votre message…"
+                  className="w-full rounded-xl border border-white/10 bg-zinc-950 p-3 text-xs text-white placeholder-zinc-600 focus:border-emerald-400 focus:outline-none"
                 />
               </div>
 
-              <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={smsIncludeGps}
-                  onChange={(e) => setSmsIncludeGps(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-orange-500"
-                />
-                <span>Joindre automatiquement le lien Google Maps GPS (si disponible)</span>
-              </label>
+              {canViewLocation && (
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-400">
+                  <input
+                    type="checkbox"
+                    checked={smsIncludeGps}
+                    onChange={(e) => setSmsIncludeGps(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-zinc-700 bg-zinc-950 text-emerald-500 focus:ring-0"
+                  />
+                  <span>Joindre la dernière position GPS</span>
+                </label>
+              )}
 
               {smsResultMsg && (
                 <div
                   className={`rounded-xl border p-3 text-xs ${
                     smsResultMsg.ok
-                      ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
-                      : 'border-rose-500/40 bg-rose-500/15 text-rose-200'
+                      ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
+                      : 'border-rose-500/35 bg-rose-500/10 text-rose-200'
                   }`}
                 >
                   {smsResultMsg.text}
                 </div>
               )}
 
-              {/* Option 1: Direct E2EE SIM Relay from the Smartphone */}
-              <div className="rounded-2xl border border-orange-500/30 bg-orange-500/10 p-3">
-                <button
-                  type="submit"
-                  disabled={!canUseSmsRelay || smsSending || !smsPhone.trim() || !smsBody.trim()}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 py-2.5 text-xs font-extrabold text-obsidian-950 shadow-lg transition hover:bg-orange-400 disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  <Send className="h-4 w-4" />
-                  <span>
-                    {smsSending
-                      ? 'Envoi chiffré vers le smartphone...'
-                      : 'Envoyer depuis le smartphone (Relais SIM gratuit)'}
-                  </span>
-                </button>
-                <p className="mt-1.5 text-center text-[10px] text-orange-200/80">
-                  {canUseSmsRelay
-                    ? 'Autorisé par le propriétaire • Envoi direct via la carte SIM du smartphone (chiffré E2EE).'
-                    : 'Relais SIM non activé sur le smartphone (utilisez les redirections gratuites ci-dessous).'}
-                </p>
-              </div>
+              <button
+                type="submit"
+                disabled={!canUseSmsRelay || smsSending || !smsPhone.trim() || !smsBody.trim()}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                <Send className="h-3.5 w-3.5" />
+                <span>
+                  {smsSending ? 'Envoi en cours…' : 'Envoyer depuis l’appareil'}
+                </span>
+              </button>
 
-              {/* Option 2: 100% Free Direct Redirects from Current Device */}
-              <div className="space-y-2 border-t border-slate-800 pt-3">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  Redirections gratuites depuis votre appareil actuel
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <a
-                    href={smsSchemeHref}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-2.5 py-2 text-[11px] font-bold text-slate-200 hover:border-cyan-400/50 hover:text-cyan-200"
-                  >
-                    <MessageSquare className="h-3.5 w-3.5 text-cyan-400" />
-                    <span>Appli SMS</span>
-                  </a>
-                  <a
-                    href={whatsappHref}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-2.5 py-2 text-[11px] font-bold text-slate-200 hover:border-emerald-400/50 hover:text-emerald-200"
-                  >
-                    <ExternalLink className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>WhatsApp</span>
-                  </a>
-                  <button
-                    type="button"
-                    onClick={() => void handleCopySmall(composedPreviewText, 'sms-copy')}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-2.5 py-2 text-[11px] font-bold text-slate-200 hover:border-amber-400/50 hover:text-amber-200"
-                  >
-                    {copiedKey === 'sms-copy' ? (
-                      <Check className="h-3.5 w-3.5 text-emerald-400" />
-                    ) : (
-                      <Copy className="h-3.5 w-3.5 text-amber-400" />
-                    )}
-                    <span>{copiedKey === 'sms-copy' ? 'Copié' : 'Copier'}</span>
-                  </button>
-                </div>
+              {!canUseSmsRelay && (
+                <p className="text-center text-[11px] text-zinc-500">
+                  Envoi via la carte SIM non activé pour ce code.
+                </p>
+              )}
+
+              <div className="grid grid-cols-3 gap-2 border-t border-white/[0.07] pt-3">
+                <a
+                  href={smsSchemeHref}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-2.5 py-2 text-[11px] font-medium text-zinc-300 hover:bg-white/[0.05] hover:text-white"
+                >
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  <span>Appli SMS</span>
+                </a>
+                <a
+                  href={whatsappHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-2.5 py-2 text-[11px] font-medium text-zinc-300 hover:bg-white/[0.05] hover:text-white"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  <span>WhatsApp</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => void handleCopySmall(composedPreviewText, 'sms-copy')}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-2.5 py-2 text-[11px] font-medium text-zinc-300 hover:bg-white/[0.05] hover:text-white"
+                >
+                  {copiedKey === 'sms-copy' ? (
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="h-3.5 w-3.5" />
+                  )}
+                  <span>{copiedKey === 'sms-copy' ? 'Copié' : 'Copier'}</span>
+                </button>
               </div>
             </form>
           </div>

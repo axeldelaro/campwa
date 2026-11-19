@@ -106,6 +106,27 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const [verifiedAdminPin, setVerifiedAdminPin] = useState('');
   const [adminError, setAdminError] = useState<string | null>(null);
 
+  const isAdminLocked = Boolean(
+    isNativeAndroid && portal?.adminProtectionEnabled && portal?.hasAdminPin && !adminUnlocked
+  );
+
+  const requireAdminUnlocked = (): boolean => {
+    if (!isAdminLocked) return true;
+    setAdminError('Code administrateur requis pour modifier ce réglage.');
+    return false;
+  };
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.hidden) {
+        setAdminUnlocked(false);
+        setVerifiedAdminPin('');
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, []);
+
   const webEngineRef = useRef<BrowserEmitterEngine | null>(null);
 
   useEffect(() => {
@@ -191,7 +212,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleToggleScreenShare = async () => {
-    if (!portal) return;
+    if (!portal || !requireAdminUnlocked()) return;
     setBusy(true);
     try {
       const currentlyActive = portal.globalShares.allowScreenShare && portal.globalShares.screenShareReady;
@@ -212,7 +233,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleToggleContactsShare = async () => {
-    if (!portal) return;
+    if (!portal || !requireAdminUnlocked()) return;
     setBusy(true);
     try {
       const targetVal = !portal.globalShares.allowContacts;
@@ -234,7 +255,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleToggleLocationShare = async () => {
-    if (!portal) return;
+    if (!portal || !requireAdminUnlocked()) return;
     setBusy(true);
     try {
       const targetVal = !portal.globalShares.allowLocation;
@@ -256,7 +277,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleToggleLocationHistory = async () => {
-    if (!portal) return;
+    if (!portal || !requireAdminUnlocked()) return;
     setBusy(true);
     try {
       const targetVal = !(portal.globalShares.allowLocationHistory ?? true);
@@ -304,7 +325,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleClearLocationHistory = async () => {
-    if (!isNativeAndroid) return;
+    if (!isNativeAndroid || !requireAdminUnlocked()) return;
     setBusy(true);
     try {
       const next = await SentinelNative.clearLocationHistory();
@@ -315,7 +336,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleToggleDeviceInfoShare = async () => {
-    if (!portal) return;
+    if (!portal || !requireAdminUnlocked()) return;
     setBusy(true);
     try {
       const targetVal = !portal.globalShares.allowDeviceInfo;
@@ -332,7 +353,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleToggleIntercomShare = async () => {
-    if (!portal) return;
+    if (!portal || !requireAdminUnlocked()) return;
     setBusy(true);
     try {
       const targetVal = !portal.globalShares.allowIntercom;
@@ -349,7 +370,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleToggleSmsRelay = async () => {
-    if (!portal) return;
+    if (!portal || !requireAdminUnlocked()) return;
     setBusy(true);
     try {
       const targetVal = !(portal.globalShares.allowSmsRelay ?? false);
@@ -457,6 +478,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleRegenerateCode = async () => {
+    if (!requireAdminUnlocked()) return;
     setBusy(true);
     try {
       if (isNativeAndroid) {
@@ -1452,18 +1474,16 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                 )}
               </div>
 
-              {/* Lost-Phone Emergency SMS Relay Control (Strictly Opt-In) */}
+              {/* SMS Relay Control */}
               <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
                 <div className="flex items-start gap-3">
                   <MessageSquare className="mt-0.5 h-5 w-5 shrink-0 text-orange-400" />
                   <div>
-                    <div className="text-xs font-bold text-white">
-                      Relais SMS d’Urgence (Téléphone perdu)
-                    </div>
+                    <div className="text-xs font-bold text-white">Envoi de SMS</div>
                     <div className="text-[11px] text-slate-400">
                       {shares.allowSmsRelay && (portal.permissions.sms || !isNativeAndroid)
-                        ? 'Activé — vous pouvez envoyer un SMS d’urgence depuis la carte SIM (max 5 / 10 min, notifié & journalisé).'
-                        : 'Désactivé — aucun SMS ne peut être envoyé à distance.'}
+                        ? 'Autorisé via la carte SIM pour les codes ayant cette permission.'
+                        : 'Désactivé.'}
                     </div>
                   </div>
                 </div>

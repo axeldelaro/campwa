@@ -33,6 +33,7 @@ export interface SentinelNativePluginContract {
   enableAdminProtection(options: { pin: string }): Promise<NativePortalState>;
   verifyAdminPin(options: { pin: string }): Promise<{ valid: boolean }>;
   disableAdminProtection(options: { pin: string }): Promise<NativePortalState>;
+  updateAdminPin(options: { currentPin: string; newPin: string }): Promise<NativePortalState>;
   regeneratePairingCode(): Promise<NativePortalState>;
   resetPairedController(): Promise<NativePortalState>;
   setAutoStartOnBoot(options: { enabled: boolean }): Promise<NativePortalState>;

@@ -442,6 +442,23 @@ class SentinelNativePlugin : Plugin() {
     }
 
     @PluginMethod
+    fun updateAdminPin(call: PluginCall) {
+        val currentPin = call.getString("currentPin") ?: ""
+        val newPin = call.getString("newPin")?.trim().orEmpty()
+        if (prefs.hasAdminPin() && !prefs.verifyAdminPin(currentPin)) {
+            call.reject("Code actuel incorrect.")
+            return
+        }
+        if (newPin.length < 4 || newPin.length > 12) {
+            call.reject("Le nouveau code doit contenir 4 à 12 caractères.")
+            return
+        }
+        prefs.setAdminPin(newPin)
+        prefs.appendLog("security", "Code administrateur modifié.")
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
     fun regeneratePairingCode(call: PluginCall) {
         prefs.regeneratePairingCode()
         CameraForegroundService.reloadSignaling(context)

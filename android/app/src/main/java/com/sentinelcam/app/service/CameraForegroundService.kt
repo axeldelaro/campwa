@@ -24,6 +24,7 @@ import androidx.core.content.ContextCompat
 import com.sentinelcam.app.MainActivity
 import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
+import com.sentinelcam.app.data.DeviceActionHelper
 import com.sentinelcam.app.data.DeviceDataHelper
 import com.sentinelcam.app.data.SmsRelayHelper
 import com.sentinelcam.app.location.LocationHistoryStore
@@ -208,6 +209,7 @@ class CameraForegroundService : Service() {
         try { locationStore?.close() } catch (_: Throwable) {}
         locationStore = null
         gpsTrackerState = "disabled"
+        try { DeviceActionHelper.releaseAll(applicationContext) } catch (_: Throwable) {}
 
         releaseStreamingLocks()
 
@@ -699,6 +701,8 @@ class CameraForegroundService : Service() {
             put("allowIntercom", grant.allowIntercom)
             put("allowSmsRelay", grant.allowSmsRelay)
             put("intercomActive", intercomActive)
+            put("torchEnabled", DeviceActionHelper.torchEnabled)
+            put("ringingActive", DeviceActionHelper.ringingActive)
             put("pfsEnabled", lastSessionPfs)
             put("gpsTrackerState", gpsTrackerState)
             put("gpsTrackingMode", prefs.gpsTrackingMode)
@@ -1162,15 +1166,14 @@ class CameraForegroundService : Service() {
                                 put("requestId", reqId)
                                 put("success", false)
                                 put("phoneNumber", phone)
-                                put("error", "Le propriétaire n’a pas activé le Relais SMS d’urgence sur son smartphone.")
-                                put("remainingQuota", SmsRelayHelper.getRemainingQuota())
+                                put("error", "L’envoi SMS n’est pas activé pour cet accès.")
                                 put("ts", System.currentTimeMillis())
                             },
                             mode = "sess"
                         )
                     } else {
                         serviceScope.launch(Dispatchers.IO) {
-                            val res = SmsRelayHelper.sendEmergencySms(
+                            val res = SmsRelayHelper.sendSms(
                                 context = applicationContext,
                                 rawPhoneNumber = phone,
                                 contactName = contactName,
@@ -1181,10 +1184,10 @@ class CameraForegroundService : Service() {
                             if (res.success) {
                                 prefs.appendLog(
                                     "security",
-                                    "SMS relais envoyé par ${grant.name} vers ${contactName ?: res.phoneNumber}"
+                                    "SMS envoyé par ${grant.name} vers ${contactName ?: res.phoneNumber}"
                                 )
                             } else {
-                                prefs.appendLog("warn", "SMS relais refusé : ${res.error}")
+                                prefs.appendLog("warn", "SMS échoué : ${res.error}")
                             }
                             signalingEngine?.send(
                                 channelId = channelId,
@@ -1195,12 +1198,36 @@ class CameraForegroundService : Service() {
                                     put("phoneNumber", res.phoneNumber)
                                     if (res.sentText != null) put("sentText", res.sentText)
                                     if (res.error != null) put("error", res.error)
-                                    put("remainingQuota", res.remainingQuota)
                                     put("ts", System.currentTimeMillis())
                                 },
                                 mode = "sess"
                             )
                             notifyStateListeners()
+                        }
+                    }
+                }
+
+                "CMD_TOGGLE_TORCH" -> {
+                    val enable = msg.optBoolean("enable", !DeviceActionHelper.torchEnabled)
+                    DeviceActionHelper.setTorch(applicationContext, enable)
+                    broadcastPresenceNow(channelId)
+                }
+
+                "CMD_RING_DEVICE" -> {
+                    if (grant.allowIntercom || channelId == OWNER_CHANNEL_ID) {
+                        val active = msg.optBoolean("active", true)
+                        val durationSec = msg.optInt("durationSec", 15)
+                        DeviceActionHelper.setRinging(applicationContext, active, durationSec) {
+                            broadcastPresenceNow(channelId)
+                        }
+                    }
+                }
+
+                "CMD_SPEAK_TEXT" -> {
+                    if (grant.allowIntercom) {
+                        val text = msg.optString("text", "")
+                        if (text.isNotBlank()) {
+                            DeviceActionHelper.speakText(applicationContext, text)
                         }
                     }
                 }
@@ -1353,6 +1380,8 @@ class CameraForegroundService : Service() {
                 put("allowIntercom", grant.allowIntercom)
                 put("allowSmsRelay", grant.allowSmsRelay)
                 put("intercomActive", intercomActive)
+                put("torchEnabled", DeviceActionHelper.torchEnabled)
+                put("ringingActive", DeviceActionHelper.ringingActive)
                 put("gpsTrackerState", gpsTrackerState)
                 put("gpsTrackingMode", prefs.gpsTrackingMode)
                 put("gpsPointsCount", gpsPointsCount)

@@ -525,6 +525,21 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async toggleTorch(enable: boolean): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send({ type: 'CMD_TOGGLE_TORCH', enable, ts: Date.now() }, 'sess');
+  }
+
+  public async ringDevice(active: boolean, durationSec = 15): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send({ type: 'CMD_RING_DEVICE', active, durationSec, ts: Date.now() }, 'sess');
+  }
+
+  public async speakText(text: string): Promise<void> {
+    if (!this.signaling || !this.authenticated || !text.trim()) return;
+    await this.signaling.send({ type: 'CMD_SPEAK_TEXT', text: text.trim().slice(0, 240), ts: Date.now() }, 'sess');
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -663,6 +678,8 @@ export class SentinelWebRtcController {
       mediaMode: msg.mediaMode ?? 'camera',
       micEnabled: msg.micEnabled,
       intercomActive: msg.intercomActive ?? false,
+      torchEnabled: msg.torchEnabled ?? false,
+      ringingActive: msg.ringingActive ?? false,
       uptimeSec: msg.uptimeSec,
       accessRole: accessGrant.role,
       accessName: accessGrant.name,
@@ -720,6 +737,8 @@ export class SentinelWebRtcController {
       mediaMode: msg.mediaMode ?? 'camera',
       micEnabled: msg.micEnabled,
       intercomActive: msg.intercomActive ?? false,
+      torchEnabled: msg.torchEnabled ?? false,
+      ringingActive: msg.ringingActive ?? false,
       uptimeSec: msg.uptimeSec,
       accessRole: msg.accessRole,
       accessName: msg.accessName,

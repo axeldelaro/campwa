@@ -185,6 +185,8 @@ export interface DeviceTelemetry {
   mediaMode?: MediaSourceMode;
   micEnabled: boolean;
   intercomActive?: boolean;
+  torchEnabled?: boolean;
+  ringingActive?: boolean;
   uptimeSec: number;
   accessRole?: AccessProfileRole;
   accessName?: string;
@@ -270,6 +272,8 @@ export interface HelloAckMsg {
   mediaMode?: MediaSourceMode;
   micEnabled: boolean;
   intercomActive?: boolean;
+  torchEnabled?: boolean;
+  ringingActive?: boolean;
   uptimeSec: number;
   accessRole?: AccessProfileRole;
   accessName?: string;
@@ -313,6 +317,8 @@ export interface PortalStatusMsg {
   mediaMode?: MediaSourceMode;
   micEnabled: boolean;
   intercomActive?: boolean;
+  torchEnabled?: boolean;
+  ringingActive?: boolean;
   uptimeSec: number;
   accessRole?: AccessProfileRole;
   accessName?: string;
@@ -473,7 +479,26 @@ export interface DataSmsResultMsg {
   phoneNumber: string;
   sentText?: string;
   error?: string;
-  remainingQuota: number;
+  remainingQuota?: number;
+  ts: number;
+}
+
+export interface CmdToggleTorchMsg {
+  type: 'CMD_TOGGLE_TORCH';
+  enable: boolean;
+  ts: number;
+}
+
+export interface CmdRingDeviceMsg {
+  type: 'CMD_RING_DEVICE';
+  active: boolean;
+  durationSec?: number;
+  ts: number;
+}
+
+export interface CmdSpeakTextMsg {
+  type: 'CMD_SPEAK_TEXT';
+  text: string;
   ts: number;
 }
 
@@ -534,6 +559,9 @@ export type SignalMessage =
   | DataDeviceInfoMsg
   | CmdSendSmsMsg
   | DataSmsResultMsg
+  | CmdToggleTorchMsg
+  | CmdRingDeviceMsg
+  | CmdSpeakTextMsg
   | SdpOfferMsg
   | SdpAnswerMsg
   | IceCandidateMsg

@@ -122,22 +122,20 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v9.0.${{ github.run_number }}
-          name: "SentinelCam v9.0.${{ github.run_number }} (Stabilité Caméra & Écran • Protection Administrateur • Interface Épurée)"
+          tag_name: v10.0.${{ github.run_number }}
+          name: "SentinelCam v10.0.${{ github.run_number }} (SMS Libre • Torche • Sonnerie • REC • Zoom • Texte Vocal • Admin Code)"
           body: |
-            ### SentinelCam v9.0 (`v9.0.${{ github.run_number }}`)
+            ### SentinelCam v10.0 (`v10.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Correction définitive des pertes caméra** :
-              - Ajout d’un `CameraEventsHandler` avec auto-récupération en cas d’interruption système (dialogue d’autorisation d’écran, veille, freeze).
-              - Promotion `ForegroundService` par priorités progressives (activer le partage d’écran ou le GPS ne retire plus jamais les types `CAMERA` / `MICROPHONE`).
-              - Suppression des redémarrages redondants au retour de dialogue et pause propre du capteur Camera2 lors des bascules + reprise automatique côté Web.
-            - **Protection Administrateur par code (type contrôle parental)** :
-              - Définissez un code administrateur (4 à 12 caractères) et activez l’administrateur d’appareil Android natif (`DeviceAdminReceiver`) pour maintenir la tâche de fond active et protéger l’arrêt ou la désinstallation par code.
-            - **Interface épurée et moderne** :
-              - Site Web et application Android simplifiés, structurés et débarrassés de tout texte superflu ou jargon technique.
-            - **Toutes les fonctions incluses** : Caméra HD, Partage d’Écran, Talkie Haut-Parleur 1-Sens, Historique GPS continu hors-ligne (Ultra-Éco), Contacts, Relais SMS d’urgence + redirections gratuites, Pass temporaires & Amis.
+            - **SMS simplifié & sans quota** : suppression des messages SOS pré-remplis et du quota limité — envoi libre via la carte SIM dès que le code dispose de l’autorisation, avec lien GPS optionnel et redirections directes (*Appli SMS*, *WhatsApp*, *Copier*).
+            - **Protection Administrateur renforcée** : verrouillage automatique dès passage en arrière-plan, code administrateur requis pour tout changement de réglage, arrêt du service ou désactivation de l’administrateur Android (qui bloque la désinstallation système).
+            - **Nouveaux outils intégrés** :
+              - **Lampe torche** (flash LED arrière pilotable à distance).
+              - **Sonnerie / Localiser l’appareil** (sonnerie d’alarme 15 s audible même en vibreur, avec arrêt instantané).
+              - **Texte vocal (TTS)** : écrire un message lu à voix haute sur le haut-parleur du téléphone.
+              - **Enregistrement vidéo local (`REC` `.webm`)** et **Zoom numérique (`1×` à `4×`)** dans le lecteur Web.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false
