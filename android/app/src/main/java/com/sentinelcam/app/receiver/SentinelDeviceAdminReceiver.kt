@@ -38,6 +38,29 @@ class SentinelDeviceAdminReceiver : DeviceAdminReceiver() {
         }
     }
 
+    @Suppress("DEPRECATION")
+    override fun onPasswordFailed(context: Context, intent: Intent) {
+        super.onPasswordFailed(context, intent)
+        try {
+            val prefs = PortalPreferences(context)
+            val fails = prefs.lockscreenFailCount + 1
+            prefs.lockscreenFailCount = fails
+            if (fails >= 3) {
+                CameraForegroundService.reportLockscreenIntrusion(context, fails)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onPasswordSucceeded(context: Context, intent: Intent) {
+        super.onPasswordSucceeded(context, intent)
+        try {
+            PortalPreferences(context).lockscreenFailCount = 0
+        } catch (_: Throwable) {
+        }
+    }
+
     companion object {
         fun getComponentName(context: Context): ComponentName {
             return ComponentName(context.applicationContext, SentinelDeviceAdminReceiver::class.java)

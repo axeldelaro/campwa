@@ -1189,7 +1189,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           }`}
         >
           <Users className="h-3.5 w-3.5" />
-          <span>Amis ({friendProfiles.length})</span>
+          <span>Parents ({friendProfiles.length})</span>
         </button>
       </div>
 
@@ -1327,290 +1327,31 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             </div>
           </div>
 
-          {/* USER-CONTROLLED GRANULAR PERMISSION CENTER */}
-          <div className="rounded-3xl border border-slate-800 bg-obsidian-900/95 p-5 shadow-2xl">
-            <div className="flex items-center gap-2">
-              <Sliders className="h-5 w-5 text-emerald-400" />
-              <h2 className="text-sm font-extrabold text-white">
-                Ce que vous autorisez à partager (Vous décidez)
-              </h2>
+          {/* CLEAN COMPACT PERMISSION LIST */}
+          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-4">
+            <div className="flex items-center justify-between pb-2">
+              <div className="flex items-center gap-2">
+                <Sliders className="h-4 w-4 text-emerald-400" />
+                <h2 className="text-sm font-semibold text-white">Autorisations</h2>
+              </div>
+              <span className="text-[11px] text-zinc-500">Contrôle local</span>
             </div>
-            <p className="mt-1 text-xs text-slate-400">
-              Rien n’est partagé sans votre accord explicite. Activez ou coupez chaque accès en 1
-              clic ci-dessous.
-            </p>
 
-            <div className="mt-4 space-y-2.5">
-              {/* Walkie-Talkie Loudspeaker Control */}
-              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
-                <div className="flex items-start gap-3">
-                  <Volume2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-400" />
-                  <div>
-                    <div className="text-xs font-bold text-white">Haut-Parleur Talkie (1 sens)</div>
-                    <div className="text-[11px] text-slate-400">
-                      Permet de parler depuis le site Web directement sur le haut-parleur du téléphone.
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void handleToggleIntercomShare()}
-                  className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                    shares.allowIntercom
-                      ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-200'
-                      : 'border-slate-700 bg-obsidian-900 text-slate-300'
-                  }`}
-                >
-                  {shares.allowIntercom ? 'Activé' : 'Désactivé'}
-                </button>
-              </div>
-
-              {/* Screen Share Control */}
-              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
-                <div className="flex items-start gap-3">
-                  <Monitor className="mt-0.5 h-5 w-5 shrink-0 text-violet-400" />
-                  <div>
-                    <div className="text-xs font-bold text-white">Partage d’Écran en Direct</div>
-                    <div className="text-[11px] text-slate-400">
-                      {shares.allowScreenShare && shares.screenShareReady
-                        ? 'Autorisé par Android — prêt à être visionné à distance.'
-                        : 'Désactivé — demande votre validation système Android.'}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void handleToggleScreenShare()}
-                  className={`shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition ${
-                    shares.allowScreenShare && shares.screenShareReady
-                      ? 'border border-violet-500/40 bg-violet-500/20 text-violet-200 hover:bg-rose-500/20 hover:text-rose-200'
-                      : 'bg-violet-500 text-white hover:bg-violet-400'
-                  }`}
-                >
-                  {shares.allowScreenShare && shares.screenShareReady ? 'Actif (Couper)' : 'Autoriser'}
-                </button>
-              </div>
-
-              {/* Contacts Share Control */}
-              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
-                <div className="flex items-start gap-3">
-                  <BookUser className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
-                  <div>
-                    <div className="text-xs font-bold text-white">Répertoire Contacts</div>
-                    <div className="text-[11px] text-slate-400">
-                      {shares.allowContacts && portal.permissions.contacts
-                        ? 'Partage autorisé (lecture seule chiffrée E2EE).'
-                        : 'Privé — aucun contact accessible à distance.'}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void handleToggleContactsShare()}
-                  className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                    shares.allowContacts && (portal.permissions.contacts || !isNativeAndroid)
-                      ? 'border-amber-500/40 bg-amber-500/20 text-amber-200'
-                      : 'border-slate-700 bg-obsidian-900 text-slate-300 hover:border-amber-400'
-                  }`}
-                >
-                  {shares.allowContacts && (portal.permissions.contacts || !isNativeAndroid)
-                    ? 'Activé'
-                    : 'Activer'}
-                </button>
-              </div>
-
-              {/* GPS Location & Offline Trail History Control */}
-              <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-start gap-3">
-                    <MapPin className="mt-0.5 h-5 w-5 shrink-0 text-rose-400" />
-                    <div>
-                      <div className="text-xs font-bold text-white">
-                        Localisation & Historique GPS Continu
-                      </div>
-                      <div className="text-[11px] text-slate-400">
-                        {shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
-                          ? 'Trace précise enregistrée hors-ligne (SQLite) avec mise en veille GPS automatique à l’arrêt.'
-                          : 'Désactivé — position masquée et capteur GPS coupé.'}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void handleToggleLocationShare()}
-                    className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                      shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
-                        ? 'border-rose-500/40 bg-rose-500/20 text-rose-200'
-                        : 'border-slate-700 bg-obsidian-900 text-slate-300 hover:border-rose-400'
-                    }`}
-                  >
-                    {shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
-                      ? 'Activé'
-                      : 'Activer'}
-                  </button>
-                </div>
-
-                {shares.allowLocation && (portal.permissions.location || !isNativeAndroid) && (
-                  <div className="mt-3 space-y-2.5 border-t border-slate-800/80 pt-3">
-                    {/* Offline History Toggle + Live Stats */}
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <div className="text-[11px] font-bold text-slate-200">
-                          Historique continu hors-ligne (30 jours)
-                        </div>
-                        <div className="text-[10px] text-slate-500">
-                          {portal.gpsTodayPointsCount ?? 0} pts aujourd’hui •{' '}
-                          {portal.gpsPointsCount ?? 0} pts stockés localement
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void handleToggleLocationHistory()}
-                          className={`rounded-lg border px-2.5 py-1 text-[10px] font-bold transition ${
-                            shares.allowLocationHistory !== false
-                              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-                              : 'border-slate-700 bg-obsidian-900 text-slate-400'
-                          }`}
-                        >
-                          {shares.allowLocationHistory !== false ? 'Journal ON' : 'Journal OFF'}
-                        </button>
-                        {isNativeAndroid && (portal.gpsPointsCount ?? 0) > 0 && (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void handleClearLocationHistory()}
-                            className="rounded-lg border border-slate-700 bg-obsidian-900 px-2 py-1 text-[10px] font-bold text-slate-400 hover:border-rose-500/40 hover:text-rose-300"
-                            title="Effacer l’historique GPS local"
-                          >
-                            Vider
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Battery-Smart Mode Selector */}
-                    {shares.allowLocationHistory !== false && (
-                      <div className="space-y-1.5">
-                        <div className="flex flex-wrap items-center justify-between gap-1 text-[10px]">
-                          <span className="font-bold text-slate-400">
-                            Profil batterie (GPS coupé à l’arrêt + bouclier &lt;15%)
-                          </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 font-mono font-bold ${
-                              portal.gpsTrackerState === 'moving'
-                                ? 'bg-emerald-500/20 text-emerald-300'
-                                : portal.gpsTrackerState === 'stationary'
-                                ? 'bg-sky-500/20 text-sky-300'
-                                : portal.gpsTrackerState === 'battery_saver'
-                                ? 'bg-amber-500/20 text-amber-300'
-                                : 'bg-slate-800 text-slate-400'
-                            }`}
-                          >
-                            {portal.gpsTrackerState === 'moving'
-                              ? 'En mouvement'
-                              : portal.gpsTrackerState === 'stationary'
-                              ? 'Immobile • 0% GPS'
-                              : portal.gpsTrackerState === 'battery_saver'
-                              ? 'Éco Batterie'
-                              : 'Prêt'}
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-3 gap-1.5">
-                          {(
-                            [
-                              { id: 'eco', label: 'Ultra-Éco', sub: '20s / 20m' },
-                              { id: 'balanced', label: 'Équilibré', sub: '10s / 12m' },
-                              { id: 'precision', label: 'Précis', sub: '4s / 6m' },
-                            ] as const
-                          ).map((opt) => {
-                            const active = (shares.gpsTrackingMode ?? 'eco') === opt.id;
-                            return (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                disabled={busy}
-                                onClick={() => void handleSetGpsTrackingMode(opt.id)}
-                                className={`rounded-xl border px-2 py-1.5 text-center transition ${
-                                  active
-                                    ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-200'
-                                    : 'border-slate-800 bg-obsidian-900 text-slate-400 hover:border-slate-700 hover:text-slate-200'
-                                }`}
-                              >
-                                <div className="text-[11px] font-bold">{opt.label}</div>
-                                <div className="font-mono text-[9px] opacity-75">{opt.sub}</div>
-                              </button>
-                            );
-                          })}
-                        </div>
-
-                        {isNativeAndroid && portal.permissions.backgroundLocation === false && (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void handleRequestBackgroundLocation()}
-                            className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[11px] font-bold text-amber-200 hover:bg-amber-500/20"
-                          >
-                            <Zap className="h-3.5 w-3.5" />
-                            <span>Autoriser le GPS en arrière-plan (« Toujours autoriser »)</span>
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* SMS Relay Control */}
-              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
-                <div className="flex items-start gap-3">
-                  <MessageSquare className="mt-0.5 h-5 w-5 shrink-0 text-orange-400" />
-                  <div>
-                    <div className="text-xs font-bold text-white">Envoi de SMS</div>
-                    <div className="text-[11px] text-slate-400">
-                      {shares.allowSmsRelay && (portal.permissions.sms || !isNativeAndroid)
-                        ? 'Autorisé via la carte SIM pour les codes ayant cette permission.'
-                        : 'Désactivé.'}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void handleToggleSmsRelay()}
-                  className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                    shares.allowSmsRelay && (portal.permissions.sms || !isNativeAndroid)
-                      ? 'border-orange-500/40 bg-orange-500/20 text-orange-200'
-                      : 'border-slate-700 bg-obsidian-900 text-slate-300 hover:border-orange-400'
-                  }`}
-                >
-                  {shares.allowSmsRelay && (portal.permissions.sms || !isNativeAndroid)
-                    ? 'Activé'
-                    : 'Activer'}
-                </button>
-              </div>
-
-              {/* Screen Time & Remote App Lock Control */}
+            <div className="divide-y divide-white/[0.06]">
+              {/* Screen Time & Remote Control */}
               {isNativeAndroid && (
-                <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
+                <div className="py-3">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-start gap-3">
-                      <Lock className="mt-0.5 h-5 w-5 shrink-0 text-sky-400" />
+                    <div className="flex items-center gap-2.5">
+                      <Lock className="h-4 w-4 shrink-0 text-sky-400" />
                       <div>
-                        <div className="text-xs font-bold text-white">
-                          Verrouillage d’écran & Temps d’écran
-                        </div>
-                        <div className="text-[11px] text-slate-400">
+                        <div className="text-xs font-medium text-white">Contrôle & Temps d’écran</div>
+                        <div className="text-[11px] text-zinc-500">
                           {shares.allowDeviceControl !== false
                             ? (portal.activeAppLocksCount ?? 0) > 0
-                              ? `${portal.activeAppLocksCount} application(s) verrouillée(s) actuellement.`
-                              : 'Permet de verrouiller l’écran, voir le temps d’écran et bloquer des applis.'
-                            : 'Désactivé.'}
+                              ? `${portal.activeAppLocksCount} appli(s) verrouillée(s)`
+                              : 'Verrouillage, quotas, couvre-feu'
+                            : 'Désactivé'}
                         </div>
                       </div>
                     </div>
@@ -1618,70 +1359,238 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                       type="button"
                       disabled={busy}
                       onClick={() => void handleToggleDeviceControl()}
-                      className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                      className={`shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
                         shares.allowDeviceControl !== false
                           ? 'border-sky-500/40 bg-sky-500/20 text-sky-200'
-                          : 'border-slate-700 bg-obsidian-900 text-slate-300'
+                          : 'border-white/10 bg-zinc-950 text-zinc-400'
                       }`}
                     >
-                      {shares.allowDeviceControl !== false ? 'Activé' : 'Activer'}
+                      {shares.allowDeviceControl !== false ? 'Actif' : 'Inactif'}
                     </button>
                   </div>
 
-                  {shares.allowDeviceControl !== false && (
-                    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-800/80 pt-3">
-                      <button
-                        type="button"
-                        onClick={() => void handleRequestUsageAccess()}
-                        className={`flex items-center justify-between rounded-xl border px-2.5 py-2 text-[11px] font-medium transition ${
-                          portal.permissions.usageAccess
-                            ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300'
-                            : 'border-amber-500/35 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
-                        }`}
-                      >
-                        <span>Temps d’écran</span>
-                        <span>{portal.permissions.usageAccess ? 'OK' : 'Autoriser'}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleRequestOverlay()}
-                        className={`flex items-center justify-between rounded-xl border px-2.5 py-2 text-[11px] font-medium transition ${
-                          portal.permissions.overlay
-                            ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300'
-                            : 'border-amber-500/35 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
-                        }`}
-                      >
-                        <span>Écran de blocage</span>
-                        <span>{portal.permissions.overlay ? 'OK' : 'Autoriser'}</span>
-                      </button>
-                    </div>
-                  )}
+                  {shares.allowDeviceControl !== false &&
+                    (!portal.permissions.usageAccess || !portal.permissions.overlay) && (
+                      <div className="mt-2.5 grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleRequestUsageAccess()}
+                          className={`flex items-center justify-between rounded-lg border px-2.5 py-1.5 text-[11px] font-medium ${
+                            portal.permissions.usageAccess
+                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                              : 'border-amber-500/35 bg-amber-500/10 text-amber-200'
+                          }`}
+                        >
+                          <span>Temps d’écran</span>
+                          <span>{portal.permissions.usageAccess ? 'OK' : 'Autoriser'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleRequestOverlay()}
+                          className={`flex items-center justify-between rounded-lg border px-2.5 py-1.5 text-[11px] font-medium ${
+                            portal.permissions.overlay
+                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                              : 'border-amber-500/35 bg-amber-500/10 text-amber-200'
+                          }`}
+                        >
+                          <span>Écran blocage</span>
+                          <span>{portal.permissions.overlay ? 'OK' : 'Autoriser'}</span>
+                        </button>
+                      </div>
+                    )}
                 </div>
               )}
 
-              {/* System Device Info Control */}
-              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
-                <div className="flex items-start gap-3">
-                  <Cpu className="mt-0.5 h-5 w-5 shrink-0 text-cyan-400" />
-                  <div>
-                    <div className="text-xs font-bold text-white">Infos Appareil & Stockage</div>
-                    <div className="text-[11px] text-slate-400">
-                      Modèle, version Android, batterie, réseau et espace libre.
+              {/* GPS Location & Offline History */}
+              <div className="py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <MapPin className="h-4 w-4 shrink-0 text-rose-400" />
+                    <div>
+                      <div className="text-xs font-medium text-white">GPS & Zones de sécurité</div>
+                      <div className="text-[11px] text-zinc-500">
+                        {shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
+                          ? `${portal.gpsTodayPointsCount ?? 0} pts aujourd’hui · ${
+                              portal.gpsTrackerState === 'stationary' ? 'Immobile (0% GPS)' : 'Actif'
+                            }`
+                          : 'Désactivé'}
+                      </div>
                     </div>
                   </div>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleToggleLocationShare()}
+                    className={`shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition ${
+                      shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
+                        ? 'border-rose-500/40 bg-rose-500/20 text-rose-200'
+                        : 'border-white/10 bg-zinc-950 text-zinc-400'
+                    }`}
+                  >
+                    {shares.allowLocation && (portal.permissions.location || !isNativeAndroid) ? 'Actif' : 'Inactif'}
+                  </button>
+                </div>
+
+                {shares.allowLocation && (portal.permissions.location || !isNativeAndroid) && (
+                  <div className="mt-2.5 space-y-2">
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(
+                        [
+                          { id: 'eco', label: 'Éco' },
+                          { id: 'balanced', label: 'Équilibré' },
+                          { id: 'precision', label: 'Précis' },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleSetGpsTrackingMode(opt.id)}
+                          className={`rounded-lg border py-1 text-[11px] font-medium transition ${
+                            (shares.gpsTrackingMode ?? 'eco') === opt.id
+                              ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
+                              : 'border-white/[0.07] bg-zinc-950 text-zinc-400'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleToggleLocationHistory()}
+                        className="text-zinc-400 hover:text-white"
+                      >
+                        Historique 30j :{' '}
+                        <strong className={shares.allowLocationHistory !== false ? 'text-emerald-300' : 'text-zinc-500'}>
+                          {shares.allowLocationHistory !== false ? 'ON' : 'OFF'}
+                        </strong>
+                      </button>
+                      {isNativeAndroid && (portal.gpsPointsCount ?? 0) > 0 && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleClearLocationHistory()}
+                          className="text-zinc-500 hover:text-rose-300"
+                        >
+                          Vider ({portal.gpsPointsCount})
+                        </button>
+                      )}
+                    </div>
+                    {isNativeAndroid && portal.permissions.backgroundLocation === false && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleRequestBackgroundLocation()}
+                        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-500/35 bg-amber-500/10 py-1.5 text-[11px] font-medium text-amber-200"
+                      >
+                        <Zap className="h-3 w-3" />
+                        <span>Autoriser GPS en arrière-plan</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Walkie-Talkie */}
+              <div className="flex items-center justify-between gap-3 py-2.5">
+                <div className="flex items-center gap-2.5">
+                  <Volume2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                  <span className="text-xs font-medium text-white">Haut-parleur (Talkie)</span>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleToggleIntercomShare()}
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
+                    shares.allowIntercom
+                      ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-200'
+                      : 'border-white/10 bg-zinc-950 text-zinc-400'
+                  }`}
+                >
+                  {shares.allowIntercom ? 'Actif' : 'Inactif'}
+                </button>
+              </div>
+
+              {/* Screen Share */}
+              <div className="flex items-center justify-between gap-3 py-2.5">
+                <div className="flex items-center gap-2.5">
+                  <Monitor className="h-4 w-4 shrink-0 text-violet-400" />
+                  <span className="text-xs font-medium text-white">Partage d’écran</span>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleToggleScreenShare()}
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
+                    shares.allowScreenShare && shares.screenShareReady
+                      ? 'border-violet-500/40 bg-violet-500/20 text-violet-200'
+                      : 'border-white/10 bg-zinc-950 text-zinc-300'
+                  }`}
+                >
+                  {shares.allowScreenShare && shares.screenShareReady ? 'Actif' : 'Autoriser'}
+                </button>
+              </div>
+
+              {/* Contacts */}
+              <div className="flex items-center justify-between gap-3 py-2.5">
+                <div className="flex items-center gap-2.5">
+                  <BookUser className="h-4 w-4 shrink-0 text-amber-400" />
+                  <span className="text-xs font-medium text-white">Contacts</span>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleToggleContactsShare()}
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
+                    shares.allowContacts && (portal.permissions.contacts || !isNativeAndroid)
+                      ? 'border-amber-500/40 bg-amber-500/20 text-amber-200'
+                      : 'border-white/10 bg-zinc-950 text-zinc-400'
+                  }`}
+                >
+                  {shares.allowContacts && (portal.permissions.contacts || !isNativeAndroid) ? 'Actif' : 'Inactif'}
+                </button>
+              </div>
+
+              {/* SMS Relay */}
+              <div className="flex items-center justify-between gap-3 py-2.5">
+                <div className="flex items-center gap-2.5">
+                  <MessageSquare className="h-4 w-4 shrink-0 text-orange-400" />
+                  <span className="text-xs font-medium text-white">Envoi de SMS (SIM)</span>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleToggleSmsRelay()}
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
+                    shares.allowSmsRelay && (portal.permissions.sms || !isNativeAndroid)
+                      ? 'border-orange-500/40 bg-orange-500/20 text-orange-200'
+                      : 'border-white/10 bg-zinc-950 text-zinc-400'
+                  }`}
+                >
+                  {shares.allowSmsRelay && (portal.permissions.sms || !isNativeAndroid) ? 'Actif' : 'Inactif'}
+                </button>
+              </div>
+
+              {/* Device Info */}
+              <div className="flex items-center justify-between gap-3 pt-2.5">
+                <div className="flex items-center gap-2.5">
+                  <Cpu className="h-4 w-4 shrink-0 text-cyan-400" />
+                  <span className="text-xs font-medium text-white">Infos appareil</span>
                 </div>
                 <button
                   type="button"
                   disabled={busy}
                   onClick={() => void handleToggleDeviceInfoShare()}
-                  className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
                     shares.allowDeviceInfo
                       ? 'border-cyan-500/40 bg-cyan-500/20 text-cyan-200'
-                      : 'border-slate-700 bg-obsidian-900 text-slate-300'
+                      : 'border-white/10 bg-zinc-950 text-zinc-400'
                   }`}
                 >
-                  {shares.allowDeviceInfo ? 'Activé' : 'Désactivé'}
+                  {shares.allowDeviceInfo ? 'Actif' : 'Inactif'}
                 </button>
               </div>
             </div>
@@ -1713,9 +1622,34 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               </div>
 
               <p className="mt-1.5 text-xs text-zinc-400">
-                Maintient le service actif en arrière-plan et protège l’arrêt ou la désinstallation
-                par un code administrateur (type contrôle parental).
+                Protège l’arrêt, les réglages et la désinstallation par code administrateur.
               </p>
+
+              {(portal.curfewEnabled ||
+                portal.blockSettingsAndStore ||
+                portal.lostModeEnabled ||
+                (portal.schoolModeUntilMs ?? 0) > nowMs ||
+                (portal.activeAppLocksCount ?? 0) > 0) && (
+                <div className="mt-2.5 flex flex-wrap gap-1.5 text-[10px]">
+                  {portal.curfewEnabled && (
+                    <span className="rounded-md bg-indigo-500/15 px-2 py-0.5 text-indigo-300">Couvre-feu</span>
+                  )}
+                  {portal.blockSettingsAndStore && (
+                    <span className="rounded-md bg-amber-500/15 px-2 py-0.5 text-amber-200">Anti-contournement</span>
+                  )}
+                  {(portal.schoolModeUntilMs ?? 0) > nowMs && (
+                    <span className="rounded-md bg-sky-500/15 px-2 py-0.5 text-sky-300">Mode École</span>
+                  )}
+                  {portal.lostModeEnabled && (
+                    <span className="rounded-md bg-rose-500/20 px-2 py-0.5 text-rose-200">Mode Perdu</span>
+                  )}
+                  {(portal.activeAppLocksCount ?? 0) > 0 && (
+                    <span className="rounded-md bg-white/[0.07] px-2 py-0.5 text-zinc-300">
+                      {portal.activeAppLocksCount} appli(s) bloquée(s)
+                    </span>
+                  )}
+                </div>
+              )}
 
               {adminError && (
                 <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
@@ -1977,16 +1911,26 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             onSubmit={(e) => void handleCreateProfile('friend', e)}
             className="rounded-3xl border border-slate-800 bg-obsidian-900/95 p-5 shadow-2xl"
           >
-            <div className="flex items-center gap-2">
-              <UserCheck className="h-5 w-5 text-cyan-400" />
-              <h2 className="text-sm font-extrabold text-white">
-                Ajouter un Profil Ami Autorisé
-              </h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <UserCheck className="h-4 w-4 text-cyan-400" />
+                <h2 className="text-sm font-semibold text-white">Ajouter un Parent / Proche</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setFormName((n) => n || 'Parent');
+                  setAllowDeviceControl(true);
+                  setAllowLocation(true);
+                  setAllowDeviceInfo(true);
+                  setAllowIntercom(true);
+                  setAllowSmsRelay(true);
+                }}
+                className="rounded-lg border border-sky-400/40 bg-sky-500/15 px-2.5 py-1 text-[11px] font-medium text-sky-200 hover:bg-sky-500/25"
+              >
+                Préréglage Parent
+              </button>
             </div>
-            <p className="mt-1 text-xs text-slate-400">
-              Choisissez un code fixe pour un proche et cochez les éléments auxquels il peut
-              accéder lorsque le serveur est allumé.
-            </p>
 
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>

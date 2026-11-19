@@ -7,6 +7,10 @@ import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.crypto.KeystoreVault
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 data class AuditLogItem(
     val timestamp: Long,
@@ -18,6 +22,39 @@ data class AppLockRule(
     val packageName: String,
     val appName: String,
     val blockedUntilMs: Long
+)
+
+data class AppQuotaRule(
+    val packageName: String,
+    val appName: String,
+    val dailyLimitMinutes: Int
+)
+
+data class GeofenceZone(
+    val id: String,
+    val name: String,
+    val latitude: Double,
+    val longitude: Double,
+    val radiusMeters: Int,
+    val inside: Boolean?,
+    val lastTransitionTs: Long
+)
+
+data class TimeExtensionRequest(
+    val id: String,
+    val packageName: String,
+    val appName: String,
+    val requestedMinutes: Int,
+    val createdAt: Long
+)
+
+data class SecurityEventItem(
+    val id: String,
+    val timestamp: Long,
+    val kind: String, // "intruder" | "sim" | "geofence" | "battery" | "bypass" | "request" | "admin"
+    val title: String,
+    val detail: String,
+    val photoBase64: String? = null
 )
 
 data class AccessProfileRecord(
@@ -203,6 +240,7 @@ class PortalPreferences(context: Context) {
             prefs.edit()
                 .remove(KEY_APP_LOCK_RULES)
                 .putLong(KEY_SCREEN_PAUSED_UNTIL, 0L)
+                .putLong(KEY_SCHOOL_MODE_UNTIL, 0L)
                 .commit()
         }
     }
@@ -219,6 +257,473 @@ class PortalPreferences(context: Context) {
             )
         }
         prefs.edit().putString(KEY_APP_LOCK_RULES, arr.toString()).commit()
+    }
+
+    /* ==================== V13 PARENTAL CONTROL: CURFEW, QUOTAS, SCHOOL MODE ==================== */
+
+    var curfewEnabled: Boolean
+        get() = prefs.getBoolean(KEY_CURFEW_ENABLED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_CURFEW_ENABLED, value).commit()
+        }
+
+    /** Minutes from midnight (0..1439), default 21:30 = 1290 */
+    var curfewStartMin: Int
+        get() = prefs.getInt(KEY_CURFEW_START_MIN, 21 * 60 + 30)
+        set(value) {
+            prefs.edit().putInt(KEY_CURFEW_START_MIN, value.coerceIn(0, 1439)).commit()
+        }
+
+    /** Minutes from midnight (0..1439), default 07:00 = 420 */
+    var curfewEndMin: Int
+        get() = prefs.getInt(KEY_CURFEW_END_MIN, 7 * 60)
+        set(value) {
+            prefs.edit().putInt(KEY_CURFEW_END_MIN, value.coerceIn(0, 1439)).commit()
+        }
+
+    /** Bitmask: bit 0 = Mon .. bit 6 = Sun, default 127 (all days) */
+    var curfewDaysMask: Int
+        get() = prefs.getInt(KEY_CURFEW_DAYS_MASK, 127)
+        set(value) {
+            prefs.edit().putInt(KEY_CURFEW_DAYS_MASK, value and 127).commit()
+        }
+
+    /** Temporary bypass when parent grants +15 min or unlocks curfew locally */
+    var curfewBypassUntilMs: Long
+        get() = prefs.getLong(KEY_CURFEW_BYPASS_UNTIL, 0L)
+        set(value) {
+            prefs.edit().putLong(KEY_CURFEW_BYPASS_UNTIL, value).commit()
+        }
+
+    fun isCurfewActiveNow(nowMs: Long = System.currentTimeMillis()): Boolean {
+        if (!curfewEnabled) return false
+        if (curfewBypassUntilMs > nowMs) return false
+        val start = curfewStartMin
+        val end = curfewEndMin
+        if (start == end) return false
+        val cal = Calendar.getInstance().apply { timeInMillis = nowMs }
+        val nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        val dayBitToday = calendarDayToBit(cal.get(Calendar.DAY_OF_WEEK))
+        val mask = curfewDaysMask
+        return if (start < end) {
+            ((mask and (1 shl dayBitToday)) != 0) && nowMin in start until end
+        } else {
+            // Overnight curfew (e.g. 21:30 -> 07:00)
+            if (nowMin >= start) {
+                (mask and (1 shl dayBitToday)) != 0
+            } else if (nowMin < end) {
+                val yesterdayBit = (dayBitToday + 6) % 7
+                (mask and (1 shl yesterdayBit)) != 0
+            } else {
+                false
+            }
+        }
+    }
+
+    fun getCurfewEndTimestampMs(nowMs: Long = System.currentTimeMillis()): Long {
+        val cal = Calendar.getInstance().apply { timeInMillis = nowMs }
+        val endH = curfewEndMin / 60
+        val endM = curfewEndMin % 60
+        val nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        if (curfewStartMin > curfewEndMin && nowMin >= curfewStartMin) {
+            cal.add(Calendar.DAY_OF_YEAR, 1)
+        }
+        cal.set(Calendar.HOUR_OF_DAY, endH)
+        cal.set(Calendar.MINUTE, endM)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.timeInMillis.coerceAtLeast(nowMs + 60_000L)
+    }
+
+    private fun calendarDayToBit(calDay: Int): Int {
+        return when (calDay) {
+            Calendar.MONDAY -> 0
+            Calendar.TUESDAY -> 1
+            Calendar.WEDNESDAY -> 2
+            Calendar.THURSDAY -> 3
+            Calendar.FRIDAY -> 4
+            Calendar.SATURDAY -> 5
+            Calendar.SUNDAY -> 6
+            else -> 0
+        }
+    }
+
+    fun getAppQuotas(): List<AppQuotaRule> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_APP_QUOTAS, null) ?: return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                val out = ArrayList<AppQuotaRule>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val pkg = o.optString("packageName", "")
+                    val lim = o.optInt("dailyLimitMinutes", 0)
+                    if (pkg.isNotEmpty() && lim > 0) {
+                        out.add(AppQuotaRule(pkg, o.optString("appName", pkg), lim))
+                    }
+                }
+                out
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+    }
+
+    fun setAppQuota(packageName: String, appName: String, dailyLimitMinutes: Int) {
+        synchronized(LOCK) {
+            val list = getAppQuotas().filter { it.packageName != packageName }.toMutableList()
+            if (dailyLimitMinutes > 0) {
+                list.add(AppQuotaRule(packageName, appName.ifBlank { packageName }, dailyLimitMinutes.coerceAtMost(720)))
+            }
+            val arr = JSONArray()
+            for (q in list) {
+                arr.put(JSONObject().apply {
+                    put("packageName", q.packageName)
+                    put("appName", q.appName)
+                    put("dailyLimitMinutes", q.dailyLimitMinutes)
+                })
+            }
+            prefs.edit().putString(KEY_APP_QUOTAS, arr.toString()).commit()
+        }
+    }
+
+    private fun todayDateKey(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+
+    fun getDailyBonusMinutes(packageName: String): Int {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_APP_BONUS_TODAY, null) ?: return 0
+            return try {
+                val obj = JSONObject(raw)
+                if (obj.optString("date") != todayDateKey()) return 0
+                obj.optJSONObject("bonuses")?.optInt(packageName, 0) ?: 0
+            } catch (_: Throwable) {
+                0
+            }
+        }
+    }
+
+    fun addDailyBonusMinutes(packageName: String, deltaMinutes: Int) {
+        synchronized(LOCK) {
+            val today = todayDateKey()
+            val obj = try {
+                val existing = JSONObject(prefs.getString(KEY_APP_BONUS_TODAY, "{}") ?: "{}")
+                if (existing.optString("date") == today) existing else JSONObject().put("date", today)
+            } catch (_: Throwable) {
+                JSONObject().put("date", today)
+            }
+            val bonuses = obj.optJSONObject("bonuses") ?: JSONObject()
+            val cur = bonuses.optInt(packageName, 0)
+            bonuses.put(packageName, (cur + deltaMinutes).coerceAtLeast(0))
+            obj.put("date", today)
+            obj.put("bonuses", bonuses)
+            prefs.edit().putString(KEY_APP_BONUS_TODAY, obj.toString()).commit()
+        }
+    }
+
+    var schoolModeUntilMs: Long
+        get() = prefs.getLong(KEY_SCHOOL_MODE_UNTIL, 0L)
+        set(value) {
+            prefs.edit().putLong(KEY_SCHOOL_MODE_UNTIL, value).commit()
+        }
+
+    fun getSchoolAllowedPackages(): Set<String> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_SCHOOL_ALLOWED_PKGS, null)
+            if (raw.isNullOrEmpty()) return DEFAULT_SCHOOL_PACKAGES
+            return try {
+                val arr = JSONArray(raw)
+                val out = LinkedHashSet<String>()
+                for (i in 0 until arr.length()) {
+                    val p = arr.optString(i, "").trim()
+                    if (p.isNotEmpty()) out.add(p)
+                }
+                if (out.isEmpty()) DEFAULT_SCHOOL_PACKAGES else out
+            } catch (_: Throwable) {
+                DEFAULT_SCHOOL_PACKAGES
+            }
+        }
+    }
+
+    fun setSchoolAllowedPackages(pkgs: Collection<String>) {
+        synchronized(LOCK) {
+            val arr = JSONArray()
+            for (p in pkgs.distinct()) {
+                if (p.isNotBlank()) arr.put(p.trim())
+            }
+            prefs.edit().putString(KEY_SCHOOL_ALLOWED_PKGS, arr.toString()).commit()
+        }
+    }
+
+    /* ==================== V13 SECURITY: ANTI-BYPASS, LOST MODE, GEOFENCES, EVENTS ==================== */
+
+    var blockSettingsAndStore: Boolean
+        get() = prefs.getBoolean(KEY_BLOCK_SETTINGS_STORE, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_BLOCK_SETTINGS_STORE, value).commit()
+        }
+
+    var settingsUnlockUntilMs: Long
+        get() = prefs.getLong(KEY_SETTINGS_UNLOCK_UNTIL, 0L)
+        set(value) {
+            prefs.edit().putLong(KEY_SETTINGS_UNLOCK_UNTIL, value).commit()
+        }
+
+    var lostModeEnabled: Boolean
+        get() = prefs.getBoolean(KEY_LOST_MODE_ENABLED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_LOST_MODE_ENABLED, value).commit()
+        }
+
+    var lostModeMessage: String
+        get() = prefs.getString(KEY_LOST_MODE_MSG, "Téléphone perdu. Merci de contacter le propriétaire.") ?: ""
+        set(value) {
+            prefs.edit().putString(KEY_LOST_MODE_MSG, value.trim().take(240)).commit()
+        }
+
+    var lostModePhone: String
+        get() = prefs.getString(KEY_LOST_MODE_PHONE, "") ?: ""
+        set(value) {
+            prefs.edit().putString(KEY_LOST_MODE_PHONE, value.trim().take(32)).commit()
+        }
+
+    var lastSimFingerprint: String
+        get() = prefs.getString(KEY_LAST_SIM_FP, "") ?: ""
+        set(value) {
+            prefs.edit().putString(KEY_LAST_SIM_FP, value).commit()
+        }
+
+    var lowBatteryAlertSent: Boolean
+        get() = prefs.getBoolean(KEY_LOW_BAT_ALERT_SENT, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_LOW_BAT_ALERT_SENT, value).commit()
+        }
+
+    var lockscreenFailCount: Int
+        get() = prefs.getInt(KEY_LOCKSCREEN_FAIL_COUNT, 0)
+        set(value) {
+            prefs.edit().putInt(KEY_LOCKSCREEN_FAIL_COUNT, value.coerceAtLeast(0)).commit()
+        }
+
+    fun getGeofences(): List<GeofenceZone> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_GEOFENCES, null) ?: return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                val out = ArrayList<GeofenceZone>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val id = o.optString("id", "")
+                    if (id.isNotEmpty()) {
+                        out.add(
+                            GeofenceZone(
+                                id = id,
+                                name = o.optString("name", "Zone"),
+                                latitude = o.optDouble("latitude", 0.0),
+                                longitude = o.optDouble("longitude", 0.0),
+                                radiusMeters = o.optInt("radiusMeters", 150).coerceIn(50, 5000),
+                                inside = if (o.isNull("inside")) null else o.optBoolean("inside"),
+                                lastTransitionTs = o.optLong("lastTransitionTs", 0L)
+                            )
+                        )
+                    }
+                }
+                out
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+    }
+
+    fun upsertGeofence(id: String?, name: String, lat: Double, lng: Double, radiusMeters: Int): GeofenceZone {
+        synchronized(LOCK) {
+            val list = getGeofences().toMutableList()
+            val cleanId = if (!id.isNullOrBlank()) id else "geo-${CryptoProtocol.randomHex(5)}"
+            val existing = list.firstOrNull { it.id == cleanId }
+            val zone = GeofenceZone(
+                id = cleanId,
+                name = name.trim().ifEmpty { "Zone" }.take(40),
+                latitude = lat,
+                longitude = lng,
+                radiusMeters = radiusMeters.coerceIn(50, 5000),
+                inside = existing?.inside,
+                lastTransitionTs = existing?.lastTransitionTs ?: 0L
+            )
+            val updated = mutableListOf(zone)
+            updated.addAll(list.filter { it.id != cleanId })
+            saveGeofencesLocked(updated.take(8))
+            return zone
+        }
+    }
+
+    fun deleteGeofence(id: String) {
+        synchronized(LOCK) {
+            saveGeofencesLocked(getGeofences().filter { it.id != id })
+        }
+    }
+
+    fun updateGeofenceInside(id: String, inside: Boolean, ts: Long) {
+        synchronized(LOCK) {
+            val updated = getGeofences().map {
+                if (it.id == id) it.copy(inside = inside, lastTransitionTs = ts) else it
+            }
+            saveGeofencesLocked(updated)
+        }
+    }
+
+    private fun saveGeofencesLocked(zones: List<GeofenceZone>) {
+        val arr = JSONArray()
+        for (z in zones) {
+            arr.put(JSONObject().apply {
+                put("id", z.id)
+                put("name", z.name)
+                put("latitude", z.latitude)
+                put("longitude", z.longitude)
+                put("radiusMeters", z.radiusMeters)
+                put("inside", z.inside ?: JSONObject.NULL)
+                put("lastTransitionTs", z.lastTransitionTs)
+            })
+        }
+        prefs.edit().putString(KEY_GEOFENCES, arr.toString()).commit()
+    }
+
+    fun getPendingTimeRequests(nowMs: Long = System.currentTimeMillis()): List<TimeExtensionRequest> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_TIME_REQUESTS, null) ?: return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                val out = ArrayList<TimeExtensionRequest>()
+                val cutoff = nowMs - 2 * 3600_000L
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val created = o.optLong("createdAt", 0L)
+                    if (created > cutoff) {
+                        out.add(
+                            TimeExtensionRequest(
+                                id = o.optString("id"),
+                                packageName = o.optString("packageName"),
+                                appName = o.optString("appName"),
+                                requestedMinutes = o.optInt("requestedMinutes", 15),
+                                createdAt = created
+                            )
+                        )
+                    }
+                }
+                out
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+    }
+
+    fun addTimeExtensionRequest(packageName: String, appName: String, requestedMinutes: Int = 15): TimeExtensionRequest {
+        synchronized(LOCK) {
+            val now = System.currentTimeMillis()
+            val current = getPendingTimeRequests(now).filter { it.packageName != packageName }.toMutableList()
+            val req = TimeExtensionRequest(
+                id = "req-${CryptoProtocol.randomHex(5)}",
+                packageName = packageName,
+                appName = appName.ifBlank { packageName },
+                requestedMinutes = requestedMinutes.coerceIn(5, 120),
+                createdAt = now
+            )
+            current.add(0, req)
+            saveTimeRequestsLocked(current.take(10))
+            return req
+        }
+    }
+
+    fun removeTimeExtensionRequest(requestId: String): TimeExtensionRequest? {
+        synchronized(LOCK) {
+            val current = getPendingTimeRequests()
+            val found = current.firstOrNull { it.id == requestId }
+            saveTimeRequestsLocked(current.filter { it.id != requestId })
+            return found
+        }
+    }
+
+    private fun saveTimeRequestsLocked(list: List<TimeExtensionRequest>) {
+        val arr = JSONArray()
+        for (r in list) {
+            arr.put(JSONObject().apply {
+                put("id", r.id)
+                put("packageName", r.packageName)
+                put("appName", r.appName)
+                put("requestedMinutes", r.requestedMinutes)
+                put("createdAt", r.createdAt)
+            })
+        }
+        prefs.edit().putString(KEY_TIME_REQUESTS, arr.toString()).commit()
+    }
+
+    fun appendSecurityEvent(kind: String, title: String, detail: String, photoBase64: String? = null): SecurityEventItem {
+        synchronized(LOCK) {
+            val item = SecurityEventItem(
+                id = "ev-${CryptoProtocol.randomHex(5)}",
+                timestamp = System.currentTimeMillis(),
+                kind = kind,
+                title = title.take(80),
+                detail = detail.take(200),
+                photoBase64 = photoBase64?.take(45_000)
+            )
+            val current = getSecurityEvents().toMutableList()
+            current.add(0, item)
+            // Keep max 35 events, and keep photo data only on the 4 most recent photo events to stay tiny
+            var photosKept = 0
+            val trimmed = current.take(35).map { ev ->
+                if (ev.photoBase64 != null) {
+                    photosKept++
+                    if (photosKept <= 4) ev else ev.copy(photoBase64 = null)
+                } else {
+                    ev
+                }
+            }
+            val arr = JSONArray()
+            for (ev in trimmed) {
+                arr.put(JSONObject().apply {
+                    put("id", ev.id)
+                    put("timestamp", ev.timestamp)
+                    put("kind", ev.kind)
+                    put("title", ev.title)
+                    put("detail", ev.detail)
+                    if (ev.photoBase64 != null) put("photoBase64", ev.photoBase64)
+                })
+            }
+            prefs.edit().putString(KEY_SECURITY_EVENTS, arr.toString()).apply()
+            appendLog("security", "$title — $detail")
+            return item
+        }
+    }
+
+    fun getSecurityEvents(): List<SecurityEventItem> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_SECURITY_EVENTS, null) ?: return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                val out = ArrayList<SecurityEventItem>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    out.add(
+                        SecurityEventItem(
+                            id = o.optString("id", "ev-$i"),
+                            timestamp = o.optLong("timestamp", 0L),
+                            kind = o.optString("kind", "admin"),
+                            title = o.optString("title", ""),
+                            detail = o.optString("detail", ""),
+                            photoBase64 = if (o.has("photoBase64") && !o.isNull("photoBase64")) o.optString("photoBase64") else null
+                        )
+                    )
+                }
+                out
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+    }
+
+    fun clearSecurityEvents() {
+        synchronized(LOCK) {
+            prefs.edit().remove(KEY_SECURITY_EVENTS).commit()
+        }
     }
 
     /* ==================== PARENTAL / ADMIN CODE-PROTECTED BACKGROUND MODE ==================== */
@@ -593,6 +1098,38 @@ class PortalPreferences(context: Context) {
         private const val KEY_GLOBAL_DEVICE_CONTROL = "global_allow_device_control"
         private const val KEY_SCREEN_PAUSED_UNTIL = "screen_paused_until_ms"
         private const val KEY_APP_LOCK_RULES = "app_lock_rules_v11"
+        private const val KEY_CURFEW_ENABLED = "curfew_enabled_v13"
+        private const val KEY_CURFEW_START_MIN = "curfew_start_min_v13"
+        private const val KEY_CURFEW_END_MIN = "curfew_end_min_v13"
+        private const val KEY_CURFEW_DAYS_MASK = "curfew_days_mask_v13"
+        private const val KEY_CURFEW_BYPASS_UNTIL = "curfew_bypass_until_v13"
+        private const val KEY_APP_QUOTAS = "app_quotas_v13"
+        private const val KEY_APP_BONUS_TODAY = "app_bonus_today_v13"
+        private const val KEY_SCHOOL_MODE_UNTIL = "school_mode_until_v13"
+        private const val KEY_SCHOOL_ALLOWED_PKGS = "school_allowed_pkgs_v13"
+        private const val KEY_BLOCK_SETTINGS_STORE = "block_settings_store_v13"
+        private const val KEY_SETTINGS_UNLOCK_UNTIL = "settings_unlock_until_v13"
+        private const val KEY_LOST_MODE_ENABLED = "lost_mode_enabled_v13"
+        private const val KEY_LOST_MODE_MSG = "lost_mode_msg_v13"
+        private const val KEY_LOST_MODE_PHONE = "lost_mode_phone_v13"
+        private const val KEY_LAST_SIM_FP = "last_sim_fp_v13"
+        private const val KEY_LOW_BAT_ALERT_SENT = "low_bat_alert_sent_v13"
+        private const val KEY_LOCKSCREEN_FAIL_COUNT = "lockscreen_fail_count_v13"
+        private const val KEY_GEOFENCES = "geofences_v13"
+        private const val KEY_TIME_REQUESTS = "time_requests_v13"
+        private const val KEY_SECURITY_EVENTS = "security_events_v13"
+
+        private val DEFAULT_SCHOOL_PACKAGES = setOf(
+            "com.android.calculator2",
+            "com.google.android.calculator",
+            "com.sec.android.app.popupcalculator",
+            "com.android.mms",
+            "com.google.android.apps.messaging",
+            "com.samsung.android.messaging",
+            "com.android.contacts",
+            "com.google.android.contacts",
+            "com.indexeducation.pronote"
+        )
         private const val KEY_ADMIN_PROTECTION = "admin_protection_enabled"
         private const val KEY_ADMIN_PIN_SALT = "admin_pin_salt"
         private const val KEY_ADMIN_PIN_HASH = "admin_pin_hash"

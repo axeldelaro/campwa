@@ -15,13 +15,10 @@ import {
   Cpu,
   Download,
   ExternalLink,
-  Eye,
-  EyeOff,
   Flashlight,
   FlipHorizontal,
   Gauge,
   HardDrive,
-  KeyRound,
   Lock,
   Mail,
   MapPin,
@@ -74,6 +71,7 @@ import type {
   StreamQualityPreset,
   StreamRealtimeStats,
 } from '../types/sentinel';
+import { ControlPanelTab } from './ControlPanelTab';
 import { GpsTrailMap } from './GpsTrailMap';
 import { SecuritySasModal } from './SecuritySasModal';
 
@@ -83,15 +81,6 @@ interface ControlStationViewProps {
 }
 
 type ViewerTab = 'media' | 'control' | 'contacts' | 'device';
-
-function formatUsageDuration(totalSec: number): string {
-  const s = Math.max(0, Math.floor(totalSec));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (h > 0) return `${h}h ${m.toString().padStart(2, '0')}m`;
-  if (m > 0) return `${m} min`;
-  return s > 0 ? '< 1 min' : '0 min';
-}
 
 function formatCountdown(expiresAt: number | null, nowMs: number): string | null {
   if (expiresAt === null) return null;
@@ -164,18 +153,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
-  // Screen Lock, Screen Time & Timed App Lock Control state
+  // Screen Lock, Screen Time & Parental Control state
   const [screenTime, setScreenTime] = useState<DataScreenTimeMsg | null>(null);
   const [screenTimeLoading, setScreenTimeLoading] = useState(false);
   const [controlFeedback, setControlFeedback] = useState<{ ok: boolean; text: string } | null>(null);
-  const [appSearch, setAppSearch] = useState('');
-  const [lockingPkg, setLockingPkg] = useState<string | null>(null);
-  const [customLockMins, setCustomLockMins] = useState('45');
-  const [customPauseMins, setCustomPauseMins] = useState('30');
-  const [remoteAdminPin, setRemoteAdminPin] = useState('');
-  const [remoteAdminPinConfirm, setRemoteAdminPinConfirm] = useState('');
-  const [remoteAdminPinShow, setRemoteAdminPinShow] = useState(false);
-  const [remoteAdminPinBusy, setRemoteAdminPinBusy] = useState(false);
 
   const [sasInfo, setSasInfo] = useState<{
     deviceName: string;
@@ -336,25 +317,22 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         }
       },
       onControlResult: (res) => {
-        if (res.action === 'set_admin_pin') {
-          setRemoteAdminPinBusy(false);
-        }
         if (res.success) {
-          const msg =
-            res.action === 'lock_screen'
-              ? 'Écran verrouillé.'
-              : res.action === 'screen_pause'
-              ? 'État de pause mis à jour.'
-              : res.action === 'clear_locks'
-              ? 'Tous les blocages d’applications ont été levés.'
-              : res.action === 'set_admin_pin'
-              ? 'Code administrateur mis à jour sur l’appareil.'
-              : 'Règle d’application mise à jour.';
-          if (res.action === 'set_admin_pin') {
-            setRemoteAdminPin('');
-            setRemoteAdminPinConfirm('');
-          }
-          setControlFeedback({ ok: true, text: msg });
+          const labels: Record<string, string> = {
+            lock_screen: 'Écran verrouillé.',
+            screen_pause: 'État de pause mis à jour.',
+            clear_locks: 'Tous les blocages ont été levés.',
+            set_admin_pin: 'Code administrateur mis à jour.',
+            curfew: 'Couvre-feu enregistré.',
+            app_quota: 'Quota quotidien mis à jour.',
+            school_mode: 'Mode École mis à jour.',
+            anti_bypass: 'Protection Paramètres / Play Store mise à jour.',
+            lost_mode: 'Mode Perdu mis à jour.',
+            time_request: 'Réponse envoyée à l’appareil.',
+            geofence: 'Zone GPS mise à jour.',
+            clear_events: 'Journal de sécurité effacé.',
+          };
+          setControlFeedback({ ok: true, text: labels[res.action] || 'Règle mise à jour.' });
         } else {
           setControlFeedback({ ok: false, text: res.error || 'Action refusée.' });
         }
@@ -751,7 +729,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
   const handleApplyAppLock = async (app: AppUsageEntry, minutes: number, explicitUntilMs?: number) => {
     setControlFeedback(null);
-    setLockingPkg(null);
     await controllerRef.current?.setRemoteAppLock({
       packageName: app.packageName,
       appName: app.appName,
@@ -765,21 +742,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     await controllerRef.current?.clearAllRemoteAppLocks();
   };
 
-  const handleSetRemoteAdminPin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const pin = remoteAdminPin.trim();
-    if (pin.length < 4 || pin.length > 12) {
-      setControlFeedback({ ok: false, text: 'Le code administrateur doit contenir entre 4 et 12 caractères.' });
-      return;
-    }
-    if (pin !== remoteAdminPinConfirm.trim()) {
-      setControlFeedback({ ok: false, text: 'Les deux codes ne correspondent pas.' });
-      return;
-    }
+  const handleSetRemoteAdminPin = async (pin: string) => {
     setControlFeedback(null);
-    setRemoteAdminPinBusy(true);
     await controllerRef.current?.setRemoteAdminPin(pin, true);
-    window.setTimeout(() => setRemoteAdminPinBusy(false), 8000);
   };
 
   useEffect(() => {
@@ -789,7 +754,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         setSasModalOpen(false);
         setSmsOpen(false);
         setTtsOpen(false);
-        setLockingPkg(null);
         return;
       }
       const tag = (ev.target as HTMLElement | null)?.tagName;
@@ -820,12 +784,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   });
-
-  const getUntilMidnightMs = (): number => {
-    const d = new Date();
-    d.setHours(23, 59, 59, 999);
-    return d.getTime();
-  };
 
   const openSmsComposer = (phone = '', name = '') => {
     setSmsPhone(phone);
@@ -1182,7 +1140,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       </div>
 
-      {/* Compact Talkie-Walkie Bar */}
+      {/* Compact Talkie-Walkie Bar (shown on Media tab or while talking to keep other tabs spacious) */}
+      {(viewerTab === 'media' || talkieActive) && (
       <div
         className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 transition ${
           talkieActive
@@ -1278,6 +1237,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           </form>
         )}
       </div>
+      )}
 
       {/* Clean Navigation Tabs */}
       <div className="flex flex-wrap items-center gap-1.5 border-b border-white/[0.07] pb-3">
@@ -1306,9 +1266,17 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         >
           <Lock className="h-3.5 w-3.5" />
           <span>Contrôle</span>
-          {(telemetry?.activeAppLocksCount ?? 0) > 0 && (
-            <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 font-mono text-[10px] text-emerald-400">
-              {telemetry?.activeAppLocksCount}
+          {((telemetry?.pendingRequestsCount ?? 0) > 0 || (telemetry?.activeAppLocksCount ?? 0) > 0) && (
+            <span
+              className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
+                (telemetry?.pendingRequestsCount ?? 0) > 0
+                  ? 'bg-sky-500/25 text-sky-300'
+                  : 'bg-emerald-500/20 text-emerald-400'
+              }`}
+            >
+              {(telemetry?.pendingRequestsCount ?? 0) > 0
+                ? `+${telemetry?.pendingRequestsCount}`
+                : telemetry?.activeAppLocksCount}
             </span>
           )}
         </button>
@@ -1668,441 +1636,66 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </>
       )}
 
-      {/* ==================== VIEWER TAB 2: SCREEN LOCK, SCREEN TIME & APP LOCKS ==================== */}
+      {/* ==================== VIEWER TAB 2: PARENTAL CONTROL & DEVICE SECURITY ==================== */}
       {viewerTab === 'control' && (
-        <div className="space-y-4">
-          {controlFeedback && (
-            <div
-              className={`flex items-center justify-between gap-2 rounded-xl border px-4 py-2.5 text-xs ${
-                controlFeedback.ok
-                  ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
-                  : 'border-rose-500/35 bg-rose-500/10 text-rose-200'
-              }`}
-            >
-              <span>{controlFeedback.text}</span>
-              <button
-                type="button"
-                onClick={() => setControlFeedback(null)}
-                className="text-zinc-400 hover:text-white"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
-
-          {/* Missing Android permissions helper banner */}
-          {screenTime && (!screenTime.hasUsageAccess || !screenTime.hasOverlayPermission || !screenTime.deviceAdminActive) && (
-            <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">
-              <div className="font-semibold">Autorisations à activer sur le smartphone :</div>
-              <div className="mt-1.5 flex flex-wrap gap-2 text-[11px]">
-                {!screenTime.deviceAdminActive && (
-                  <span className="rounded-md bg-black/30 px-2 py-1">
-                    Protection Administrateur (verrouillage écran)
-                  </span>
-                )}
-                {!screenTime.hasUsageAccess && (
-                  <span className="rounded-md bg-black/30 px-2 py-1">
-                    Temps d’écran (accès aux données d’utilisation)
-                  </span>
-                )}
-                {!screenTime.hasOverlayPermission && (
-                  <span className="rounded-md bg-black/30 px-2 py-1">
-                    Écran de blocage (affichage par-dessus les applis)
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Screen Lock & Timed Global Device Pause */}
-          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-white">Écran & Pause de l’appareil</h2>
-                <p className="mt-0.5 text-xs text-zinc-400">
-                  Verrouillage immédiat ou mise en pause temporaire de toutes les applications
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => void handleLockScreenNow()}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200"
-              >
-                <Lock className="h-3.5 w-3.5" />
-                <span>Verrouiller l’écran</span>
-              </button>
-            </div>
-
-            {((screenTime?.screenPausedUntilMs ?? telemetry?.screenPausedUntilMs ?? 0) > nowMs) ? (
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-500/35 bg-rose-500/10 px-4 py-3">
-                <div className="text-xs text-rose-200">
-                  <span className="font-semibold">Appareil en pause</span> ·{' '}
-                  {formatCountdown(
-                    screenTime?.screenPausedUntilMs || telemetry?.screenPausedUntilMs || null,
-                    nowMs
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void handleSetScreenPause(0)}
-                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
-                >
-                  Lever la pause
-                </button>
-              </div>
-            ) : (
-              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-4">
-                <span className="text-xs text-zinc-400">Pause globale :</span>
-                {[15, 30, 60, 120].map((mins) => (
-                  <button
-                    key={mins}
-                    type="button"
-                    onClick={() => void handleSetScreenPause(mins)}
-                    className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-white/25 hover:text-white"
-                  >
-                    {mins >= 60 ? `${mins / 60} h` : `${mins} min`}
-                  </button>
-                ))}
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="number"
-                    min={1}
-                    max={1440}
-                    value={customPauseMins}
-                    onChange={(e) => setCustomPauseMins(e.target.value)}
-                    className="w-16 rounded-lg border border-white/10 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-white focus:border-emerald-400 focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const m = parseInt(customPauseMins, 10);
-                      if (m > 0) void handleSetScreenPause(m);
-                    }}
-                    className="rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-white/15"
-                  >
-                    min
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Screen Time & Per-App Timed Locking */}
-          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-white">
-                  Temps d’écran & Verrouillage d’applications
-                </h2>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-                  <span>
-                    Aujourd’hui :{' '}
-                    <strong className="font-mono text-white">
-                      {formatUsageDuration(screenTime?.totalScreenTimeSec ?? 0)}
-                    </strong>
-                  </span>
-                  {screenTime?.currentAppName && (
-                    <>
-                      <span>·</span>
-                      <span>
-                        Ouverte :{' '}
-                        <strong className="text-emerald-300">{screenTime.currentAppName}</strong>
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <button
-                type="button"
-                disabled={screenTimeLoading}
-                onClick={() => void handleFetchScreenTime()}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/[0.06]"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${screenTimeLoading ? 'animate-spin' : ''}`} />
-                <span>Actualiser</span>
-              </button>
-            </div>
-
-            {/* Active locked apps quick summary + 1-click unlock all */}
-            {(() => {
-              const blockedApps = (screenTime?.apps ?? []).filter((a) => a.blockedUntilMs > nowMs);
-              if (blockedApps.length === 0) return null;
-              return (
-                <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/[0.07] p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-[11px] font-semibold text-rose-200">
-                      {blockedApps.length} application{blockedApps.length > 1 ? 's' : ''} verrouillée
-                      {blockedApps.length > 1 ? 's' : ''}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => void handleClearAllAppLocks()}
-                      className="rounded-lg bg-white px-2.5 py-1 text-[11px] font-semibold text-zinc-950 transition hover:bg-zinc-200"
-                    >
-                      Tout débloquer
-                    </button>
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {blockedApps.map((app) => (
-                      <span
-                        key={app.packageName}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-zinc-950/80 px-2 py-1 text-[11px] text-rose-100"
-                      >
-                        <span className="font-medium">{app.appName}</span>
-                        <span className="font-mono text-[10px] text-rose-300">
-                          {formatCountdown(app.blockedUntilMs, nowMs)}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => void handleApplyAppLock(app, 0)}
-                          className="ml-0.5 text-rose-300 hover:text-white"
-                          title={`Débloquer ${app.appName}`}
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Search installed apps */}
-            <div className="relative mt-4">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-              <input
-                type="text"
-                value={appSearch}
-                onChange={(e) => setAppSearch(e.target.value)}
-                placeholder="Rechercher une application (YouTube, TikTok, Instagram…)"
-                className="w-full rounded-xl border border-white/10 bg-zinc-950 py-2.5 pl-9 pr-3 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
-              />
-            </div>
-
-            {screenTimeLoading && !screenTime ? (
-              <div className="flex items-center justify-center py-10 text-xs text-zinc-400">
-                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                Chargement du temps d’écran…
-              </div>
-            ) : (
-              <div className="mt-4 max-h-[55vh] space-y-2 overflow-y-auto pr-1">
-                {(screenTime?.apps ?? [])
-                  .filter((a) => {
-                    const q = appSearch.trim().toLowerCase();
-                    if (!q) return true;
-                    return (
-                      a.appName.toLowerCase().includes(q) ||
-                      a.packageName.toLowerCase().includes(q)
-                    );
-                  })
-                  .map((app) => {
-                    const isBlocked = app.blockedUntilMs > nowMs;
-                    const maxUsage = Math.max(
-                      60,
-                      ...(screenTime?.apps ?? []).map((x) => x.usageSecondsToday)
-                    );
-                    const pct = Math.min(100, Math.round((app.usageSecondsToday / maxUsage) * 100));
-                    const isChoosingDuration = lockingPkg === app.packageName;
-
-                    return (
-                      <div
-                        key={app.packageName}
-                        className={`rounded-xl border p-3 transition ${
-                          isBlocked
-                            ? 'border-rose-500/35 bg-rose-500/10'
-                            : 'border-white/[0.06] bg-zinc-950/75'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="truncate text-xs font-semibold text-white">
-                                {app.appName}
-                              </span>
-                              <span className="font-mono text-[11px] text-zinc-400">
-                                {formatUsageDuration(app.usageSecondsToday)}
-                              </span>
-                              {isBlocked && (
-                                <span className="rounded bg-rose-500/25 px-1.5 py-0.5 font-mono text-[10px] font-medium text-rose-200">
-                                  Verrouillée · {formatCountdown(app.blockedUntilMs, nowMs)}
-                                </span>
-                              )}
-                            </div>
-                            {app.usageSecondsToday > 0 && (
-                              <div className="mt-1.5 h-1 w-full max-w-xs overflow-hidden rounded-full bg-zinc-800">
-                                <div
-                                  className={`h-full rounded-full ${
-                                    isBlocked ? 'bg-rose-400' : 'bg-emerald-400/80'
-                                  }`}
-                                  style={{ width: `${Math.max(4, pct)}%` }}
-                                />
-                              </div>
-                            )}
-                          </div>
-
-                          {isBlocked ? (
-                            <button
-                              type="button"
-                              onClick={() => void handleApplyAppLock(app, 0)}
-                              className="shrink-0 rounded-lg bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-950 hover:bg-zinc-200"
-                            >
-                              Débloquer
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setLockingPkg(isChoosingDuration ? null : app.packageName)
-                              }
-                              className="shrink-0 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium text-zinc-200 hover:border-rose-400/40 hover:text-rose-200"
-                            >
-                              {isChoosingDuration ? 'Fermer' : 'Verrouiller'}
-                            </button>
-                          )}
-                        </div>
-
-                        {isChoosingDuration && !isBlocked && (
-                          <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-white/[0.06] pt-2.5">
-                            {[15, 30, 60, 120].map((mins) => (
-                              <button
-                                key={mins}
-                                type="button"
-                                onClick={() => void handleApplyAppLock(app, mins)}
-                                className="rounded-lg border border-rose-500/30 bg-rose-500/15 px-2.5 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/25"
-                              >
-                                {mins >= 60 ? `${mins / 60} h` : `${mins} min`}
-                              </button>
-                            ))}
-                            <button
-                              type="button"
-                              onClick={() => void handleApplyAppLock(app, 0, getUntilMidnightMs())}
-                              className="rounded-lg border border-rose-500/30 bg-rose-500/15 px-2.5 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/25"
-                            >
-                              Jusqu’à minuit
-                            </button>
-                            <div className="flex items-center gap-1">
-                              <input
-                                type="number"
-                                min={1}
-                                max={1440}
-                                value={customLockMins}
-                                onChange={(e) => setCustomLockMins(e.target.value)}
-                                className="w-14 rounded-lg border border-white/10 bg-zinc-900 px-2 py-1 font-mono text-[11px] text-white"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const m = parseInt(customLockMins, 10);
-                                  if (m > 0) void handleApplyAppLock(app, m);
-                                }}
-                                className="rounded-lg bg-rose-500 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-rose-400"
-                              >
-                                min
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                {(screenTime?.apps?.length ?? 0) === 0 && !screenTimeLoading && (
-                  <div className="py-8 text-center text-xs text-zinc-500">
-                    Cliquez sur « Actualiser » pour lire le temps d’écran et la liste des
-                    applications.
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Remote Administrator PIN Management (Owner / Parent Access) */}
-          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <KeyRound className="h-4 w-4 text-emerald-400" />
-                <div>
-                  <h2 className="text-sm font-semibold text-white">
-                    Code administrateur de l’appareil
-                  </h2>
-                  <p className="mt-0.5 text-xs text-zinc-400">
-                    Définir ou modifier à distance le code requis pour arrêter, modifier ou
-                    désinstaller l’application
-                  </p>
-                </div>
-              </div>
-              <span
-                className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${
-                  telemetry?.hasAdminPin && telemetry?.adminProtectionEnabled
-                    ? 'bg-emerald-500/15 text-emerald-300'
-                    : telemetry?.hasAdminPin
-                    ? 'bg-amber-500/15 text-amber-300'
-                    : 'bg-white/[0.06] text-zinc-400'
-                }`}
-              >
-                {telemetry?.hasAdminPin && telemetry?.adminProtectionEnabled
-                  ? 'Protection active'
-                  : telemetry?.hasAdminPin
-                  ? 'Code défini'
-                  : 'Non défini'}
-              </span>
-            </div>
-
-            <form
-              onSubmit={(e) => void handleSetRemoteAdminPin(e)}
-              className="mt-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"
-            >
-              <div className="relative">
-                <input
-                  type={remoteAdminPinShow ? 'text' : 'password'}
-                  inputMode="text"
-                  autoComplete="new-password"
-                  maxLength={12}
-                  value={remoteAdminPin}
-                  onChange={(e) => setRemoteAdminPin(e.target.value)}
-                  placeholder="Nouveau code (4–12 car.)"
-                  className="w-full rounded-xl border border-white/10 bg-zinc-950 py-2 pl-3 pr-9 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setRemoteAdminPinShow((v) => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
-                  title={remoteAdminPinShow ? 'Masquer' : 'Afficher'}
-                >
-                  {remoteAdminPinShow ? (
-                    <EyeOff className="h-3.5 w-3.5" />
-                  ) : (
-                    <Eye className="h-3.5 w-3.5" />
-                  )}
-                </button>
-              </div>
-
-              <input
-                type={remoteAdminPinShow ? 'text' : 'password'}
-                inputMode="text"
-                autoComplete="new-password"
-                maxLength={12}
-                value={remoteAdminPinConfirm}
-                onChange={(e) => setRemoteAdminPinConfirm(e.target.value)}
-                placeholder="Confirmer le code"
-                className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
-              />
-
-              <button
-                type="submit"
-                disabled={
-                  remoteAdminPinBusy ||
-                  remoteAdminPin.trim().length < 4 ||
-                  remoteAdminPinConfirm.trim().length < 4
-                }
-                className="rounded-xl bg-white px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-35"
-              >
-                {remoteAdminPinBusy ? 'Enregistrement…' : 'Mettre à jour'}
-              </button>
-            </form>
-          </div>
-        </div>
+        <ControlPanelTab
+          screenTime={screenTime}
+          screenTimeLoading={screenTimeLoading}
+          telemetry={telemetry}
+          locationData={locationData}
+          nowMs={nowMs}
+          feedback={controlFeedback}
+          onDismissFeedback={() => setControlFeedback(null)}
+          onRefresh={handleFetchScreenTime}
+          onLockScreenNow={handleLockScreenNow}
+          onSetScreenPause={handleSetScreenPause}
+          onApplyAppLock={handleApplyAppLock}
+          onClearAllAppLocks={handleClearAllAppLocks}
+          onSetAppQuota={async (app, dailyLimitMinutes) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteAppQuota({
+              packageName: app.packageName,
+              appName: app.appName,
+              dailyLimitMinutes,
+            });
+          }}
+          onSetCurfew={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteCurfew(opts);
+          }}
+          onSetSchoolMode={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteSchoolMode(opts);
+          }}
+          onSetAntiBypass={async (enabled) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteAntiBypass(enabled);
+          }}
+          onSetLostMode={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteLostMode(opts);
+          }}
+          onRespondTimeRequest={async (timeRequestId, approve, grantMinutes) => {
+            setControlFeedback(null);
+            await controllerRef.current?.respondTimeRequest({
+              timeRequestId,
+              approve,
+              grantMinutes,
+            });
+          }}
+          onSaveGeofence={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.saveRemoteGeofence(opts);
+          }}
+          onClearSecurityEvents={async () => {
+            setControlFeedback(null);
+            await controllerRef.current?.clearRemoteSecurityEvents();
+          }}
+          onSetAdminPin={handleSetRemoteAdminPin}
+          onRequestLocation={async () => {
+            await controllerRef.current?.requestLocation();
+          }}
+        />
       )}
 
       {/* ==================== VIEWER TAB 3: SHARED CONTACTS ==================== */}

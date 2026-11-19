@@ -621,6 +621,137 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async setRemoteCurfew(opts: {
+    enabled: boolean;
+    startMin: number;
+    endMin: number;
+    daysMask: number;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SET_CURFEW',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async setRemoteAppQuota(opts: {
+    packageName: string;
+    appName: string;
+    dailyLimitMinutes: number;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SET_APP_QUOTA',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async setRemoteSchoolMode(opts: {
+    durationMinutes?: number;
+    allowedPackages?: string[];
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SET_SCHOOL_MODE',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async setRemoteAntiBypass(enabled: boolean): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SET_ANTI_BYPASS',
+        requestId: randomHex(8),
+        enabled,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async setRemoteLostMode(opts: {
+    enabled: boolean;
+    message?: string;
+    phoneNumber?: string;
+    ringNow?: boolean;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SET_LOST_MODE',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async respondTimeRequest(opts: {
+    timeRequestId: string;
+    approve: boolean;
+    grantMinutes?: number;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_RESPOND_TIME_REQUEST',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async saveRemoteGeofence(opts: {
+    id?: string;
+    name?: string;
+    latitude?: number;
+    longitude?: number;
+    radiusMeters?: number;
+    delete?: boolean;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SAVE_GEOFENCE',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async clearRemoteSecurityEvents(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_CLEAR_SECURITY_EVENTS',
+        requestId: randomHex(8),
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -788,6 +919,12 @@ export class SentinelWebRtcController {
       adminProtectionEnabled: msg.adminProtectionEnabled,
       hasAdminPin: msg.hasAdminPin,
       deviceAdminActive: msg.deviceAdminActive,
+      lostModeEnabled: msg.lostModeEnabled,
+      curfewEnabled: msg.curfewEnabled,
+      schoolModeUntilMs: msg.schoolModeUntilMs,
+      blockSettingsAndStore: msg.blockSettingsAndStore,
+      pendingRequestsCount: msg.pendingRequestsCount,
+      securityAlertsCount: msg.securityAlertsCount,
       pfsEnabled: Boolean(ecdhSharedSecret) || Boolean(msg.pfsEnabled),
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,
@@ -853,6 +990,12 @@ export class SentinelWebRtcController {
       adminProtectionEnabled: msg.adminProtectionEnabled,
       hasAdminPin: msg.hasAdminPin,
       deviceAdminActive: msg.deviceAdminActive,
+      lostModeEnabled: msg.lostModeEnabled,
+      curfewEnabled: msg.curfewEnabled,
+      schoolModeUntilMs: msg.schoolModeUntilMs,
+      blockSettingsAndStore: msg.blockSettingsAndStore,
+      pendingRequestsCount: msg.pendingRequestsCount,
+      securityAlertsCount: msg.securityAlertsCount,
       pfsEnabled: msg.pfsEnabled,
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,

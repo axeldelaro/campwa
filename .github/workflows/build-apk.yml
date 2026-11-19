@@ -122,17 +122,16 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v12.0.${{ github.run_number }}
-          name: "SentinelCam v12.0.${{ github.run_number }} (Code Admin Modifiable à Distance • Accès Parent • Optimisations)"
+          tag_name: v13.0.${{ github.run_number }}
+          name: "SentinelCam v13.0.${{ github.run_number }} (Contrôle Parental Complet • Anti-Contournement • Mode Perdu • Interface Épurée)"
           body: |
-            ### SentinelCam v12.0 (`v12.0.${{ github.run_number }}`)
+            ### SentinelCam v13.0 (`v13.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Code administrateur modifiable à distance (Accès Parent / Propriétaire)** : toute personne disposant du code Propriétaire ou d’un profil *Parent / Contrôle* peut désormais définir ou changer le code administrateur de l’appareil directement depuis l’onglet *Contrôle* du site Web (avec confirmation et activation immédiate).
-            - **Changement du code en local & protection complète des accès** : modification du code administrateur possible sur le téléphone une fois déverrouillé, et verrouillage de la création/suppression de profils d’accès tant que la protection administrateur est active.
-            - **Gestion rapide des applications bloquées** : récapitulatif des applis actuellement verrouillées avec décompte en direct et bouton **Tout débloquer** en 1 clic.
-            - **Optimisations & confort** : raccourcis clavier (`F` plein écran, `P` photo, `R` enregistrement, `Échap` fermer), polling natif allégé et compilation Android propre sans avertissement.
+            - **Contrôle parental autonome hors-ligne** : Couvre-feu / Mode Nuit planifié par jours et horaires, Quotas quotidiens par application (réinitialisés à minuit), Mode École / Devoirs (liste blanche d’applis autorisées), historique temps d’écran sur 7 jours et bouton *« Demander +15 min »* depuis l’écran bloqué avec validation en 1 clic côté Parent.
+            - **Sécurité anti-contournement & anti-vol** : Verrouillage des *Paramètres Android* et du *Play Store* par code administrateur, **Mode Perdu** avec message personnalisé + bouton d’appel direct + sirène, **Zones de sécurité GPS (Géofencing)** locales, détection de retrait/changement de carte SIM, alerte batterie critique (<10 %) et capture photo anti-intrusion en cas d’échecs répétés de code.
+            - **Interface Web & Android épurée** : sous-onglets structurés dans *Contrôle* (*Applis & Écran*, *Planning & 7j*, *Sécurité*, *Journal*) et panneau Android compact sans surcharge visuelle, avec préréglage *Parent* en 1 clic.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

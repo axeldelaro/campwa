@@ -761,6 +761,11 @@ class SentinelNativePlugin : Plugin() {
             put("hasAdminPin", prefs.hasAdminPin())
             put("activeAppLocksCount", prefs.getActiveAppLockRules().size)
             put("screenPausedUntilMs", prefs.screenPausedUntilMs.takeIf { it > System.currentTimeMillis() } ?: 0L)
+            put("curfewEnabled", prefs.curfewEnabled)
+            put("lostModeEnabled", prefs.lostModeEnabled)
+            put("blockSettingsAndStore", prefs.blockSettingsAndStore)
+            put("schoolModeUntilMs", prefs.schoolModeUntilMs.takeIf { it > System.currentTimeMillis() } ?: 0L)
+            put("securityAlertsCount", prefs.getSecurityEvents().size)
             put(
                 "deviceAdminActive",
                 try {

@@ -209,6 +209,12 @@ export interface DeviceTelemetry {
   adminProtectionEnabled?: boolean;
   hasAdminPin?: boolean;
   deviceAdminActive?: boolean;
+  lostModeEnabled?: boolean;
+  curfewEnabled?: boolean;
+  schoolModeUntilMs?: number;
+  blockSettingsAndStore?: boolean;
+  pendingRequestsCount?: number;
+  securityAlertsCount?: number;
   pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
@@ -302,6 +308,12 @@ export interface HelloAckMsg {
   adminProtectionEnabled?: boolean;
   hasAdminPin?: boolean;
   deviceAdminActive?: boolean;
+  lostModeEnabled?: boolean;
+  curfewEnabled?: boolean;
+  schoolModeUntilMs?: number;
+  blockSettingsAndStore?: boolean;
+  pendingRequestsCount?: number;
+  securityAlertsCount?: number;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
@@ -353,6 +365,12 @@ export interface PortalStatusMsg {
   adminProtectionEnabled?: boolean;
   hasAdminPin?: boolean;
   deviceAdminActive?: boolean;
+  lostModeEnabled?: boolean;
+  curfewEnabled?: boolean;
+  schoolModeUntilMs?: number;
+  blockSettingsAndStore?: boolean;
+  pendingRequestsCount?: number;
+  securityAlertsCount?: number;
   pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
@@ -524,6 +542,65 @@ export interface AppUsageEntry {
   usageSecondsToday: number;
   lastUsedAt: number;
   blockedUntilMs: number;
+  dailyLimitMinutes?: number;
+  bonusMinutesToday?: number;
+  quotaExceeded?: boolean;
+  schoolAllowed?: boolean;
+}
+
+export interface DailyScreenHistoryEntry {
+  dateKey: string;
+  dayLabel: string;
+  totalSeconds: number;
+  isToday: boolean;
+}
+
+export interface CurfewConfig {
+  enabled: boolean;
+  startMin: number;
+  endMin: number;
+  daysMask: number;
+  activeNow: boolean;
+  endTs: number;
+}
+
+export interface SchoolModeState {
+  active: boolean;
+  untilMs: number;
+  allowedPackages: string[];
+}
+
+export interface LostModeState {
+  enabled: boolean;
+  message: string;
+  phoneNumber: string;
+}
+
+export interface TimeExtensionRequestItem {
+  id: string;
+  packageName: string;
+  appName: string;
+  requestedMinutes: number;
+  createdAt: number;
+}
+
+export interface GeofenceZoneItem {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  radiusMeters: number;
+  inside: boolean | null;
+  lastTransitionTs: number;
+}
+
+export interface SecurityEventEntry {
+  id: string;
+  timestamp: number;
+  kind: 'intruder' | 'sim' | 'geofence' | 'battery' | 'bypass' | 'request' | 'admin';
+  title: string;
+  detail: string;
+  photoBase64?: string;
 }
 
 export interface DataScreenTimeMsg {
@@ -537,6 +614,14 @@ export interface DataScreenTimeMsg {
   currentAppName?: string | null;
   screenPausedUntilMs?: number;
   apps?: AppUsageEntry[];
+  weeklyHistory?: DailyScreenHistoryEntry[];
+  curfew?: CurfewConfig;
+  schoolMode?: SchoolModeState;
+  blockSettingsAndStore?: boolean;
+  lostMode?: LostModeState;
+  pendingRequests?: TimeExtensionRequestItem[];
+  geofences?: GeofenceZoneItem[];
+  securityEvents?: SecurityEventEntry[];
   error?: string;
   ts: number;
 }
@@ -544,7 +629,20 @@ export interface DataScreenTimeMsg {
 export interface DataControlResultMsg {
   type: 'DATA_CONTROL_RESULT';
   requestId: string;
-  action: 'lock_screen' | 'app_lock' | 'screen_pause' | 'clear_locks' | 'set_admin_pin';
+  action:
+    | 'lock_screen'
+    | 'app_lock'
+    | 'screen_pause'
+    | 'clear_locks'
+    | 'set_admin_pin'
+    | 'curfew'
+    | 'app_quota'
+    | 'school_mode'
+    | 'anti_bypass'
+    | 'lost_mode'
+    | 'time_request'
+    | 'geofence'
+    | 'clear_events';
   success: boolean;
   error?: string;
   ts: number;
@@ -591,6 +689,77 @@ export interface CmdSetAdminPinMsg {
   requestId: string;
   newPin: string;
   enableProtection?: boolean;
+  ts: number;
+}
+
+export interface CmdSetCurfewMsg {
+  type: 'CMD_SET_CURFEW';
+  requestId: string;
+  enabled: boolean;
+  startMin: number;
+  endMin: number;
+  daysMask: number;
+  ts: number;
+}
+
+export interface CmdSetAppQuotaMsg {
+  type: 'CMD_SET_APP_QUOTA';
+  requestId: string;
+  packageName: string;
+  appName: string;
+  dailyLimitMinutes: number;
+  ts: number;
+}
+
+export interface CmdSetSchoolModeMsg {
+  type: 'CMD_SET_SCHOOL_MODE';
+  requestId: string;
+  durationMinutes?: number;
+  allowedPackages?: string[];
+  ts: number;
+}
+
+export interface CmdSetAntiBypassMsg {
+  type: 'CMD_SET_ANTI_BYPASS';
+  requestId: string;
+  enabled: boolean;
+  ts: number;
+}
+
+export interface CmdSetLostModeMsg {
+  type: 'CMD_SET_LOST_MODE';
+  requestId: string;
+  enabled: boolean;
+  message?: string;
+  phoneNumber?: string;
+  ringNow?: boolean;
+  ts: number;
+}
+
+export interface CmdRespondTimeRequestMsg {
+  type: 'CMD_RESPOND_TIME_REQUEST';
+  requestId: string;
+  timeRequestId: string;
+  approve: boolean;
+  grantMinutes?: number;
+  ts: number;
+}
+
+export interface CmdSaveGeofenceMsg {
+  type: 'CMD_SAVE_GEOFENCE';
+  requestId: string;
+  id?: string;
+  name?: string;
+  latitude?: number;
+  longitude?: number;
+  radiusMeters?: number;
+  delete?: boolean;
+  ts: number;
+}
+
+export interface CmdClearSecurityEventsMsg {
+  type: 'CMD_CLEAR_SECURITY_EVENTS';
+  requestId: string;
   ts: number;
 }
 
@@ -666,6 +835,14 @@ export type SignalMessage =
   | CmdSetScreenPauseMsg
   | CmdClearAllAppLocksMsg
   | CmdSetAdminPinMsg
+  | CmdSetCurfewMsg
+  | CmdSetAppQuotaMsg
+  | CmdSetSchoolModeMsg
+  | CmdSetAntiBypassMsg
+  | CmdSetLostModeMsg
+  | CmdRespondTimeRequestMsg
+  | CmdSaveGeofenceMsg
+  | CmdClearSecurityEventsMsg
   | DataScreenTimeMsg
   | DataControlResultMsg
   | SdpOfferMsg
@@ -725,6 +902,11 @@ export interface NativePortalState {
   deviceAdminActive?: boolean;
   activeAppLocksCount?: number;
   screenPausedUntilMs?: number;
+  curfewEnabled?: boolean;
+  lostModeEnabled?: boolean;
+  blockSettingsAndStore?: boolean;
+  schoolModeUntilMs?: number;
+  securityAlertsCount?: number;
   autoStartOnBoot: boolean;
   failedAttempts: number;
   lockoutRemainingMs: number;

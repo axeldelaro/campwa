@@ -23,6 +23,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.sentinelcam.app.MainActivity
 import com.sentinelcam.app.control.AppLockMonitor
+import com.sentinelcam.app.control.DeviceSecurityMonitor
 import com.sentinelcam.app.control.ScreenTimeHelper
 import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
@@ -107,9 +108,20 @@ class CameraForegroundService : Service() {
         locationStore = store
         locationTracker = SmartLocationTracker(applicationContext, store) {
             refreshGpsStaticState()
+            serviceScope.launch(Dispatchers.IO) {
+                val latest = store.getLatestPoint()
+                if (latest != null) {
+                    val geoEvents = DeviceSecurityMonitor.evaluateGeofences(latest.latitude, latest.longitude, prefs)
+                    if (geoEvents.isNotEmpty()) {
+                        broadcastPresenceNow(OWNER_CHANNEL_ID)
+                        pushScreenTimeSnapshotToAllControlChannels()
+                    }
+                }
+            }
             notifyStateListeners()
         }
         appLockMonitor = AppLockMonitor(applicationContext, prefs).also { it.start() }
+        DeviceSecurityMonitor.checkSimState(applicationContext, prefs)
         createNotificationChannel()
     }
 
@@ -678,6 +690,7 @@ class CameraForegroundService : Service() {
         val grant = resolveGrant(channelId)
         val bat = readBatteryInfo()
         val lockoutRem = (prefs.lockoutUntil - System.currentTimeMillis()).coerceAtLeast(0L)
+        DeviceSecurityMonitor.evaluateBattery(bat.first, bat.second, prefs)
         val stateStr = when {
             lockoutRem > 0L -> "locked"
             isStreaming -> "streaming"
@@ -720,6 +733,12 @@ class CameraForegroundService : Service() {
             put("adminProtectionEnabled", prefs.adminProtectionEnabled)
             put("hasAdminPin", prefs.hasAdminPin())
             put("deviceAdminActive", ScreenTimeHelper.isDeviceAdminActive(applicationContext))
+            put("lostModeEnabled", prefs.lostModeEnabled)
+            put("curfewEnabled", prefs.curfewEnabled)
+            put("schoolModeUntilMs", prefs.schoolModeUntilMs.takeIf { it > System.currentTimeMillis() } ?: 0L)
+            put("blockSettingsAndStore", prefs.blockSettingsAndStore)
+            put("pendingRequestsCount", prefs.getPendingTimeRequests().size)
+            put("securityAlertsCount", prefs.getSecurityEvents().size)
             put("pfsEnabled", lastSessionPfs)
             put("gpsTrackerState", gpsTrackerState)
             put("gpsTrackingMode", prefs.gpsTrackingMode)
@@ -1534,6 +1553,187 @@ class CameraForegroundService : Service() {
                     }
                 }
 
+                "CMD_SET_CURFEW" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "curfew", false, "Contrôle non autorisé.")
+                    } else {
+                        prefs.curfewEnabled = msg.optBoolean("enabled", false)
+                        prefs.curfewStartMin = msg.optInt("startMin", prefs.curfewStartMin)
+                        prefs.curfewEndMin = msg.optInt("endMin", prefs.curfewEndMin)
+                        prefs.curfewDaysMask = msg.optInt("daysMask", prefs.curfewDaysMask)
+                        prefs.curfewBypassUntilMs = 0L
+                        appLockMonitor?.refreshSchedule()
+                        prefs.appendLog(
+                            "security",
+                            if (prefs.curfewEnabled) "Couvre-feu activé par ${grant.name}." else "Couvre-feu désactivé par ${grant.name}."
+                        )
+                        pushScreenTimeAndResult(channelId, reqId, "curfew")
+                    }
+                }
+
+                "CMD_SET_APP_QUOTA" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val pkg = msg.optString("packageName", "").trim()
+                    val appName = msg.optString("appName", pkg).trim()
+                    val limitMin = msg.optInt("dailyLimitMinutes", 0)
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "app_quota", false, "Contrôle non autorisé.")
+                    } else if (pkg.isEmpty()) {
+                        sendControlResult(channelId, reqId, "app_quota", false, "Application invalide.")
+                    } else {
+                        prefs.setAppQuota(pkg, appName, limitMin)
+                        appLockMonitor?.refreshSchedule()
+                        prefs.appendLog(
+                            "security",
+                            if (limitMin > 0) "Quota $appName fixé à $limitMin min/jour par ${grant.name}."
+                            else "Quota $appName retiré par ${grant.name}."
+                        )
+                        pushScreenTimeAndResult(channelId, reqId, "app_quota")
+                    }
+                }
+
+                "CMD_SET_SCHOOL_MODE" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val durationMin = msg.optInt("durationMinutes", 0)
+                    val allowedArr = msg.optJSONArray("allowedPackages")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "school_mode", false, "Contrôle non autorisé.")
+                    } else {
+                        if (allowedArr != null) {
+                            val pkgs = ArrayList<String>(allowedArr.length())
+                            for (i in 0 until allowedArr.length()) {
+                                val p = allowedArr.optString(i, "").trim()
+                                if (p.isNotEmpty()) pkgs.add(p)
+                            }
+                            prefs.setSchoolAllowedPackages(pkgs)
+                        }
+                        if (msg.has("durationMinutes")) {
+                            prefs.schoolModeUntilMs = if (durationMin > 0) {
+                                System.currentTimeMillis() + durationMin.coerceAtMost(720) * 60_000L
+                            } else {
+                                0L
+                            }
+                        }
+                        appLockMonitor?.refreshSchedule()
+                        prefs.appendLog(
+                            "security",
+                            if (prefs.schoolModeUntilMs > System.currentTimeMillis()) "Mode École activé par ${grant.name}."
+                            else "Réglages Mode École mis à jour par ${grant.name}."
+                        )
+                        pushScreenTimeAndResult(channelId, reqId, "school_mode")
+                    }
+                }
+
+                "CMD_SET_ANTI_BYPASS" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val enabled = msg.optBoolean("enabled", false)
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "anti_bypass", false, "Contrôle non autorisé.")
+                    } else {
+                        prefs.blockSettingsAndStore = enabled
+                        if (enabled) prefs.settingsUnlockUntilMs = 0L
+                        appLockMonitor?.refreshSchedule()
+                        prefs.appendLog(
+                            "security",
+                            if (enabled) "Anti-contournement (Paramètres/Play Store) activé par ${grant.name}."
+                            else "Anti-contournement désactivé par ${grant.name}."
+                        )
+                        pushScreenTimeAndResult(channelId, reqId, "anti_bypass")
+                    }
+                }
+
+                "CMD_SET_LOST_MODE" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val enabled = msg.optBoolean("enabled", false)
+                    val message = msg.optString("message", "").trim()
+                    val phone = msg.optString("phoneNumber", "").trim()
+                    val ringNow = msg.optBoolean("ringNow", false)
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "lost_mode", false, "Contrôle non autorisé.")
+                    } else {
+                        prefs.lostModeEnabled = enabled
+                        if (message.isNotEmpty()) prefs.lostModeMessage = message
+                        prefs.lostModePhone = phone
+                        appLockMonitor?.refreshSchedule()
+                        if (enabled) {
+                            if (ringNow) DeviceActionHelper.setRinging(applicationContext, true, 20)
+                            prefs.appendSecurityEvent("admin", "Mode Perdu activé", "Déclenché à distance par ${grant.name}.")
+                        } else {
+                            DeviceActionHelper.setRinging(applicationContext, false)
+                            prefs.appendLog("security", "Mode Perdu désactivé par ${grant.name}.")
+                        }
+                        pushScreenTimeAndResult(channelId, reqId, "lost_mode")
+                    }
+                }
+
+                "CMD_RESPOND_TIME_REQUEST" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val targetRequestId = msg.optString("timeRequestId", "")
+                    val approve = msg.optBoolean("approve", false)
+                    val grantMinutes = msg.optInt("grantMinutes", 15).coerceIn(5, 120)
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "time_request", false, "Contrôle non autorisé.")
+                    } else {
+                        val removed = prefs.removeTimeExtensionRequest(targetRequestId)
+                        if (approve && removed != null) {
+                            val now = System.currentTimeMillis()
+                            if (removed.packageName == "__global__") {
+                                if (prefs.screenPausedUntilMs > now) prefs.screenPausedUntilMs = 0L
+                                if (prefs.isCurfewActiveNow(now)) prefs.curfewBypassUntilMs = now + grantMinutes * 60_000L
+                            } else {
+                                prefs.removeAppLockRule(removed.packageName)
+                                prefs.addDailyBonusMinutes(removed.packageName, grantMinutes)
+                                if (prefs.schoolModeUntilMs > now) {
+                                    val set = prefs.getSchoolAllowedPackages().toMutableSet()
+                                    set.add(removed.packageName)
+                                    prefs.setSchoolAllowedPackages(set)
+                                }
+                            }
+                            appLockMonitor?.refreshSchedule()
+                            prefs.appendLog("security", "+$grantMinutes min accordées pour ${removed.appName} par ${grant.name}.")
+                        } else if (removed != null) {
+                            prefs.appendLog("security", "Demande de temps refusée pour ${removed.appName} par ${grant.name}.")
+                        }
+                        pushScreenTimeAndResult(channelId, reqId, "time_request")
+                    }
+                }
+
+                "CMD_SAVE_GEOFENCE" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val delete = msg.optBoolean("delete", false)
+                    val geoId = msg.optString("id", "").takeIf { it.isNotBlank() }
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "geofence", false, "Contrôle non autorisé.")
+                    } else if (delete && geoId != null) {
+                        prefs.deleteGeofence(geoId)
+                        prefs.appendLog("security", "Zone GPS supprimée par ${grant.name}.")
+                        pushScreenTimeAndResult(channelId, reqId, "geofence")
+                    } else {
+                        val name = msg.optString("name", "Zone").trim()
+                        val lat = msg.optDouble("latitude", Double.NaN)
+                        val lng = msg.optDouble("longitude", Double.NaN)
+                        val radius = msg.optInt("radiusMeters", 150)
+                        if (lat.isNaN() || lng.isNaN()) {
+                            sendControlResult(channelId, reqId, "geofence", false, "Coordonnées GPS invalides.")
+                        } else {
+                            prefs.upsertGeofence(geoId, name, lat, lng, radius)
+                            prefs.appendLog("security", "Zone GPS « $name » (${radius}m) enregistrée par ${grant.name}.")
+                            pushScreenTimeAndResult(channelId, reqId, "geofence")
+                        }
+                    }
+                }
+
+                "CMD_CLEAR_SECURITY_EVENTS" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "clear_events", false, "Contrôle non autorisé.")
+                    } else {
+                        prefs.clearSecurityEvents()
+                        pushScreenTimeAndResult(channelId, reqId, "clear_events")
+                    }
+                }
+
                 "SDP_ANSWER" -> {
                     val sessionId = msg.optString("sessionId", "")
                     val sdp = msg.optString("sdp", "")
@@ -1553,6 +1753,72 @@ class CameraForegroundService : Service() {
                 }
             }
         } catch (_: Throwable) {
+        }
+    }
+
+    private fun sendControlResult(
+        channelId: String,
+        reqId: String,
+        action: String,
+        success: Boolean,
+        error: String? = null
+    ) {
+        signalingEngine?.send(
+            channelId = channelId,
+            payload = JSONObject().apply {
+                put("type", "DATA_CONTROL_RESULT")
+                put("requestId", reqId)
+                put("action", action)
+                put("success", success)
+                if (!error.isNullOrEmpty()) put("error", error)
+                put("ts", System.currentTimeMillis())
+            },
+            mode = "sess"
+        )
+    }
+
+    private fun pushScreenTimeAndResult(channelId: String, reqId: String, action: String) {
+        serviceScope.launch(Dispatchers.IO) {
+            val report = ScreenTimeHelper.readScreenTimeReport(applicationContext, prefs)
+            report.put("type", "DATA_SCREEN_TIME")
+            report.put("requestId", reqId)
+            report.put("ts", System.currentTimeMillis())
+            signalingEngine?.send(channelId, report, mode = "sess")
+            sendControlResult(channelId, reqId, action, true)
+            broadcastPresenceNow(channelId)
+            notifyStateListeners()
+        }
+    }
+
+    private fun pushScreenTimeSnapshotToAllControlChannels() {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val report = ScreenTimeHelper.readScreenTimeReport(applicationContext, prefs)
+                report.put("type", "DATA_SCREEN_TIME")
+                report.put("requestId", "push-${System.currentTimeMillis()}")
+                report.put("ts", System.currentTimeMillis())
+                for (chId in channelKeysById.keys) {
+                    val g = resolveGrant(chId)
+                    if (g.allowed && g.allowDeviceControl) {
+                        signalingEngine?.send(chId, report, mode = "sess")
+                        broadcastPresenceNow(chId)
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun recordIntrusionAndCapture(title: String, detail: String) {
+        serviceScope.launch(Dispatchers.IO) {
+            val photoB64 = if (!isStreaming) {
+                DeviceSecurityMonitor.captureFrontSnapshotBase64(applicationContext)
+            } else {
+                null
+            }
+            prefs.appendSecurityEvent("intruder", title, detail, photoB64)
+            pushScreenTimeSnapshotToAllControlChannels()
+            notifyStateListeners()
         }
     }
 
@@ -1690,6 +1956,12 @@ class CameraForegroundService : Service() {
                 put("adminProtectionEnabled", prefs.adminProtectionEnabled)
                 put("hasAdminPin", prefs.hasAdminPin())
                 put("deviceAdminActive", ScreenTimeHelper.isDeviceAdminActive(applicationContext))
+                put("lostModeEnabled", prefs.lostModeEnabled)
+                put("curfewEnabled", prefs.curfewEnabled)
+                put("schoolModeUntilMs", prefs.schoolModeUntilMs.takeIf { it > System.currentTimeMillis() } ?: 0L)
+                put("blockSettingsAndStore", prefs.blockSettingsAndStore)
+                put("pendingRequestsCount", prefs.getPendingTimeRequests().size)
+                put("securityAlertsCount", prefs.getSecurityEvents().size)
                 put("gpsTrackerState", gpsTrackerState)
                 put("gpsTrackingMode", prefs.gpsTrackingMode)
                 put("gpsPointsCount", gpsPointsCount)
@@ -2168,6 +2440,54 @@ class CameraForegroundService : Service() {
         fun sleepCameraFromNotification(@Suppress("UNUSED_PARAMETER") context: Context) {
             try {
                 instance?.sleepCameraInternal()
+            } catch (_: Throwable) {
+            }
+        }
+
+        fun submitTimeExtensionRequest(
+            context: Context,
+            packageName: String,
+            appName: String,
+            requestedMinutes: Int
+        ) {
+            try {
+                val p = PortalPreferences(context)
+                p.addTimeExtensionRequest(packageName, appName, requestedMinutes)
+                p.appendSecurityEvent(
+                    kind = "request",
+                    title = "Demande +$requestedMinutes min",
+                    detail = "Demande de temps supplémentaire pour $appName."
+                )
+                instance?.pushScreenTimeSnapshotToAllControlChannels()
+                notifyStateListeners()
+            } catch (_: Throwable) {
+            }
+        }
+
+        fun reportAdminPinIntrusion(context: Context, attempts: Int, targetLabel: String) {
+            try {
+                val running = instance
+                val title = "Code administrateur erroné ($attempts×)"
+                val detail = "Tentative sur $targetLabel."
+                if (running != null) {
+                    running.recordIntrusionAndCapture(title, detail)
+                } else {
+                    PortalPreferences(context).appendSecurityEvent("intruder", title, detail)
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
+        fun reportLockscreenIntrusion(context: Context, attempts: Int) {
+            try {
+                val running = instance
+                val title = "Échecs déverrouillage ($attempts×)"
+                val detail = "Plusieurs codes erronés saisis sur l’écran de verrouillage."
+                if (running != null) {
+                    running.recordIntrusionAndCapture(title, detail)
+                } else {
+                    PortalPreferences(context).appendSecurityEvent("intruder", title, detail)
+                }
             } catch (_: Throwable) {
             }
         }
