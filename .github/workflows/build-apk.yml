@@ -122,17 +122,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.0.${{ github.run_number }}
-          name: "SentinelCam v4.0.${{ github.run_number }} (Codes Temporaires & Profils Amis)"
+          tag_name: v5.0.${{ github.run_number }}
+          name: "SentinelCam v5.0.${{ github.run_number }} (Partage d'Écran, Contacts, GPS & Contrôle Utilisateur)"
           body: |
-            ### 🛡️ SentinelCam v4.0 — Codes Fixes Temporaires & Profils Amis (`v4.0.${{ github.run_number }}`)
+            ### 🛡️ SentinelCam v5.0 — Contrôle Granulaire Utilisateur : Écran, Contacts, GPS & Infos Appareil (`v5.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Codes Fixes Temporaires (Pass Invités)** : Choisissez votre propre code fixe à 6 caractères avec une durée précise (`15 min`, `1h`, `4h`, `24h`, `7j` ou date/heure personnalisée) et coupure automatique exacte à l'expiration.
-            - **Profils Amis Autorisés** : Ajoutez des proches nommés avec leur propre code personnel utilisable dès que votre serveur est allumé, suspension/révocation en 1 clic et permissions granulaires (micro / caméra arrière).
-            - **Partage par Lien Direct (`?code=XXXXXX`)** : Ouvrez le lien pour pré-remplir et connecter instantanément un ami ou un invité.
-            - **Contrôle Live Propriétaire** : Visualisez en direct qui regarde la caméra et coupez l'accès en 1 clic.
+            - **Partage d'Écran en Direct (Opt-In)** : Autorisez le partage de votre écran Android via le dialogue système `MediaProjection` et coupez-le en 1 clic à tout moment.
+            - **Répertoire Contacts Partagé (Opt-In E2EE)** : Activez ou désactivez le partage en lecture seule de vos contacts (avec recherche instantanée côté Web).
+            - **Localisation GPS & Infos Système (Opt-In)** : Partagez sur demande la position sur carte (OpenStreetMap + Google Maps), le stockage disponible et l'état du téléphone.
+            - **Permissions par Pass Temporaire & Profil Ami** : Cochez exactement ce que chaque invité ou ami a le droit de voir (`Micro`, `Caméra arrière`, `Écran`, `Contacts`, `GPS`, `Infos`).
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

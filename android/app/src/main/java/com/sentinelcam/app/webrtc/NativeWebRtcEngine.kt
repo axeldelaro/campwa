@@ -2,7 +2,9 @@ package com.sentinelcam.app.webrtc
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.projection.MediaProjection
 import androidx.core.content.ContextCompat
 import com.sentinelcam.app.crypto.CryptoProtocol
 import org.json.JSONObject
@@ -21,19 +23,17 @@ import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.ScreenCapturerAndroid
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
+import org.webrtc.VideoCapturer
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 
-/**
- * Process-wide singleton WebRTC Native Runtime so restarting CameraForegroundService
- * never re-initializes or disposes JNI globals (eliminates SIGSEGV on service restart).
- */
 private object SharedWebRtcRuntime {
     private var initialized = false
     var eglBase: EglBase? = null
@@ -78,15 +78,15 @@ private object SharedWebRtcRuntime {
 }
 
 /**
- * Thread-safe Headless Hardware WebRTC Capture Engine.
- * All native WebRTC & Camera2 operations are strictly serialized onto a dedicated single-thread
- * executor (`rtcExecutor`) to prevent JNI race conditions and re-entrant callback crashes.
+ * Thread-safe Hardware WebRTC Engine supporting both Camera2 (`CameraVideoCapturer`)
+ * and User-Consented Screen Capture (`ScreenCapturerAndroid` via MediaProjection).
  */
 class NativeWebRtcEngine(
     context: Context,
     private val onLocalOfferReady: (sessionId: String, sdp: String, fingerprint: String) -> Unit,
     private val onLocalIceCandidate: (sessionId: String, candidate: IceCandidate) -> Unit,
-    private val onStreamStateChanged: (isStreaming: Boolean, error: String?) -> Unit
+    private val onStreamStateChanged: (isStreaming: Boolean, error: String?) -> Unit,
+    private val onScreenProjectionEnded: () -> Unit = {}
 ) {
     private val appContext = context.applicationContext
     private val rtcExecutor = Executors.newSingleThreadExecutor { r ->
@@ -95,7 +95,7 @@ class NativeWebRtcEngine(
 
     private var peerConnection: PeerConnection? = null
     private var dataChannel: DataChannel? = null
-    private var videoCapturer: CameraVideoCapturer? = null
+    private var videoCapturer: VideoCapturer? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
@@ -108,6 +108,10 @@ class NativeWebRtcEngine(
 
     @Volatile
     var currentFacing: String = "front"
+        private set
+
+    @Volatile
+    var currentMediaMode: String = "camera"
         private set
 
     @Volatile
@@ -128,11 +132,22 @@ class NativeWebRtcEngine(
         quality: String = "hd"
     ) {
         rtcExecutor.execute {
-            startStreamOnWorker(sessionId, facing, enableAudio, quality)
+            startCameraStreamOnWorker(sessionId, facing, enableAudio, quality)
         }
     }
 
-    private fun startStreamOnWorker(
+    fun startScreenStream(
+        sessionId: String,
+        projectionIntent: Intent,
+        enableAudio: Boolean = false,
+        quality: String = "hd"
+    ) {
+        rtcExecutor.execute {
+            startScreenStreamOnWorker(sessionId, projectionIntent, enableAudio, quality)
+        }
+    }
+
+    private fun startCameraStreamOnWorker(
         sessionId: String,
         facing: String,
         enableAudio: Boolean,
@@ -150,6 +165,62 @@ class NativeWebRtcEngine(
             return
         }
 
+        val capturer = createCameraCapturer(facing)
+        if (capturer == null) {
+            onStreamStateChanged(false, "Aucun capteur caméra détecté.")
+            return
+        }
+
+        currentFacing = facing
+        currentMediaMode = "camera"
+        val width = if (quality == "sd") 640 else 1280
+        val height = if (quality == "sd") 480 else 720
+        launchCapturerSession(sessionId, capturer, width, height, 30, enableAudio)
+    }
+
+    private fun startScreenStreamOnWorker(
+        sessionId: String,
+        projectionIntent: Intent,
+        enableAudio: Boolean,
+        quality: String
+    ) {
+        stopStreamOnWorker()
+
+        val metrics = appContext.resources.displayMetrics
+        val targetW = if (quality == "sd") 540 else 720
+        val ratio = if (metrics.widthPixels > 0) {
+            metrics.heightPixels.toFloat() / metrics.widthPixels.toFloat()
+        } else {
+            16f / 9f
+        }
+        val targetH = ((targetW * ratio).toInt() / 2) * 2
+
+        val screenCapturer = ScreenCapturerAndroid(
+            projectionIntent,
+            object : MediaProjection.Callback() {
+                override fun onStop() {
+                    rtcExecutor.execute {
+                        if (currentMediaMode == "screen") {
+                            stopStreamOnWorker()
+                        }
+                        onScreenProjectionEnded()
+                    }
+                }
+            }
+        )
+
+        currentMediaMode = "screen"
+        launchCapturerSession(sessionId, screenCapturer, targetW, targetH.coerceIn(480, 1600), 20, enableAudio)
+    }
+
+    private fun launchCapturerSession(
+        sessionId: String,
+        capturer: VideoCapturer,
+        width: Int,
+        height: Int,
+        fps: Int,
+        enableAudio: Boolean
+    ) {
         try {
             val runtime = SharedWebRtcRuntime.ensureReady(appContext)
             if (runtime == null) {
@@ -159,14 +230,7 @@ class NativeWebRtcEngine(
             val (rootEgl, factory) = runtime
 
             currentSessionId = sessionId
-            currentFacing = facing
             currentMicEnabled = enableAudio
-
-            val capturer = createCameraCapturer(facing)
-            if (capturer == null) {
-                onStreamStateChanged(false, "Aucun capteur caméra détecté.")
-                return
-            }
             videoCapturer = capturer
 
             val texHelper = SurfaceTextureHelper.create("SentinelCaptureTex", rootEgl.eglBaseContext)
@@ -175,10 +239,7 @@ class NativeWebRtcEngine(
             val vSource = factory.createVideoSource(capturer.isScreencast)
             videoSource = vSource
             capturer.initialize(texHelper, appContext, vSource.capturerObserver)
-
-            val width = if (quality == "sd") 640 else 1280
-            val height = if (quality == "sd") 480 else 720
-            capturer.startCapture(width, height, 30)
+            capturer.startCapture(width, height, fps)
 
             val vTrack = factory.createVideoTrack("ARDAMSv0", vSource)
             vTrack.setEnabled(true)
@@ -218,7 +279,6 @@ class NativeWebRtcEngine(
                 override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
 
                 override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                    // CRITICAL: Never close PeerConnection synchronously inside C++ callback!
                     if (state == PeerConnection.IceConnectionState.FAILED) {
                         rtcExecutor.execute {
                             if (currentSessionId == sessionId) {
@@ -229,23 +289,16 @@ class NativeWebRtcEngine(
                 }
 
                 override fun onIceConnectionReceivingChange(receiving: Boolean) {}
-
                 override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
-
                 override fun onIceCandidate(candidate: IceCandidate?) {
                     if (candidate != null && currentSessionId == sessionId) {
                         onLocalIceCandidate(sessionId, candidate)
                     }
                 }
-
                 override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
-
                 override fun onAddStream(stream: MediaStream?) {}
-
                 override fun onRemoveStream(stream: MediaStream?) {}
-
                 override fun onDataChannel(dc: DataChannel?) {}
-
                 override fun onRenegotiationNeeded() {}
             })
 
@@ -300,7 +353,17 @@ class NativeWebRtcEngine(
 
         } catch (t: Throwable) {
             stopStreamOnWorker()
-            onStreamStateChanged(false, t.message ?: "Erreur ouverture caméra")
+            if (currentMediaMode == "screen") {
+                onScreenProjectionEnded()
+            }
+            onStreamStateChanged(
+                false,
+                if (currentMediaMode == "screen") {
+                    "Le propriétaire doit ré-autoriser le partage d’écran sur son smartphone."
+                } else {
+                    t.message ?: "Erreur ouverture capteur"
+                }
+            )
         }
     }
 
@@ -335,7 +398,7 @@ class NativeWebRtcEngine(
     fun switchCamera(targetFacing: String) {
         rtcExecutor.execute {
             try {
-                val capturer = videoCapturer ?: return@execute
+                val capturer = videoCapturer as? CameraVideoCapturer ?: return@execute
                 if (targetFacing == currentFacing) return@execute
                 val enumerator = getCameraEnumerator()
                 val targetDevice = findCameraDeviceName(enumerator, preferFront = targetFacing == "front")

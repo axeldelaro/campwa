@@ -1,14 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   BatteryCharging,
+  BookUser,
   Camera,
   Check,
   CheckCircle2,
   Clock,
   Copy,
+  Cpu,
   Eye,
   KeyRound,
+  MapPin,
   Mic,
+  Monitor,
   Play,
   Plus,
   Power,
@@ -17,6 +21,7 @@ import {
   Share2,
   ShieldAlert,
   ShieldCheck,
+  Sliders,
   Smartphone,
   Timer,
   Trash2,
@@ -73,12 +78,16 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   // Pass / Friend creation form state
   const [formName, setFormName] = useState('');
   const [formCode, setFormCode] = useState('');
-  const [durationPresetIdx, setDurationPresetIdx] = useState<number>(1); // Default 1h
+  const [durationPresetIdx, setDurationPresetIdx] = useState<number>(1);
   const [useCustomExpiry, setUseCustomExpiry] = useState(false);
   const [customExpiryLocal, setCustomExpiryLocal] = useState('');
   const [friendHasExpiry, setFriendHasExpiry] = useState(false);
   const [allowAudio, setAllowAudio] = useState(true);
   const [allowSwitchCamera, setAllowSwitchCamera] = useState(true);
+  const [allowScreenShare, setAllowScreenShare] = useState(false);
+  const [allowContacts, setAllowContacts] = useState(false);
+  const [allowLocation, setAllowLocation] = useState(false);
+  const [allowDeviceInfo, setAllowDeviceInfo] = useState(true);
 
   const webEngineRef = useRef<BrowserEmitterEngine | null>(null);
 
@@ -159,6 +168,88 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       await SentinelNative.requestBatteryExemption();
       const updated = await SentinelNative.getPortalState();
       setPortal(updated);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleScreenShare = async () => {
+    if (!portal) return;
+    setBusy(true);
+    try {
+      const currentlyActive = portal.globalShares.allowScreenShare && portal.globalShares.screenShareReady;
+      if (isNativeAndroid) {
+        const next = currentlyActive
+          ? await SentinelNative.revokeScreenSharePermission()
+          : await SentinelNative.requestScreenSharePermission();
+        setPortal(next);
+      } else if (webEngineRef.current) {
+        const next = currentlyActive
+          ? webEngineRef.current.revokeScreenShare()
+          : await webEngineRef.current.requestScreenSharePermission();
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleContactsShare = async () => {
+    if (!portal) return;
+    setBusy(true);
+    try {
+      const targetVal = !portal.globalShares.allowContacts;
+      if (isNativeAndroid) {
+        if (targetVal && !portal.permissions.contacts) {
+          const afterPerm = await SentinelNative.requestContactsPermission();
+          setPortal(afterPerm);
+        } else {
+          const next = await SentinelNative.setGlobalShareSettings({ allowContacts: targetVal });
+          setPortal(next);
+        }
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.setGlobalShareSettings({ allowContacts: targetVal });
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleLocationShare = async () => {
+    if (!portal) return;
+    setBusy(true);
+    try {
+      const targetVal = !portal.globalShares.allowLocation;
+      if (isNativeAndroid) {
+        if (targetVal && !portal.permissions.location) {
+          const afterPerm = await SentinelNative.requestLocationPermission();
+          setPortal(afterPerm);
+        } else {
+          const next = await SentinelNative.setGlobalShareSettings({ allowLocation: targetVal });
+          setPortal(next);
+        }
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.setGlobalShareSettings({ allowLocation: targetVal });
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleDeviceInfoShare = async () => {
+    if (!portal) return;
+    setBusy(true);
+    try {
+      const targetVal = !portal.globalShares.allowDeviceInfo;
+      if (isNativeAndroid) {
+        const next = await SentinelNative.setGlobalShareSettings({ allowDeviceInfo: targetVal });
+        setPortal(next);
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.setGlobalShareSettings({ allowDeviceInfo: targetVal });
+        setPortal(next);
+      }
     } finally {
       setBusy(false);
     }
@@ -247,6 +338,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       expiresAt,
       allowAudio,
       allowSwitchCamera,
+      allowScreenShare,
+      allowContacts,
+      allowLocation,
+      allowDeviceInfo,
     };
 
     setBusy(true);
@@ -300,6 +395,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         expiresAt: base + addMs,
         allowAudio: prof.allowAudio,
         allowSwitchCamera: prof.allowSwitchCamera,
+        allowScreenShare: prof.allowScreenShare,
+        allowContacts: prof.allowContacts,
+        allowLocation: prof.allowLocation,
+        allowDeviceInfo: prof.allowDeviceInfo,
       };
       if (isNativeAndroid) {
         const next = await SentinelNative.upsertAccessProfile(updatedInput);
@@ -352,7 +451,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       try {
         await navigator.share({
           title: `Accès SentinelCam — ${prof.name}`,
-          text: `Code d’accès caméra (${prof.name}) : ${prof.code}\n${expiryLabel}`,
+          text: `Code d’accès (${prof.name}) : ${prof.code}\n${expiryLabel}`,
           url: directUrl,
         });
         return;
@@ -384,15 +483,15 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             Activer SentinelCam en Continu
           </h1>
           <p className="mt-2 text-xs leading-relaxed text-slate-300">
-            Une seule validation suffit : l’application maintiendra un pont chiffré en mode
-            éco-énergie (0% conso caméra en veille) avec gestion de codes temporaires et profils
-            amis.
+            Vous gardez le contrôle absolu : activez à la carte ce que vous souhaitez partager
+            (caméra, écran, contacts, localisation GPS) globalement et par profil ami / pass
+            temporaire.
           </p>
 
           <div className="mt-5 space-y-2 rounded-2xl border border-slate-800 bg-obsidian-950 p-4 text-left text-xs text-slate-300">
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-              <span>Accès Caméra & Microphone à la demande</span>
+              <span>Accès Caméra, Écran, Contacts & GPS 100% au choix de l’utilisateur</span>
             </div>
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
@@ -400,7 +499,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             </div>
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-              <span>Éco-Veille en tâche de fond + reconnexion automatique</span>
+              <span>Éco-Veille en tâche de fond + notification transparente</span>
             </div>
           </div>
 
@@ -430,6 +529,83 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const allProfiles = portal.accessProfiles ?? [];
   const timedPasses = allProfiles.filter((p) => p.role === 'guest');
   const friendProfiles = allProfiles.filter((p) => p.role === 'friend');
+  const shares = portal.globalShares ?? {
+    allowScreenShare: false,
+    allowContacts: false,
+    allowLocation: false,
+    allowDeviceInfo: true,
+    screenShareReady: false,
+  };
+
+  const renderPermissionCheckboxes = () => (
+    <div className="mt-4 grid grid-cols-2 gap-2.5 rounded-2xl border border-slate-800/80 bg-obsidian-950/70 p-3.5 text-xs text-slate-300 sm:grid-cols-3">
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowAudio}
+          onChange={(e) => setAllowAudio(e.target.checked)}
+          className="h-4 w-4 rounded border-slate-700 bg-obsidian-900 text-emerald-500"
+        />
+        <Mic className="h-3.5 w-3.5 text-emerald-400" />
+        <span>Micro</span>
+      </label>
+
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowSwitchCamera}
+          onChange={(e) => setAllowSwitchCamera(e.target.checked)}
+          className="h-4 w-4 rounded border-slate-700 bg-obsidian-900 text-emerald-500"
+        />
+        <Camera className="h-3.5 w-3.5 text-cyan-400" />
+        <span>Cam. arrière</span>
+      </label>
+
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowScreenShare}
+          onChange={(e) => setAllowScreenShare(e.target.checked)}
+          className="h-4 w-4 rounded border-slate-700 bg-obsidian-900 text-emerald-500"
+        />
+        <Monitor className="h-3.5 w-3.5 text-violet-400" />
+        <span>Écran</span>
+      </label>
+
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowContacts}
+          onChange={(e) => setAllowContacts(e.target.checked)}
+          className="h-4 w-4 rounded border-slate-700 bg-obsidian-900 text-emerald-500"
+        />
+        <BookUser className="h-3.5 w-3.5 text-amber-400" />
+        <span>Contacts</span>
+      </label>
+
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowLocation}
+          onChange={(e) => setAllowLocation(e.target.checked)}
+          className="h-4 w-4 rounded border-slate-700 bg-obsidian-900 text-emerald-500"
+        />
+        <MapPin className="h-3.5 w-3.5 text-rose-400" />
+        <span>Position GPS</span>
+      </label>
+
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowDeviceInfo}
+          onChange={(e) => setAllowDeviceInfo(e.target.checked)}
+          className="h-4 w-4 rounded border-slate-700 bg-obsidian-900 text-emerald-500"
+        />
+        <Cpu className="h-3.5 w-3.5 text-slate-400" />
+        <span>Infos tel</span>
+      </label>
+    </div>
+  );
 
   const renderProfileCard = (prof: AccessProfile) => {
     const isExpired = prof.expiresAt !== null && prof.expiresAt <= nowMs;
@@ -466,17 +642,40 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               )}
             </div>
 
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
-              <span className="inline-flex items-center gap-1">
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">
+              <span className="inline-flex items-center gap-1 rounded-md bg-slate-800/80 px-2 py-0.5 text-slate-300">
                 <Clock className="h-3 w-3 text-cyan-400" />
                 {formatRemaining(prof.expiresAt, nowMs)}
               </span>
-              <span>• {prof.allowAudio ? 'Micro ON' : 'Vidéo seule'}</span>
-              <span>• {prof.allowSwitchCamera ? 'Avant/Arrière' : 'Selfie seule'}</span>
+              {prof.allowAudio && (
+                <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-emerald-300">
+                  Micro
+                </span>
+              )}
+              {prof.allowSwitchCamera && (
+                <span className="rounded-md bg-cyan-500/10 px-1.5 py-0.5 text-cyan-300">
+                  Cam. Arrière
+                </span>
+              )}
+              {prof.allowScreenShare && (
+                <span className="rounded-md bg-violet-500/15 px-1.5 py-0.5 text-violet-300">
+                  Écran
+                </span>
+              )}
+              {prof.allowContacts && (
+                <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-amber-300">
+                  Contacts
+                </span>
+              )}
+              {prof.allowLocation && (
+                <span className="rounded-md bg-rose-500/15 px-1.5 py-0.5 text-rose-300">
+                  GPS
+                </span>
+              )}
             </div>
 
             {prof.lastAccessAt && (
-              <div className="mt-1 text-[10px] text-slate-500">
+              <div className="mt-1.5 text-[10px] text-slate-500">
                 Dernier accès : {new Date(prof.lastAccessAt).toLocaleString('fr-FR')}
               </div>
             )}
@@ -550,7 +749,6 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             disabled={busy}
             onClick={() => void handleDeleteProfile(prof.id)}
             className="ml-auto inline-flex items-center gap-1 rounded-xl border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-rose-300 hover:bg-rose-500/20"
-            title="Supprimer définitivement cet accès"
           >
             <Trash2 className="h-3 w-3" />
             <span>Révoquer</span>
@@ -560,33 +758,34 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     );
   };
 
-  /* ==================== PERSISTENT PORTAL + ACCESS MANAGEMENT ==================== */
+  /* ==================== PERSISTENT PORTAL + USER-CONTROLLED SHARING ==================== */
   return (
     <div className="mx-auto max-w-xl px-4 py-6">
       {!isNativeAndroid && (
         <div className="mb-4 flex items-center gap-2.5 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-xs text-cyan-200">
           <Smartphone className="h-4 w-4 shrink-0 text-cyan-400" />
           <span>
-            <strong>Mode Émetteur Web</strong> — Créez des codes temporaires ou profils amis ici ou
-            sur votre APK Android.
+            <strong>Mode Émetteur Web</strong> — Utilisez l’APK Android pour partager votre écran
+            téléphone, vos contacts et votre GPS en tâche de fond.
           </span>
         </div>
       )}
 
-      {/* Active Viewer Live Alert Banner (shows WHO is currently watching!) */}
+      {/* Active Viewer Live Alert Banner */}
       {portal.portalState === 'streaming' && portal.activeViewerName && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-500/45 bg-rose-500/15 px-4 py-3 shadow-lg">
           <div className="flex items-center gap-2.5">
             <Eye className="h-5 w-5 text-rose-400 animate-pulse" />
             <div className="text-xs">
               <div className="font-bold text-white">
-                Visionnage en direct : {portal.activeViewerName}{' '}
+                {portal.mediaMode === 'screen' ? 'Partage d’écran' : 'Caméra'} en direct :{' '}
+                {portal.activeViewerName}{' '}
                 <span className="rounded bg-rose-500/30 px-1.5 py-0.5 text-[10px] uppercase text-rose-200">
                   {portal.activeViewerRole === 'owner'
                     ? 'Propriétaire'
                     : portal.activeViewerRole === 'friend'
                     ? 'Ami'
-                    : 'Pass Temporaire'}
+                    : 'Pass'}
                 </span>
               </div>
               {portal.activeViewerExpiresAt && (
@@ -608,7 +807,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         </div>
       )}
 
-      {/* Navigation Tabs: Portail | Pass Temporaires | Profils Amis */}
+      {/* Navigation Tabs */}
       <div className="mb-4 grid grid-cols-3 gap-1.5 rounded-2xl border border-slate-800 bg-obsidian-900/90 p-1.5">
         <button
           type="button"
@@ -659,141 +858,264 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         </button>
       </div>
 
-      {/* ==================== TAB 1: MASTER PORTAL ==================== */}
+      {/* ==================== TAB 1: MASTER PORTAL + USER SHARE CONTROLS ==================== */}
       {section === 'portal' && (
-        <div className="rounded-3xl border border-slate-800 bg-obsidian-900/95 p-6 shadow-2xl">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Radio
-                className={`h-5 w-5 ${
-                  portal.portalState === 'streaming'
-                    ? 'text-rose-400 animate-pulse'
+        <div className="space-y-4">
+          <div className="rounded-3xl border border-slate-800 bg-obsidian-900/95 p-6 shadow-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Radio
+                  className={`h-5 w-5 ${
+                    portal.portalState === 'streaming'
+                      ? 'text-rose-400 animate-pulse'
+                      : portal.serviceRunning
+                      ? 'text-emerald-400'
+                      : 'text-slate-500'
+                  }`}
+                />
+                <span className="text-sm font-bold text-white">
+                  {portal.portalState === 'streaming'
+                    ? portal.mediaMode === 'screen'
+                      ? 'Écran partagé en direct'
+                      : 'Caméra en direct'
                     : portal.serviceRunning
-                    ? 'text-emerald-400'
-                    : 'text-slate-500'
+                    ? 'Éco-Veille active 24h/24'
+                    : 'Serveur en pause'}
+                </span>
+              </div>
+
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-mono text-[11px] font-semibold ${
+                  portal.mqttConnected
+                    ? 'bg-emerald-500/15 text-emerald-300'
+                    : 'bg-amber-500/15 text-amber-300'
                 }`}
-              />
-              <span className="text-sm font-bold text-white">
-                {portal.portalState === 'streaming'
-                  ? 'Caméra en direct'
-                  : portal.serviceRunning
-                  ? 'Éco-Veille active 24h/24'
-                  : 'Serveur en pause'}
+              >
+                <Wifi className="h-3 w-3" />
+                {portal.mqttConnected ? 'Relais Connecté' : 'En attente'}
               </span>
             </div>
 
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-mono text-[11px] font-semibold ${
-                portal.mqttConnected
-                  ? 'bg-emerald-500/15 text-emerald-300'
-                  : 'bg-amber-500/15 text-amber-300'
-              }`}
-            >
-              <Wifi className="h-3 w-3" />
-              {portal.mqttConnected ? 'Relais Connecté' : 'En attente'}
-            </span>
-          </div>
+            <div className="mt-5 rounded-2xl border border-emerald-500/30 bg-obsidian-950 p-6 text-center shadow-inner">
+              <div className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-slate-400">
+                <KeyRound className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Code Principal (Propriétaire)</span>
+              </div>
 
-          <div className="mt-5 rounded-2xl border border-emerald-500/30 bg-obsidian-950 p-6 text-center shadow-inner">
-            <div className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-slate-400">
-              <KeyRound className="h-3.5 w-3.5 text-emerald-400" />
-              <span>Code Principal (Propriétaire)</span>
-            </div>
+              <div className="mt-3 flex justify-center gap-2">
+                {portal.pairingCode.split('').map((c, idx) => (
+                  <span
+                    key={idx}
+                    className="flex h-14 w-11 items-center justify-center rounded-xl border border-emerald-500/40 bg-obsidian-900 font-mono text-2xl font-extrabold text-emerald-300 shadow-lg sm:h-16 sm:w-12 sm:text-3xl"
+                  >
+                    {c}
+                  </span>
+                ))}
+              </div>
 
-            <div className="mt-3 flex justify-center gap-2">
-              {portal.pairingCode.split('').map((c, idx) => (
-                <span
-                  key={idx}
-                  className="flex h-14 w-11 items-center justify-center rounded-xl border border-emerald-500/40 bg-obsidian-900 font-mono text-2xl font-extrabold text-emerald-300 shadow-lg sm:h-16 sm:w-12 sm:text-3xl"
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => void handleCopyText(portal.pairingCode, 'master')}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-extrabold text-obsidian-950 transition hover:bg-emerald-400"
                 >
-                  {c}
-                </span>
-              ))}
+                  {copiedId === 'master' ? (
+                    <>
+                      <Check className="h-3.5 w-3.5" />
+                      <span>Copié !</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3.5 w-3.5" />
+                      <span>Copier</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleRegenerateCode()}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-900 px-3.5 py-2 text-xs font-semibold text-slate-300 transition hover:text-white"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>Nouveau code</span>
+                </button>
+              </div>
             </div>
 
-            <p className="mt-3 text-xs text-slate-400">
-              Donne un contrôle total. Pour partager un accès limité dans le temps ou permanent à
-              un ami, utilisez les onglets{' '}
-              <strong className="text-emerald-300">Pass</strong> et{' '}
-              <strong className="text-cyan-300">Amis</strong> ci-dessus.
-            </p>
-
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+            {isNativeAndroid && !portal.permissions.batteryOptimizationIgnored && (
               <button
                 type="button"
-                onClick={() => void handleCopyText(portal.pairingCode, 'master')}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-extrabold text-obsidian-950 transition hover:bg-emerald-400"
+                onClick={() => void handleRequestBatteryDoze()}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs font-bold text-amber-300 transition hover:bg-amber-500/20"
               >
-                {copiedId === 'master' ? (
-                  <>
-                    <Check className="h-3.5 w-3.5" />
-                    <span>Copié !</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="h-3.5 w-3.5" />
-                    <span>Copier</span>
-                  </>
-                )}
+                <BatteryCharging className="h-4 w-4 shrink-0" />
+                <span>Autoriser l’arrière-plan illimité (anti-veille batterie)</span>
               </button>
+            )}
 
+            {isNativeAndroid && !portal.permissions.camera && (
+              <button
+                type="button"
+                onClick={() => void handleOneTapSetupAndStart()}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs font-bold text-rose-300"
+              >
+                <ShieldAlert className="h-4 w-4 shrink-0" />
+                <span>Autoriser l’accès Caméra manquant</span>
+              </button>
+            )}
+
+            <div className="mt-5">
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void handleRegenerateCode()}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-900 px-3.5 py-2 text-xs font-semibold text-slate-300 transition hover:text-white"
+                onClick={() => void handleToggleService()}
+                className={`flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-sm font-bold transition ${
+                  portal.serviceRunning
+                    ? 'border border-slate-700 bg-obsidian-950 text-slate-300 hover:border-rose-500/40 hover:text-rose-300'
+                    : 'bg-emerald-500 text-obsidian-950 shadow-lg shadow-emerald-500/25 hover:bg-emerald-400'
+                }`}
               >
-                <RefreshCw className="h-3.5 w-3.5" />
-                <span>Nouveau code</span>
+                {portal.serviceRunning ? (
+                  <>
+                    <Power className="h-4 w-4" />
+                    <span>Couper le serveur</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4" />
+                    <span>Allumer le serveur</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
 
-          {isNativeAndroid && !portal.permissions.batteryOptimizationIgnored && (
-            <button
-              type="button"
-              onClick={() => void handleRequestBatteryDoze()}
-              className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs font-bold text-amber-300 transition hover:bg-amber-500/20"
-            >
-              <BatteryCharging className="h-4 w-4 shrink-0" />
-              <span>Autoriser l’arrière-plan illimité (anti-veille batterie)</span>
-            </button>
-          )}
+          {/* USER-CONTROLLED GRANULAR PERMISSION CENTER */}
+          <div className="rounded-3xl border border-slate-800 bg-obsidian-900/95 p-5 shadow-2xl">
+            <div className="flex items-center gap-2">
+              <Sliders className="h-5 w-5 text-emerald-400" />
+              <h2 className="text-sm font-extrabold text-white">
+                Ce que vous autorisez à partager (Vous décidez)
+              </h2>
+            </div>
+            <p className="mt-1 text-xs text-slate-400">
+              Rien n’est partagé sans votre accord explicite. Activez ou coupez chaque accès en 1
+              clic ci-dessous.
+            </p>
 
-          {isNativeAndroid && !portal.permissions.camera && (
-            <button
-              type="button"
-              onClick={() => void handleOneTapSetupAndStart()}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs font-bold text-rose-300"
-            >
-              <ShieldAlert className="h-4 w-4 shrink-0" />
-              <span>Autoriser l’accès Caméra manquant</span>
-            </button>
-          )}
+            <div className="mt-4 space-y-2.5">
+              {/* Screen Share Control */}
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
+                <div className="flex items-start gap-3">
+                  <Monitor className="mt-0.5 h-5 w-5 shrink-0 text-violet-400" />
+                  <div>
+                    <div className="text-xs font-bold text-white">Partage d’Écran en Direct</div>
+                    <div className="text-[11px] text-slate-400">
+                      {shares.allowScreenShare && shares.screenShareReady
+                        ? 'Autorisé par Android — prêt à être visionné à distance.'
+                        : 'Désactivé — demande votre validation système Android.'}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleToggleScreenShare()}
+                  className={`shrink-0 rounded-xl px-3 py-2 text-xs font-bold transition ${
+                    shares.allowScreenShare && shares.screenShareReady
+                      ? 'border border-violet-500/40 bg-violet-500/20 text-violet-200 hover:bg-rose-500/20 hover:text-rose-200'
+                      : 'bg-violet-500 text-white hover:bg-violet-400'
+                  }`}
+                >
+                  {shares.allowScreenShare && shares.screenShareReady ? 'Actif (Couper)' : 'Autoriser'}
+                </button>
+              </div>
 
-          <div className="mt-5">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void handleToggleService()}
-              className={`flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-sm font-bold transition ${
-                portal.serviceRunning
-                  ? 'border border-slate-700 bg-obsidian-950 text-slate-300 hover:border-rose-500/40 hover:text-rose-300'
-                  : 'bg-emerald-500 text-obsidian-950 shadow-lg shadow-emerald-500/25 hover:bg-emerald-400'
-              }`}
-            >
-              {portal.serviceRunning ? (
-                <>
-                  <Power className="h-4 w-4" />
-                  <span>Couper le serveur caméra</span>
-                </>
-              ) : (
-                <>
-                  <Play className="h-4 w-4" />
-                  <span>Allumer le serveur caméra</span>
-                </>
-              )}
-            </button>
+              {/* Contacts Share Control */}
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
+                <div className="flex items-start gap-3">
+                  <BookUser className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
+                  <div>
+                    <div className="text-xs font-bold text-white">Répertoire Contacts</div>
+                    <div className="text-[11px] text-slate-400">
+                      {shares.allowContacts && portal.permissions.contacts
+                        ? 'Partage autorisé (lecture seule chiffrée E2EE).'
+                        : 'Privé — aucun contact accessible à distance.'}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleToggleContactsShare()}
+                  className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                    shares.allowContacts && (portal.permissions.contacts || !isNativeAndroid)
+                      ? 'border-amber-500/40 bg-amber-500/20 text-amber-200'
+                      : 'border-slate-700 bg-obsidian-900 text-slate-300 hover:border-amber-400'
+                  }`}
+                >
+                  {shares.allowContacts && (portal.permissions.contacts || !isNativeAndroid)
+                    ? 'Activé'
+                    : 'Activer'}
+                </button>
+              </div>
+
+              {/* GPS Location Control */}
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
+                <div className="flex items-start gap-3">
+                  <MapPin className="mt-0.5 h-5 w-5 shrink-0 text-rose-400" />
+                  <div>
+                    <div className="text-xs font-bold text-white">Localisation GPS à la demande</div>
+                    <div className="text-[11px] text-slate-400">
+                      {shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
+                        ? 'Position GPS consultable à la demande sur carte.'
+                        : 'Désactivé — position masquée.'}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleToggleLocationShare()}
+                  className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                    shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
+                      ? 'border-rose-500/40 bg-rose-500/20 text-rose-200'
+                      : 'border-slate-700 bg-obsidian-900 text-slate-300 hover:border-rose-400'
+                  }`}
+                >
+                  {shares.allowLocation && (portal.permissions.location || !isNativeAndroid)
+                    ? 'Activé'
+                    : 'Activer'}
+                </button>
+              </div>
+
+              {/* System Device Info Control */}
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
+                <div className="flex items-start gap-3">
+                  <Cpu className="mt-0.5 h-5 w-5 shrink-0 text-cyan-400" />
+                  <div>
+                    <div className="text-xs font-bold text-white">Infos Appareil & Stockage</div>
+                    <div className="text-[11px] text-slate-400">
+                      Modèle, version Android, batterie, réseau et espace libre.
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleToggleDeviceInfoShare()}
+                  className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                    shares.allowDeviceInfo
+                      ? 'border-cyan-500/40 bg-cyan-500/20 text-cyan-200'
+                      : 'border-slate-700 bg-obsidian-900 text-slate-300'
+                  }`}
+                >
+                  {shares.allowDeviceInfo ? 'Activé' : 'Désactivé'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -812,8 +1134,8 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               </h2>
             </div>
             <p className="mt-1 text-xs text-slate-400">
-              Choisissez un code fixe personnalisé (6 caractères) valide uniquement pendant la
-              période définie. À la fin du compte à rebours, le flux se coupe automatiquement.
+              Choisissez un code fixe à 6 caractères, une durée précise et exactement quels accès
+              accorder à cet invité.
             </p>
 
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -825,7 +1147,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                   type="text"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
-                  placeholder="Ex: Baby-sitter, Visite, Soirée"
+                  placeholder="Ex: Dépannage, Baby-sitter"
                   className="mt-1 w-full rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-2.5 text-xs text-white placeholder-slate-600 focus:border-emerald-400 focus:outline-none"
                 />
               </div>
@@ -840,14 +1162,13 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                     maxLength={6}
                     value={formCode}
                     onChange={(e) => setFormCode(normalizePairingCode(e.target.value))}
-                    placeholder="EX: SOIR26"
+                    placeholder="EX: AIDE26"
                     className="w-full rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-2.5 font-mono text-sm font-extrabold uppercase tracking-widest text-emerald-300 placeholder-slate-600 focus:border-emerald-400 focus:outline-none"
                   />
                   <button
                     type="button"
                     onClick={() => setFormCode(generateSecurePairingCode())}
                     className="shrink-0 rounded-xl border border-slate-700 bg-obsidian-950 px-3 text-slate-300 hover:border-emerald-500/50 hover:text-emerald-300"
-                    title="Générer un code aléatoire"
                   >
                     <RefreshCw className="h-4 w-4" />
                   </button>
@@ -855,7 +1176,6 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               </div>
             </div>
 
-            {/* Duration Presets */}
             <div className="mt-4">
               <div className="flex items-center justify-between">
                 <label className="text-[11px] font-semibold text-slate-400">
@@ -866,7 +1186,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                   onClick={() => setUseCustomExpiry((v) => !v)}
                   className="text-[11px] font-semibold text-cyan-400 hover:underline"
                 >
-                  {useCustomExpiry ? 'Utiliser une durée rapide' : 'Choisir une date/heure précise'}
+                  {useCustomExpiry ? 'Durée rapide' : 'Date/heure précise'}
                 </button>
               </div>
 
@@ -897,29 +1217,11 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               )}
             </div>
 
-            {/* Permissions */}
-            <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-300">
-              <label className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={allowAudio}
-                  onChange={(e) => setAllowAudio(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
-                />
-                <Mic className="h-3.5 w-3.5 text-emerald-400" />
-                <span>Autoriser le micro</span>
-              </label>
-
-              <label className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={allowSwitchCamera}
-                  onChange={(e) => setAllowSwitchCamera(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
-                />
-                <Camera className="h-3.5 w-3.5 text-cyan-400" />
-                <span>Autoriser caméra arrière</span>
-              </label>
+            <div className="mt-4">
+              <div className="text-[11px] font-semibold text-slate-400">
+                Permissions accordées à ce pass :
+              </div>
+              {renderPermissionCheckboxes()}
             </div>
 
             {formError && (
@@ -938,12 +1240,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             </button>
           </form>
 
-          {/* Active Timed Passes List */}
           <div className="space-y-2.5">
             {timedPasses.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-800 bg-obsidian-900/50 p-6 text-center text-xs text-slate-500">
-                Aucun pass temporaire actif. Créez-en un ci-dessus pour partager votre caméra
-                pendant une période limitée.
+                Aucun pass temporaire actif.
               </div>
             ) : (
               timedPasses.map(renderProfileCard)
@@ -966,9 +1266,8 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               </h2>
             </div>
             <p className="mt-1 text-xs text-slate-400">
-              Un ami dispose de son propre code fixe personnel et peut accéder à la caméra à tout
-              moment dès que votre serveur SentinelCam est allumé. Vous pouvez le suspendre en 1
-              clic.
+              Choisissez un code fixe pour un proche et cochez les éléments auxquels il peut
+              accéder lorsque le serveur est allumé.
             </p>
 
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1002,7 +1301,6 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                     type="button"
                     onClick={() => setFormCode(generateSecurePairingCode())}
                     className="shrink-0 rounded-xl border border-slate-700 bg-obsidian-950 px-3 text-slate-300 hover:border-cyan-400 hover:text-cyan-300"
-                    title="Générer un code aléatoire"
                   >
                     <RefreshCw className="h-4 w-4" />
                   </button>
@@ -1010,40 +1308,25 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               </div>
             </div>
 
-            <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-300">
-              <label className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={allowAudio}
-                  onChange={(e) => setAllowAudio(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
-                />
-                <span>Autoriser le micro</span>
-              </label>
-
-              <label className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={allowSwitchCamera}
-                  onChange={(e) => setAllowSwitchCamera(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
-                />
-                <span>Autoriser caméra arrière</span>
-              </label>
-
-              <label className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={friendHasExpiry}
-                  onChange={(e) => setFriendHasExpiry(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
-                />
-                <span>Limiter dans le temps (optionnel)</span>
-              </label>
+            <div className="mt-4">
+              <div className="text-[11px] font-semibold text-slate-400">
+                Accès autorisés pour cet ami :
+              </div>
+              {renderPermissionCheckboxes()}
             </div>
 
+            <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={friendHasExpiry}
+                onChange={(e) => setFriendHasExpiry(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
+              />
+              <span>Ajouter une date d’expiration (optionnel)</span>
+            </label>
+
             {friendHasExpiry && (
-              <div className="mt-3">
+              <div className="mt-2.5">
                 <input
                   type="datetime-local"
                   value={customExpiryLocal}
@@ -1072,12 +1355,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             </button>
           </form>
 
-          {/* Friends List */}
           <div className="space-y-2.5">
             {friendProfiles.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-800 bg-obsidian-900/50 p-6 text-center text-xs text-slate-500">
-                Aucun profil ami ajouté. Ajoutez un proche ci-dessus pour qu’il puisse se connecter
-                avec son propre code dès que votre serveur est allumé.
+                Aucun profil ami ajouté.
               </div>
             ) : (
               friendProfiles.map(renderProfileCard)

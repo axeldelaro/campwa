@@ -2,9 +2,19 @@ export type PortalOperationalState = 'offline' | 'standby' | 'connecting' | 'str
 
 export type CameraFacingMode = 'front' | 'back';
 
+export type MediaSourceMode = 'camera' | 'screen';
+
 export type StreamQualityPreset = 'sd' | 'hd';
 
 export type AccessProfileRole = 'owner' | 'friend' | 'guest';
+
+export interface GlobalShareSettings {
+  allowScreenShare: boolean;
+  allowContacts: boolean;
+  allowLocation: boolean;
+  allowDeviceInfo: boolean;
+  screenShareReady: boolean;
+}
 
 export interface AccessProfile {
   id: string;
@@ -16,6 +26,10 @@ export interface AccessProfile {
   expiresAt: number | null;
   allowAudio: boolean;
   allowSwitchCamera: boolean;
+  allowScreenShare: boolean;
+  allowContacts: boolean;
+  allowLocation: boolean;
+  allowDeviceInfo: boolean;
   lastAccessAt: number | null;
 }
 
@@ -28,6 +42,40 @@ export interface AccessProfileInput {
   expiresAt: number | null;
   allowAudio: boolean;
   allowSwitchCamera: boolean;
+  allowScreenShare: boolean;
+  allowContacts: boolean;
+  allowLocation: boolean;
+  allowDeviceInfo: boolean;
+}
+
+export interface SharedContactItem {
+  id: string;
+  name: string;
+  phones: string[];
+  emails: string[];
+}
+
+export interface SharedLocationData {
+  latitude: number;
+  longitude: number;
+  accuracyMeters: number;
+  provider: string;
+  timestamp: number;
+}
+
+export interface SharedDeviceInfoData {
+  deviceName: string;
+  manufacturer: string;
+  model: string;
+  androidVersion: string;
+  sdkInt: number;
+  batteryLevel: number;
+  isCharging: boolean;
+  networkType: string;
+  storageFreeMb: number;
+  storageTotalMb: number;
+  uptimeSec: number;
+  timestamp: number;
 }
 
 export interface EncryptedEnvelope {
@@ -68,6 +116,10 @@ export interface ActiveAccessGrant {
   expiresAt: number | null;
   allowAudio: boolean;
   allowSwitchCamera: boolean;
+  allowScreenShare: boolean;
+  allowContacts: boolean;
+  allowLocation: boolean;
+  allowDeviceInfo: boolean;
 }
 
 export interface DeviceTelemetry {
@@ -83,6 +135,7 @@ export interface DeviceTelemetry {
   batteryTempC?: number;
   networkType: string;
   cameraFacing: CameraFacingMode;
+  mediaMode?: MediaSourceMode;
   micEnabled: boolean;
   uptimeSec: number;
   accessRole?: AccessProfileRole;
@@ -90,6 +143,10 @@ export interface DeviceTelemetry {
   accessExpiresAt?: number | null;
   allowAudio?: boolean;
   allowSwitchCamera?: boolean;
+  allowScreenShare?: boolean;
+  allowContacts?: boolean;
+  allowLocation?: boolean;
+  allowDeviceInfo?: boolean;
   updatedAt: number;
 }
 
@@ -121,7 +178,7 @@ export interface TurnServerSetting {
   credential?: string;
 }
 
-/* ==================== V4 1-RTT INSTANT E2EE PROTOCOL PAYLOADS ==================== */
+/* ==================== V5 1-RTT INSTANT E2EE PROTOCOL PAYLOADS ==================== */
 
 export interface HelloWakeMsg {
   type: 'HELLO_WAKE';
@@ -131,6 +188,7 @@ export interface HelloWakeMsg {
   proofHex: string;
   autoStartStream: boolean;
   sessionId: string;
+  mediaMode?: MediaSourceMode;
   cameraFacing: CameraFacingMode;
   enableAudio: boolean;
   quality: StreamQualityPreset;
@@ -151,6 +209,7 @@ export interface HelloAckMsg {
   isCharging: boolean;
   networkType: string;
   cameraFacing: CameraFacingMode;
+  mediaMode?: MediaSourceMode;
   micEnabled: boolean;
   uptimeSec: number;
   accessRole?: AccessProfileRole;
@@ -158,6 +217,10 @@ export interface HelloAckMsg {
   accessExpiresAt?: number | null;
   allowAudio?: boolean;
   allowSwitchCamera?: boolean;
+  allowScreenShare?: boolean;
+  allowContacts?: boolean;
+  allowLocation?: boolean;
+  allowDeviceInfo?: boolean;
   ts: number;
 }
 
@@ -182,6 +245,7 @@ export interface PortalStatusMsg {
   batteryTempC?: number;
   networkType: string;
   cameraFacing: CameraFacingMode;
+  mediaMode?: MediaSourceMode;
   micEnabled: boolean;
   uptimeSec: number;
   accessRole?: AccessProfileRole;
@@ -189,6 +253,10 @@ export interface PortalStatusMsg {
   accessExpiresAt?: number | null;
   allowAudio?: boolean;
   allowSwitchCamera?: boolean;
+  allowScreenShare?: boolean;
+  allowContacts?: boolean;
+  allowLocation?: boolean;
+  allowDeviceInfo?: boolean;
   ts: number;
 }
 
@@ -204,6 +272,7 @@ export interface AuthErrMsg {
 export interface CmdStartStreamMsg {
   type: 'CMD_START_STREAM';
   sessionId: string;
+  mediaMode?: MediaSourceMode;
   cameraFacing: CameraFacingMode;
   enableAudio: boolean;
   quality: StreamQualityPreset;
@@ -227,6 +296,50 @@ export interface CmdToggleMicMsg {
   type: 'CMD_TOGGLE_MIC';
   sessionId: string;
   enableAudio: boolean;
+  ts: number;
+}
+
+export interface CmdGetContactsMsg {
+  type: 'CMD_GET_CONTACTS';
+  requestId: string;
+  query?: string;
+  ts: number;
+}
+
+export interface DataContactsMsg {
+  type: 'DATA_CONTACTS';
+  requestId: string;
+  contacts: SharedContactItem[];
+  totalCount: number;
+  error?: string;
+  ts: number;
+}
+
+export interface CmdGetLocationMsg {
+  type: 'CMD_GET_LOCATION';
+  requestId: string;
+  ts: number;
+}
+
+export interface DataLocationMsg {
+  type: 'DATA_LOCATION';
+  requestId: string;
+  location: SharedLocationData | null;
+  error?: string;
+  ts: number;
+}
+
+export interface CmdGetDeviceInfoMsg {
+  type: 'CMD_GET_DEVICE_INFO';
+  requestId: string;
+  ts: number;
+}
+
+export interface DataDeviceInfoMsg {
+  type: 'DATA_DEVICE_INFO';
+  requestId: string;
+  info: SharedDeviceInfoData | null;
+  error?: string;
   ts: number;
 }
 
@@ -259,6 +372,7 @@ export interface StreamStateMsg {
   sessionId: string;
   state: 'starting' | 'streaming' | 'standby' | 'error' | 'expired' | 'revoked';
   cameraFacing: CameraFacingMode;
+  mediaMode?: MediaSourceMode;
   micEnabled: boolean;
   error?: string;
   ts: number;
@@ -274,6 +388,12 @@ export type SignalMessage =
   | CmdStopStreamMsg
   | CmdSwitchCameraMsg
   | CmdToggleMicMsg
+  | CmdGetContactsMsg
+  | DataContactsMsg
+  | CmdGetLocationMsg
+  | DataLocationMsg
+  | CmdGetDeviceInfoMsg
+  | DataDeviceInfoMsg
   | SdpOfferMsg
   | SdpAnswerMsg
   | IceCandidateMsg
@@ -286,6 +406,9 @@ export interface NativePermissionStatus {
   microphone: boolean;
   notifications: boolean;
   batteryOptimizationIgnored: boolean;
+  contacts: boolean;
+  location: boolean;
+  screenShareReady: boolean;
 }
 
 export interface NativeAuditEntry {
@@ -310,11 +433,13 @@ export interface NativePortalState {
   batteryLevel: number;
   isCharging: boolean;
   cameraFacing: CameraFacingMode;
+  mediaMode: MediaSourceMode;
   micEnabled: boolean;
   autoStartOnBoot: boolean;
   failedAttempts: number;
   lockoutRemainingMs: number;
   permissions: NativePermissionStatus;
+  globalShares: GlobalShareSettings;
   logs: NativeAuditEntry[];
   accessProfiles: AccessProfile[];
   activeViewerName: string | null;

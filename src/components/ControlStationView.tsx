@@ -5,18 +5,28 @@ import {
   Battery,
   BatteryCharging,
   BellRing,
+  BookUser,
   Camera,
   CameraOff,
   Check,
   Clock,
+  Copy,
+  Cpu,
   Download,
+  ExternalLink,
   FlipHorizontal,
+  HardDrive,
   Lock,
+  Mail,
+  MapPin,
   Maximize2,
   Mic,
   MicOff,
+  Monitor,
+  Phone,
   Power,
   RefreshCw,
+  Search,
   Share2,
   ShieldAlert,
   ShieldCheck,
@@ -38,8 +48,12 @@ import type {
   AuthErrMsg,
   CameraFacingMode,
   DeviceTelemetry,
+  MediaSourceMode,
   PairedDeviceRecord,
   PortalOperationalState,
+  SharedContactItem,
+  SharedDeviceInfoData,
+  SharedLocationData,
   SnapshotItem,
   StreamQualityPreset,
   StreamRealtimeStats,
@@ -50,6 +64,8 @@ interface ControlStationViewProps {
   onBrokerHealthChange: (connected: boolean, brokers: BrokerHealth[]) => void;
   initialCode?: string | null;
 }
+
+type ViewerTab = 'media' | 'contacts' | 'device';
 
 function formatCountdown(expiresAt: number | null, nowMs: number): string | null {
   if (expiresAt === null) return null;
@@ -79,10 +95,27 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [telemetry, setTelemetry] = useState<DeviceTelemetry | null>(null);
   const [stats, setStats] = useState<StreamRealtimeStats | null>(null);
   const [authError, setAuthError] = useState<AuthErrMsg | null>(null);
+  const [streamNotice, setStreamNotice] = useState<string | null>(null);
   const [autoWakeOnConnect, setAutoWakeOnConnect] = useState(true);
   const [pushSentFeedback, setPushSentFeedback] = useState<string | null>(null);
   const [accessGrant, setAccessGrant] = useState<ActiveAccessGrant | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [viewerTab, setViewerTab] = useState<ViewerTab>('media');
+
+  // Shared remote data (Contacts, GPS, Device Info)
+  const [contacts, setContacts] = useState<SharedContactItem[]>([]);
+  const [contactsTotal, setContactsTotal] = useState(0);
+  const [contactsQuery, setContactsQuery] = useState('');
+  const [contactsLoading, setContactsLoading] = useState(false);
+  const [contactsError, setContactsError] = useState<string | null>(null);
+
+  const [locationData, setLocationData] = useState<SharedLocationData | null>(null);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  const [deviceInfo, setDeviceInfo] = useState<SharedDeviceInfoData | null>(null);
+  const [deviceInfoLoading, setDeviceInfoLoading] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const [sasInfo, setSasInfo] = useState<{
     deviceName: string;
@@ -91,6 +124,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   } | null>(null);
   const [sasModalOpen, setSasModalOpen] = useState(false);
 
+  const [mediaMode, setMediaMode] = useState<MediaSourceMode>('camera');
   const [cameraFacing, setCameraFacing] = useState<CameraFacingMode>('front');
   const [remoteMicEnabled, setRemoteMicEnabled] = useState(false);
   const [localAudioMuted, setLocalAudioMuted] = useState(false);
@@ -115,6 +149,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       onTelemetry: (t) => {
         setTelemetry(t);
         setCameraFacing(t.cameraFacing);
+        if (t.mediaMode) {
+          setMediaMode(t.mediaMode);
+          if (t.mediaMode === 'screen') setMirrorVideo(false);
+        }
         setRemoteMicEnabled(t.micEnabled);
         if (t.accessRole) {
           setAccessGrant((prev) => ({
@@ -123,11 +161,16 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             expiresAt: t.accessExpiresAt !== undefined ? t.accessExpiresAt : (prev?.expiresAt ?? null),
             allowAudio: t.allowAudio ?? prev?.allowAudio ?? true,
             allowSwitchCamera: t.allowSwitchCamera ?? prev?.allowSwitchCamera ?? true,
+            allowScreenShare: t.allowScreenShare ?? prev?.allowScreenShare ?? false,
+            allowContacts: t.allowContacts ?? prev?.allowContacts ?? false,
+            allowLocation: t.allowLocation ?? prev?.allowLocation ?? false,
+            allowDeviceInfo: t.allowDeviceInfo ?? prev?.allowDeviceInfo ?? true,
           }));
         }
       },
       onAuthSuccess: (info) => {
         setAuthError(null);
+        setStreamNotice(null);
         setAccessGrant(info.accessGrant);
         setSasInfo({
           deviceName: info.deviceName,
@@ -149,11 +192,41 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           if (stream) {
+            setStreamNotice(null);
             void videoRef.current.play().catch(() => {});
           }
         }
       },
       onStatsUpdate: (s) => setStats(s),
+      onContactsData: (data) => {
+        setContactsLoading(false);
+        if (data.error) {
+          setContactsError(data.error);
+          setContacts([]);
+        } else {
+          setContactsError(null);
+          setContacts(data.contacts || []);
+          setContactsTotal(data.totalCount ?? data.contacts?.length ?? 0);
+        }
+      },
+      onLocationData: (data) => {
+        setLocationLoading(false);
+        if (data.error || !data.location) {
+          setLocationError(data.error || 'Position indisponible.');
+        } else {
+          setLocationError(null);
+          setLocationData(data.location);
+        }
+      },
+      onDeviceInfoData: (data) => {
+        setDeviceInfoLoading(false);
+        if (data.info) {
+          setDeviceInfo(data.info);
+        }
+      },
+      onStreamError: (msg) => {
+        setStreamNotice(msg);
+      },
     });
 
     controllerRef.current = ctrl;
@@ -162,7 +235,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     };
   }, [onBrokerHealthChange]);
 
-  // Auto-fill and connect immediately if opened via shared Friend/Pass link (?code=XXXXXX)
   useEffect(() => {
     if (!initialCode || autoConnectedInitialRef.current) return;
     const clean = normalizePairingCode(initialCode);
@@ -180,7 +252,12 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     if (normalized.length !== 6) return;
 
     setAuthError(null);
+    setStreamNotice(null);
     setPushSentFeedback(null);
+    setViewerTab('media');
+    setContacts([]);
+    setLocationData(null);
+    setDeviceInfo(null);
     setCodeChars(normalized.split(''));
     try {
       await controllerRef.current?.connectToPortal(normalized, autoWakeOnConnect);
@@ -290,6 +367,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setStats(null);
     setSasInfo(null);
     setAccessGrant(null);
+    setStreamNotice(null);
   };
 
   const handleForgetDevice = (code: string, e: React.MouseEvent) => {
@@ -298,13 +376,17 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setSavedDevices(listPairedDevices());
   };
 
-  const handleWakeCamera = async () => {
+  const handleWakeMedia = async (mode: MediaSourceMode) => {
+    setStreamNotice(null);
+    setMediaMode(mode);
+    setMirrorVideo(mode === 'camera' && cameraFacing === 'front');
     const allowedAudio = accessGrant ? accessGrant.allowAudio : true;
     const allowedSwitch = accessGrant ? accessGrant.allowSwitchCamera : true;
     await controllerRef.current?.startCameraStream(
       allowedSwitch ? cameraFacing : 'front',
       allowedAudio ? remoteMicEnabled : false,
-      quality
+      quality,
+      mode
     );
   };
 
@@ -317,7 +399,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     const nextFacing: CameraFacingMode = cameraFacing === 'front' ? 'back' : 'front';
     setCameraFacing(nextFacing);
     setMirrorVideo(nextFacing === 'front');
-    if (portalState === 'streaming') {
+    if (portalState === 'streaming' && mediaMode === 'camera') {
       await controllerRef.current?.switchCamera(nextFacing);
     }
   };
@@ -328,6 +410,50 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setRemoteMicEnabled(next);
     if (portalState === 'streaming') {
       await controllerRef.current?.toggleRemoteMicrophone(next);
+    }
+  };
+
+  const handleFetchContacts = async (queryStr = contactsQuery) => {
+    setContactsLoading(true);
+    setContactsError(null);
+    await controllerRef.current?.requestContacts(queryStr);
+  };
+
+  const handleFetchLocation = async () => {
+    setLocationLoading(true);
+    setLocationError(null);
+    await controllerRef.current?.requestLocation();
+  };
+
+  const handleFetchDeviceInfo = async () => {
+    setDeviceInfoLoading(true);
+    await controllerRef.current?.requestDeviceInfo();
+  };
+
+  const handleOpenContactsTab = () => {
+    setViewerTab('contacts');
+    if (contacts.length === 0 && !contactsLoading) {
+      void handleFetchContacts('');
+    }
+  };
+
+  const handleOpenDeviceTab = () => {
+    setViewerTab('device');
+    if (!deviceInfo && accessGrant?.allowDeviceInfo) {
+      void handleFetchDeviceInfo();
+    }
+    if (!locationData && accessGrant?.allowLocation) {
+      void handleFetchLocation();
+    }
+  };
+
+  const handleCopySmall = async (value: string, id: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedKey(id);
+      window.setTimeout(() => setCopiedKey(null), 1500);
+    } catch {
+      // Ignore
     }
   };
 
@@ -356,6 +482,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const remainingLabel = accessGrant ? formatCountdown(accessGrant.expiresAt, nowMs) : null;
   const canUseAudio = accessGrant ? accessGrant.allowAudio : true;
   const canSwitchCam = accessGrant ? accessGrant.allowSwitchCamera : true;
+  const canViewScreen = accessGrant ? accessGrant.allowScreenShare : false;
+  const canViewContacts = accessGrant ? accessGrant.allowContacts : false;
+  const canViewLocation = accessGrant ? accessGrant.allowLocation : false;
+  const canViewDeviceInfo = accessGrant ? accessGrant.allowDeviceInfo : true;
 
   /* ==================== SCREEN 1: INSTANT 6-CHAR CODE ENTRY ==================== */
   if (!isSessionOpen) {
@@ -371,7 +501,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           </h1>
           <p className="mt-1.5 text-center text-xs text-slate-400">
             Tapez un <strong>code principal</strong>, un <strong>code fixe temporaire</strong> ou
-            votre <strong>code profil ami</strong> (6 caractères) pour accéder à la caméra.
+            votre <strong>code profil ami</strong> (6 caractères) pour accéder aux éléments autorisés
+            par le propriétaire.
           </p>
 
           <div className="mt-6 grid grid-cols-6 gap-2 sm:gap-2.5" onPaste={handlePaste}>
@@ -510,7 +641,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                       type="button"
                       onClick={(e) => handleForgetDevice(dev.pairingCode, e)}
                       className="rounded-lg p-1.5 text-slate-500 transition hover:bg-rose-500/15 hover:text-rose-400"
-                      title="Supprimer cet appareil"
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -524,9 +654,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     );
   }
 
-  /* ==================== SCREEN 2: CONNECTED LIVE CAMERA STATION ==================== */
+  /* ==================== SCREEN 2: CONNECTED LIVE CONTROL STATION ==================== */
   return (
     <div className="mx-auto max-w-5xl space-y-4 px-4 py-5 sm:px-6">
+      {/* Top Status & Permissions Header */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 bg-obsidian-900/90 px-4 py-3 shadow-lg">
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="flex items-center gap-2">
@@ -547,7 +678,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             </span>
           </div>
 
-          {/* Access Role & Countdown Badge */}
           {accessGrant && accessGrant.role !== 'owner' && (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/35 bg-cyan-500/10 px-2.5 py-1 text-xs font-bold text-cyan-300">
               {accessGrant.role === 'friend' ? (
@@ -604,207 +734,589 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       </div>
 
-      <div
-        ref={videoContainerRef}
-        className="relative aspect-video w-full overflow-hidden rounded-3xl border border-slate-800 bg-obsidian-950 shadow-2xl"
-      >
-        {isStreaming && (
-          <div className="absolute left-4 top-4 z-20 flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/40 bg-rose-950/85 px-3 py-1 font-mono text-xs font-bold text-rose-200 backdrop-blur">
-              <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping" />
-              EN DIRECT • {cameraFacing === 'front' ? 'SELFIE' : 'ARRIÈRE'}
-            </span>
-          </div>
-        )}
+      {/* Viewer Navigation Tabs: Caméra & Écran | Contacts | GPS & Appareil */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setViewerTab('media')}
+          className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-bold transition ${
+            viewerTab === 'media'
+              ? 'border-emerald-400 bg-emerald-500 text-obsidian-950'
+              : 'border-slate-800 bg-obsidian-900 text-slate-300 hover:text-white'
+          }`}
+        >
+          <Video className="h-4 w-4" />
+          <span>Caméra & Écran</span>
+        </button>
 
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted={localAudioMuted}
-          className={`h-full w-full object-contain transition-opacity duration-300 ${
-            isStreaming ? 'opacity-100' : 'opacity-0'
-          } ${mirrorVideo ? 'scale-x-[-1]' : ''}`}
-        />
+        <button
+          type="button"
+          disabled={!canViewContacts}
+          onClick={handleOpenContactsTab}
+          title={!canViewContacts ? 'Le propriétaire n’a pas activé le partage des contacts' : undefined}
+          className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+            viewerTab === 'contacts'
+              ? 'border-amber-400 bg-amber-400 text-obsidian-950'
+              : 'border-slate-800 bg-obsidian-900 text-slate-300 hover:text-white'
+          }`}
+        >
+          <BookUser className="h-4 w-4" />
+          <span>{canViewContacts ? 'Contacts partagés' : 'Contacts (Privé)'}</span>
+        </button>
 
-        {!isStreaming && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-radial-glow p-6 text-center">
-            {portalState === 'connecting' ? (
-              <>
-                <RefreshCw className="h-11 w-11 animate-spin text-emerald-400" />
-                <h3 className="mt-4 text-lg font-bold text-white">
-                  Démarrage instantané de la vidéo...
-                </h3>
-              </>
-            ) : portalState === 'locked' ? (
-              <>
-                <AlertTriangle className="h-10 w-10 text-amber-400" />
-                <h3 className="mt-3 text-base font-bold text-amber-300">
-                  Temporisation de sécurité active
-                </h3>
-              </>
-            ) : (
-              <>
-                <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-emerald-500/30 bg-emerald-500/10">
-                  <CameraOff className="h-8 w-8 text-emerald-400" />
-                </div>
-                <h3 className="mt-4 text-lg font-bold text-white">
-                  Mode Éco-Veille Actif (0% conso caméra)
-                </h3>
-                <p className="mt-1 max-w-md text-xs text-slate-400">
-                  Le capteur caméra est totalement éteint sur le téléphone tant que vous ne
-                  regardez pas.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void handleWakeCamera()}
-                  className="mt-5 inline-flex items-center gap-2.5 rounded-2xl bg-emerald-500 px-7 py-3.5 text-sm font-extrabold text-obsidian-950 shadow-xl shadow-emerald-500/25 transition hover:scale-[1.02] hover:bg-emerald-400"
-                >
-                  <Video className="h-5 w-5" />
-                  <span>Allumer la caméra</span>
-                </button>
-              </>
-            )}
-          </div>
-        )}
+        <button
+          type="button"
+          disabled={!canViewLocation && !canViewDeviceInfo}
+          onClick={handleOpenDeviceTab}
+          className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+            viewerTab === 'device'
+              ? 'border-cyan-400 bg-cyan-400 text-obsidian-950'
+              : 'border-slate-800 bg-obsidian-900 text-slate-300 hover:text-white'
+          }`}
+        >
+          <MapPin className="h-4 w-4" />
+          <span>{canViewLocation ? 'GPS & Infos Appareil' : 'Infos Appareil'}</span>
+        </button>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 bg-obsidian-900/90 p-4 shadow-xl">
-        <div className="flex flex-wrap items-center gap-2.5">
-          {!isStreaming ? (
-            <button
-              type="button"
-              onClick={() => void handleWakeCamera()}
-              className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-extrabold text-obsidian-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-400"
-            >
-              <Zap className="h-4 w-4" />
-              <span>Allumer la caméra</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void handleSleepCamera()}
-              className="inline-flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 px-5 py-2.5 text-sm font-bold text-amber-300 transition hover:bg-amber-500/25"
-            >
-              <Power className="h-4 w-4" />
-              <span>Éteindre la caméra (Éco-Veille)</span>
-            </button>
+      {/* ==================== VIEWER TAB 1: CAMERA & SCREEN SHARE ==================== */}
+      {viewerTab === 'media' && (
+        <>
+          {streamNotice && (
+            <div className="flex items-center gap-2.5 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+              <span>{streamNotice}</span>
+            </div>
           )}
 
-          <button
-            type="button"
-            disabled={!canSwitchCam}
-            onClick={() => void handleToggleFacing()}
-            title={!canSwitchCam ? 'Changement de caméra restreint par ce pass' : undefined}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3.5 py-2.5 text-xs font-semibold text-slate-200 transition hover:border-slate-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          <div
+            ref={videoContainerRef}
+            className="relative aspect-video w-full overflow-hidden rounded-3xl border border-slate-800 bg-obsidian-950 shadow-2xl"
           >
-            <RefreshCw className="h-3.5 w-3.5 text-cyan-400" />
-            <span>{cameraFacing === 'front' ? 'Caméra Selfie' : 'Caméra Arrière'}</span>
-          </button>
-
-          <button
-            type="button"
-            disabled={!canUseAudio}
-            onClick={() => void handleToggleRemoteMic()}
-            title={!canUseAudio ? 'Microphone non autorisé par ce pass' : undefined}
-            className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
-              remoteMicEnabled && canUseAudio
-                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-                : 'border-slate-700 bg-obsidian-950 text-slate-300 hover:text-white'
-            }`}
-          >
-            {remoteMicEnabled && canUseAudio ? (
-              <>
-                <Mic className="h-3.5 w-3.5 text-emerald-400" />
-                <span>Micro ON</span>
-              </>
-            ) : (
-              <>
-                <MicOff className="h-3.5 w-3.5 text-slate-400" />
-                <span>{canUseAudio ? 'Micro OFF' : 'Micro restreint'}</span>
-              </>
+            {isStreaming && (
+              <div className="absolute left-4 top-4 z-20 flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/40 bg-rose-950/85 px-3 py-1 font-mono text-xs font-bold text-rose-200 backdrop-blur">
+                  <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping" />
+                  {mediaMode === 'screen'
+                    ? 'ÉCRAN EN DIRECT'
+                    : `EN DIRECT • ${cameraFacing === 'front' ? 'SELFIE' : 'ARRIÈRE'}`}
+                </span>
+              </div>
             )}
-          </button>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            disabled={!isStreaming}
-            onClick={handleCaptureSnapshot}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/35 bg-cyan-500/10 px-3.5 py-2.5 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-40"
-          >
-            <Camera className="h-3.5 w-3.5" />
-            <span>Photo PNG</span>
-          </button>
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted={localAudioMuted}
+              className={`h-full w-full object-contain transition-opacity duration-300 ${
+                isStreaming ? 'opacity-100' : 'opacity-0'
+              } ${mirrorVideo && mediaMode === 'camera' ? 'scale-x-[-1]' : ''}`}
+            />
 
-          <button
-            type="button"
-            onClick={() => setLocalAudioMuted((m) => !m)}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-obsidian-950 text-slate-300 transition hover:text-white"
-          >
-            {localAudioMuted ? (
-              <VolumeX className="h-4 w-4 text-rose-400" />
-            ) : (
-              <Volume2 className="h-4 w-4 text-emerald-400" />
+            {!isStreaming && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-radial-glow p-6 text-center">
+                {portalState === 'connecting' ? (
+                  <>
+                    <RefreshCw className="h-11 w-11 animate-spin text-emerald-400" />
+                    <h3 className="mt-4 text-lg font-bold text-white">
+                      {mediaMode === 'screen'
+                        ? 'Ouverture du partage d’écran...'
+                        : 'Démarrage instantané de la vidéo...'}
+                    </h3>
+                  </>
+                ) : portalState === 'locked' ? (
+                  <>
+                    <AlertTriangle className="h-10 w-10 text-amber-400" />
+                    <h3 className="mt-3 text-base font-bold text-amber-300">
+                      Temporisation de sécurité active
+                    </h3>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-emerald-500/30 bg-emerald-500/10">
+                      <CameraOff className="h-8 w-8 text-emerald-400" />
+                    </div>
+                    <h3 className="mt-4 text-lg font-bold text-white">
+                      Mode Éco-Veille Actif (0% conso caméra)
+                    </h3>
+                    <p className="mt-1 max-w-md text-xs text-slate-400">
+                      Choisissez d’allumer la caméra ou de visionner l’écran si le propriétaire l’a
+                      autorisé.
+                    </p>
+                    <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void handleWakeMedia('camera')}
+                        className="inline-flex items-center gap-2 rounded-2xl bg-emerald-500 px-6 py-3.5 text-sm font-extrabold text-obsidian-950 shadow-xl shadow-emerald-500/25 transition hover:scale-[1.02] hover:bg-emerald-400"
+                      >
+                        <Video className="h-5 w-5" />
+                        <span>Allumer la caméra</span>
+                      </button>
+
+                      {canViewScreen && (
+                        <button
+                          type="button"
+                          onClick={() => void handleWakeMedia('screen')}
+                          className="inline-flex items-center gap-2 rounded-2xl border border-violet-400/50 bg-violet-500/20 px-6 py-3.5 text-sm font-extrabold text-violet-200 shadow-xl transition hover:scale-[1.02] hover:bg-violet-500/30"
+                        >
+                          <Monitor className="h-5 w-5" />
+                          <span>Voir l’écran</span>
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
             )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setMirrorVideo((m) => !m)}
-            className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border bg-obsidian-950 transition ${
-              mirrorVideo ? 'border-emerald-500/40 text-emerald-300' : 'border-slate-800 text-slate-400'
-            }`}
-          >
-            <FlipHorizontal className="h-4 w-4" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setQuality((q) => (q === 'hd' ? 'sd' : 'hd'))}
-            className="rounded-xl border border-slate-800 bg-obsidian-950 px-2.5 py-2 font-mono text-xs font-bold text-slate-300"
-          >
-            {quality.toUpperCase()}
-          </button>
-
-          <button
-            type="button"
-            disabled={!isStreaming}
-            onClick={handleFullscreen}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-obsidian-950 text-slate-300 transition hover:text-white disabled:opacity-40"
-          >
-            <Maximize2 className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-
-      {snapshots.length > 0 && (
-        <div className="rounded-2xl border border-slate-800/90 bg-obsidian-900/90 p-4">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">
-            <ShieldCheck className="h-4 w-4 text-emerald-400" />
-            <span>Photos capturées ({snapshots.length})</span>
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {snapshots.map((snap) => (
-              <div
-                key={snap.id}
-                className="overflow-hidden rounded-xl border border-slate-800 bg-obsidian-950"
+
+          {/* Media Action Deck */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 bg-obsidian-900/90 p-4 shadow-xl">
+            <div className="flex flex-wrap items-center gap-2.5">
+              {!isStreaming ? (
+                <button
+                  type="button"
+                  onClick={() => void handleWakeMedia('camera')}
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-extrabold text-obsidian-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-400"
+                >
+                  <Zap className="h-4 w-4" />
+                  <span>Allumer la caméra</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handleSleepCamera()}
+                  className="inline-flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 px-5 py-2.5 text-sm font-bold text-amber-300 transition hover:bg-amber-500/25"
+                >
+                  <Power className="h-4 w-4" />
+                  <span>Couper le flux (Éco-Veille)</span>
+                </button>
+              )}
+
+              {/* Switch between Camera & Screen Share */}
+              <button
+                type="button"
+                disabled={!canViewScreen}
+                onClick={() =>
+                  void handleWakeMedia(mediaMode === 'screen' && isStreaming ? 'camera' : 'screen')
+                }
+                title={
+                  !canViewScreen
+                    ? 'Partage d’écran non autorisé par le propriétaire sur son téléphone'
+                    : undefined
+                }
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                  mediaMode === 'screen' && isStreaming
+                    ? 'border-violet-400 bg-violet-500/25 text-violet-200'
+                    : 'border-violet-500/35 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
+                }`}
               >
-                <img src={snap.dataUrl} alt="Capture" className="aspect-video w-full object-cover" />
-                <div className="flex items-center justify-between px-2.5 py-1.5 text-[10px] text-slate-400">
-                  <span>{new Date(snap.timestamp).toLocaleTimeString('fr-FR')}</span>
-                  <a
-                    href={snap.dataUrl}
-                    download={`SentinelCam_${snap.timestamp}.png`}
-                    className="inline-flex items-center gap-1 font-semibold text-emerald-400 hover:underline"
+                <Monitor className="h-3.5 w-3.5" />
+                <span>
+                  {mediaMode === 'screen' && isStreaming
+                    ? 'Revenir Caméra'
+                    : canViewScreen
+                    ? 'Partage d’Écran'
+                    : 'Écran (Privé)'}
+                </span>
+              </button>
+
+              {mediaMode === 'camera' && (
+                <button
+                  type="button"
+                  disabled={!canSwitchCam}
+                  onClick={() => void handleToggleFacing()}
+                  title={!canSwitchCam ? 'Changement de caméra restreint' : undefined}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3.5 py-2.5 text-xs font-semibold text-slate-200 transition hover:border-slate-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <RefreshCw className="h-3.5 w-3.5 text-cyan-400" />
+                  <span>{cameraFacing === 'front' ? 'Caméra Selfie' : 'Caméra Arrière'}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={!canUseAudio}
+                onClick={() => void handleToggleRemoteMic()}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                  remoteMicEnabled && canUseAudio
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                    : 'border-slate-700 bg-obsidian-950 text-slate-300 hover:text-white'
+                }`}
+              >
+                {remoteMicEnabled && canUseAudio ? (
+                  <>
+                    <Mic className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Micro ON</span>
+                  </>
+                ) : (
+                  <>
+                    <MicOff className="h-3.5 w-3.5 text-slate-400" />
+                    <span>{canUseAudio ? 'Micro OFF' : 'Micro restreint'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={!isStreaming}
+                onClick={handleCaptureSnapshot}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/35 bg-cyan-500/10 px-3.5 py-2.5 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-40"
+              >
+                <Camera className="h-3.5 w-3.5" />
+                <span>Photo PNG</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setLocalAudioMuted((m) => !m)}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-obsidian-950 text-slate-300 transition hover:text-white"
+              >
+                {localAudioMuted ? (
+                  <VolumeX className="h-4 w-4 text-rose-400" />
+                ) : (
+                  <Volume2 className="h-4 w-4 text-emerald-400" />
+                )}
+              </button>
+
+              {mediaMode === 'camera' && (
+                <button
+                  type="button"
+                  onClick={() => setMirrorVideo((m) => !m)}
+                  className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border bg-obsidian-950 transition ${
+                    mirrorVideo ? 'border-emerald-500/40 text-emerald-300' : 'border-slate-800 text-slate-400'
+                  }`}
+                >
+                  <FlipHorizontal className="h-4 w-4" />
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setQuality((q) => (q === 'hd' ? 'sd' : 'hd'))}
+                className="rounded-xl border border-slate-800 bg-obsidian-950 px-2.5 py-2 font-mono text-xs font-bold text-slate-300"
+              >
+                {quality.toUpperCase()}
+              </button>
+
+              <button
+                type="button"
+                disabled={!isStreaming}
+                onClick={handleFullscreen}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-obsidian-950 text-slate-300 transition hover:text-white disabled:opacity-40"
+              >
+                <Maximize2 className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          {snapshots.length > 0 && (
+            <div className="rounded-2xl border border-slate-800/90 bg-obsidian-900/90 p-4">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">
+                <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                <span>Captures locales ({snapshots.length})</span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {snapshots.map((snap) => (
+                  <div
+                    key={snap.id}
+                    className="overflow-hidden rounded-xl border border-slate-800 bg-obsidian-950"
                   >
-                    <Download className="h-3 w-3" />
-                    PNG
+                    <img src={snap.dataUrl} alt="Capture" className="aspect-video w-full object-cover" />
+                    <div className="flex items-center justify-between px-2.5 py-1.5 text-[10px] text-slate-400">
+                      <span>{new Date(snap.timestamp).toLocaleTimeString('fr-FR')}</span>
+                      <a
+                        href={snap.dataUrl}
+                        download={`SentinelCam_${snap.timestamp}.png`}
+                        className="inline-flex items-center gap-1 font-semibold text-emerald-400 hover:underline"
+                      >
+                        <Download className="h-3 w-3" />
+                        PNG
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ==================== VIEWER TAB 2: SHARED CONTACTS ==================== */}
+      {viewerTab === 'contacts' && (
+        <div className="rounded-3xl border border-slate-800 bg-obsidian-900/90 p-5 shadow-2xl">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <BookUser className="h-5 w-5 text-amber-400" />
+              <div>
+                <h2 className="text-sm font-extrabold text-white">
+                  Répertoire Contacts Partagé (E2EE)
+                </h2>
+                <p className="text-xs text-slate-400">
+                  {contactsTotal > 0
+                    ? `${contacts.length} affiché(s) sur ${contactsTotal} contact(s)`
+                    : 'Recherchez un nom ou un numéro sur le téléphone autorisé.'}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              disabled={contactsLoading}
+              onClick={() => void handleFetchContacts(contactsQuery)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3.5 py-2 text-xs font-bold text-amber-200 hover:bg-amber-500/25"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${contactsLoading ? 'animate-spin' : ''}`} />
+              <span>Actualiser</span>
+            </button>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleFetchContacts(contactsQuery);
+            }}
+            className="mt-4 flex gap-2"
+          >
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+              <input
+                type="text"
+                value={contactsQuery}
+                onChange={(e) => setContactsQuery(e.target.value)}
+                placeholder="Rechercher un nom ou un numéro..."
+                className="w-full rounded-xl border border-slate-700 bg-obsidian-950 py-2.5 pl-9 pr-3 text-xs text-white placeholder-slate-500 focus:border-amber-400 focus:outline-none"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={contactsLoading}
+              className="rounded-xl bg-amber-400 px-4 py-2.5 text-xs font-extrabold text-obsidian-950 hover:bg-amber-300"
+            >
+              Chercher
+            </button>
+          </form>
+
+          {contactsError && (
+            <div className="mt-4 rounded-xl border border-rose-500/35 bg-rose-500/10 p-3 text-xs text-rose-200">
+              {contactsError}
+            </div>
+          )}
+
+          {contactsLoading ? (
+            <div className="flex items-center justify-center py-12 text-xs text-slate-400">
+              <RefreshCw className="mr-2 h-5 w-5 animate-spin text-amber-400" />
+              Récupération chiffrée du répertoire...
+            </div>
+          ) : contacts.length === 0 && !contactsError ? (
+            <div className="py-10 text-center text-xs text-slate-500">
+              Aucun contact trouvé pour cette recherche.
+            </div>
+          ) : (
+            <div className="mt-4 grid max-h-[55vh] grid-cols-1 gap-2.5 overflow-y-auto pr-1 sm:grid-cols-2">
+              {contacts.map((c) => (
+                <div
+                  key={c.id}
+                  className="rounded-2xl border border-slate-800 bg-obsidian-950/80 p-3.5"
+                >
+                  <div className="font-bold text-white">{c.name}</div>
+                  <div className="mt-2 space-y-1">
+                    {c.phones.map((ph, idx) => (
+                      <div
+                        key={`${c.id}-p-${idx}`}
+                        className="flex items-center justify-between gap-2 text-xs"
+                      >
+                        <a
+                          href={`tel:${ph}`}
+                          className="inline-flex items-center gap-1.5 font-mono text-emerald-300 hover:underline"
+                        >
+                          <Phone className="h-3 w-3" />
+                          <span>{ph}</span>
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => void handleCopySmall(ph, `${c.id}-p-${idx}`)}
+                          className="rounded p-1 text-slate-500 hover:text-white"
+                          title="Copier le numéro"
+                        >
+                          {copiedKey === `${c.id}-p-${idx}` ? (
+                            <Check className="h-3 w-3 text-emerald-400" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </button>
+                      </div>
+                    ))}
+                    {c.emails.map((em, idx) => (
+                      <div
+                        key={`${c.id}-e-${idx}`}
+                        className="flex items-center gap-1.5 truncate text-[11px] text-cyan-300"
+                      >
+                        <Mail className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{em}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ==================== VIEWER TAB 3: GPS LOCATION & DEVICE INFO ==================== */}
+      {viewerTab === 'device' && (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {/* GPS Location Card */}
+          <div className="rounded-3xl border border-slate-800 bg-obsidian-900/90 p-5 shadow-2xl">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <MapPin className="h-5 w-5 text-rose-400" />
+                <h2 className="text-sm font-extrabold text-white">Localisation GPS</h2>
+              </div>
+              {canViewLocation && (
+                <button
+                  type="button"
+                  disabled={locationLoading}
+                  onClick={() => void handleFetchLocation()}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/35 bg-rose-500/15 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-500/25"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${locationLoading ? 'animate-spin' : ''}`} />
+                  <span>Localiser</span>
+                </button>
+              )}
+            </div>
+
+            {!canViewLocation ? (
+              <p className="mt-4 rounded-xl border border-slate-800 bg-obsidian-950 p-4 text-xs text-slate-400">
+                Le propriétaire n’a pas autorisé le partage de la localisation GPS pour cet accès.
+              </p>
+            ) : locationError ? (
+              <p className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-xs text-rose-200">
+                {locationError}
+              </p>
+            ) : locationData ? (
+              <div className="mt-4 space-y-3">
+                <div className="overflow-hidden rounded-2xl border border-slate-800 bg-obsidian-950">
+                  <iframe
+                    title="Carte GPS SentinelCam"
+                    src={`https://www.openstreetmap.org/export/embed.html?bbox=${
+                      locationData.longitude - 0.008
+                    }%2C${locationData.latitude - 0.006}%2C${
+                      locationData.longitude + 0.008
+                    }%2C${locationData.latitude + 0.006}&layer=mapnik&marker=${
+                      locationData.latitude
+                    }%2C${locationData.longitude}`}
+                    className="h-52 w-full border-0"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-obsidian-950 p-3 text-xs">
+                  <div className="font-mono text-slate-200">
+                    {locationData.latitude.toFixed(5)}, {locationData.longitude.toFixed(5)}
+                    <div className="text-[10px] text-slate-500">
+                      Précision ±{locationData.accuracyMeters}m •{' '}
+                      {new Date(locationData.timestamp).toLocaleTimeString('fr-FR')}
+                    </div>
+                  </div>
+                  <a
+                    href={`https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-extrabold text-obsidian-950 hover:bg-emerald-400"
+                  >
+                    <span>Google Maps</span>
+                    <ExternalLink className="h-3 w-3" />
                   </a>
                 </div>
               </div>
-            ))}
+            ) : (
+              <div className="py-10 text-center text-xs text-slate-500">
+                Cliquez sur « Localiser » pour interroger le GPS du smartphone.
+              </div>
+            )}
+          </div>
+
+          {/* Device Info Card */}
+          <div className="rounded-3xl border border-slate-800 bg-obsidian-900/90 p-5 shadow-2xl">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Cpu className="h-5 w-5 text-cyan-400" />
+                <h2 className="text-sm font-extrabold text-white">État & Système</h2>
+              </div>
+              {canViewDeviceInfo && (
+                <button
+                  type="button"
+                  disabled={deviceInfoLoading}
+                  onClick={() => void handleFetchDeviceInfo()}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/35 bg-cyan-500/15 px-3 py-1.5 text-xs font-bold text-cyan-200 hover:bg-cyan-500/25"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${deviceInfoLoading ? 'animate-spin' : ''}`} />
+                  <span>Actualiser</span>
+                </button>
+              )}
+            </div>
+
+            {!canViewDeviceInfo ? (
+              <p className="mt-4 rounded-xl border border-slate-800 bg-obsidian-950 p-4 text-xs text-slate-400">
+                Accès aux informations système désactivé par le propriétaire.
+              </p>
+            ) : deviceInfo ? (
+              <div className="mt-4 space-y-2.5 text-xs">
+                <div className="flex justify-between rounded-xl border border-slate-800 bg-obsidian-950 px-3.5 py-2.5">
+                  <span className="text-slate-400">Appareil</span>
+                  <span className="font-bold text-white">{deviceInfo.deviceName}</span>
+                </div>
+                <div className="flex justify-between rounded-xl border border-slate-800 bg-obsidian-950 px-3.5 py-2.5">
+                  <span className="text-slate-400">Système</span>
+                  <span className="font-mono text-cyan-300">
+                    Android {deviceInfo.androidVersion} (API {deviceInfo.sdkInt})
+                  </span>
+                </div>
+                <div className="flex justify-between rounded-xl border border-slate-800 bg-obsidian-950 px-3.5 py-2.5">
+                  <span className="text-slate-400">Batterie & Réseau</span>
+                  <span className="font-mono text-emerald-300">
+                    {deviceInfo.batteryLevel}% {deviceInfo.isCharging ? '(En charge)' : ''} •{' '}
+                    {deviceInfo.networkType}
+                  </span>
+                </div>
+                {deviceInfo.storageTotalMb > 0 && (
+                  <div className="rounded-xl border border-slate-800 bg-obsidian-950 px-3.5 py-3">
+                    <div className="flex items-center justify-between">
+                      <span className="inline-flex items-center gap-1.5 text-slate-400">
+                        <HardDrive className="h-3.5 w-3.5 text-emerald-400" />
+                        Stockage libre
+                      </span>
+                      <span className="font-mono text-white">
+                        {(deviceInfo.storageFreeMb / 1024).toFixed(1)} Go /{' '}
+                        {(deviceInfo.storageTotalMb / 1024).toFixed(1)} Go
+                      </span>
+                    </div>
+                    <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-800">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-400"
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            Math.round(
+                              ((deviceInfo.storageTotalMb - deviceInfo.storageFreeMb) /
+                                deviceInfo.storageTotalMb) *
+                                100
+                            )
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="py-10 text-center text-xs text-slate-500">
+                Cliquez sur « Actualiser » pour lire l’état du smartphone.
+              </div>
+            )}
           </div>
         </div>
       )}

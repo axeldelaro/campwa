@@ -20,9 +20,13 @@ data class AccessProfileRecord(
     val code: String, // 6-char fixed custom code
     val enabled: Boolean,
     val createdAt: Long,
-    val expiresAt: Long?, // null = permanent while enabled & server ON
+    val expiresAt: Long?,
     val allowAudio: Boolean,
     val allowSwitchCamera: Boolean,
+    val allowScreenShare: Boolean,
+    val allowContacts: Boolean,
+    val allowLocation: Boolean,
+    val allowDeviceInfo: Boolean,
     val lastAccessAt: Long?
 )
 
@@ -64,6 +68,32 @@ class PortalPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_AUTO_START_BOOT, true)
         set(value) {
             prefs.edit().putBoolean(KEY_AUTO_START_BOOT, value).commit()
+        }
+
+    /* ==================== USER-CONTROLLED GLOBAL SHARE TOGGLES ==================== */
+
+    var globalAllowScreenShare: Boolean
+        get() = prefs.getBoolean(KEY_GLOBAL_SCREEN, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GLOBAL_SCREEN, value).commit()
+        }
+
+    var globalAllowContacts: Boolean
+        get() = prefs.getBoolean(KEY_GLOBAL_CONTACTS, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GLOBAL_CONTACTS, value).commit()
+        }
+
+    var globalAllowLocation: Boolean
+        get() = prefs.getBoolean(KEY_GLOBAL_LOCATION, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GLOBAL_LOCATION, value).commit()
+        }
+
+    var globalAllowDeviceInfo: Boolean
+        get() = prefs.getBoolean(KEY_GLOBAL_DEVICE_INFO, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GLOBAL_DEVICE_INFO, value).commit()
         }
 
     val pairingCode: String
@@ -185,6 +215,10 @@ class PortalPreferences(context: Context) {
                             expiresAt = expVal,
                             allowAudio = o.optBoolean("allowAudio", true),
                             allowSwitchCamera = o.optBoolean("allowSwitchCamera", true),
+                            allowScreenShare = o.optBoolean("allowScreenShare", false),
+                            allowContacts = o.optBoolean("allowContacts", false),
+                            allowLocation = o.optBoolean("allowLocation", false),
+                            allowDeviceInfo = o.optBoolean("allowDeviceInfo", true),
                             lastAccessAt = lastVal
                         )
                     )
@@ -208,7 +242,11 @@ class PortalPreferences(context: Context) {
         enabled: Boolean,
         expiresAt: Long?,
         allowAudio: Boolean,
-        allowSwitchCamera: Boolean
+        allowSwitchCamera: Boolean,
+        allowScreenShare: Boolean,
+        allowContacts: Boolean,
+        allowLocation: Boolean,
+        allowDeviceInfo: Boolean
     ): AccessProfileRecord {
         synchronized(LOCK) {
             val cleanCode = CryptoProtocol.normalizePairingCode(rawCode)
@@ -237,6 +275,10 @@ class PortalPreferences(context: Context) {
                 expiresAt = expiresAt,
                 allowAudio = allowAudio,
                 allowSwitchCamera = allowSwitchCamera,
+                allowScreenShare = allowScreenShare,
+                allowContacts = allowContacts,
+                allowLocation = allowLocation,
+                allowDeviceInfo = allowDeviceInfo,
                 lastAccessAt = existing?.lastAccessAt
             )
 
@@ -293,6 +335,10 @@ class PortalPreferences(context: Context) {
                     put("expiresAt", p.expiresAt ?: JSONObject.NULL)
                     put("allowAudio", p.allowAudio)
                     put("allowSwitchCamera", p.allowSwitchCamera)
+                    put("allowScreenShare", p.allowScreenShare)
+                    put("allowContacts", p.allowContacts)
+                    put("allowLocation", p.allowLocation)
+                    put("allowDeviceInfo", p.allowDeviceInfo)
                     put("lastAccessAt", p.lastAccessAt ?: JSONObject.NULL)
                 }
             )
@@ -351,6 +397,10 @@ class PortalPreferences(context: Context) {
         private const val KEY_ONBOARDING_COMPLETED = "onboarding_completed"
         private const val KEY_MANUALLY_STOPPED = "manually_stopped"
         private const val KEY_AUTO_START_BOOT = "auto_start_boot"
+        private const val KEY_GLOBAL_SCREEN = "global_allow_screen_share"
+        private const val KEY_GLOBAL_CONTACTS = "global_allow_contacts"
+        private const val KEY_GLOBAL_LOCATION = "global_allow_location"
+        private const val KEY_GLOBAL_DEVICE_INFO = "global_allow_device_info"
         private const val KEY_PAIRING_CODE = "pairing_code"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_DEVICE_SALT = "device_salt"

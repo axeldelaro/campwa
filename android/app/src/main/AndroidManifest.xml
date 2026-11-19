@@ -6,8 +6,9 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
-    <!-- Mandatory SentinelCam Permissions -->
+    <!-- Core Permissions -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -16,10 +17,16 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
+    <!-- Optional User-Controlled Sharing Permissions (Only requested when user opts in) -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
     <!-- Continuous Background Execution & Android 11-15 ForegroundService Types -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -48,7 +55,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Deep-Link Invitation Wake (opens & wakes app in 1 tap even if closed) -->
+            <!-- Deep-Link Invitation Wake -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -57,16 +64,16 @@
             </intent-filter>
         </activity>
 
-        <!-- Eco-Standby Continuous Background Portal & On-Demand Camera ForegroundService -->
+        <!-- Eco-Standby Continuous Background Portal, Camera & Opt-In Screen Share ForegroundService -->
         <service
             android:name=".service.CameraForegroundService"
             android:enabled="true"
             android:exported="false"
             android:stopWithTask="false"
-            android:foregroundServiceType="camera|microphone|specialUse">
+            android:foregroundServiceType="camera|microphone|mediaProjection|specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Eco-standby encrypted WebRTC camera portal with instant stop action" />
+                android:value="User-controlled encrypted WebRTC portal with camera, screen share, and instant stop action" />
         </service>
 
         <!-- Self-Healing & Push-Invitation Watchdog JobService -->

@@ -9,6 +9,16 @@ export interface SentinelNativePluginContract {
   getPortalState(): Promise<NativePortalState>;
   requestAllPermissions(): Promise<NativePermissionStatus>;
   requestBatteryExemption(): Promise<{ batteryOptimizationIgnored: boolean }>;
+  requestContactsPermission(): Promise<NativePortalState>;
+  requestLocationPermission(): Promise<NativePortalState>;
+  requestScreenSharePermission(): Promise<NativePortalState>;
+  revokeScreenSharePermission(): Promise<NativePortalState>;
+  setGlobalShareSettings(options: {
+    allowScreenShare?: boolean;
+    allowContacts?: boolean;
+    allowLocation?: boolean;
+    allowDeviceInfo?: boolean;
+  }): Promise<NativePortalState>;
   completeOnboardingAndStart(options: { autoStartOnBoot: boolean }): Promise<NativePortalState>;
   startPortalService(): Promise<NativePortalState>;
   stopPortalService(): Promise<NativePortalState>;

@@ -14,10 +14,14 @@ import type {
   ActiveAccessGrant,
   AuthErrMsg,
   CameraFacingMode,
+  DataContactsMsg,
+  DataDeviceInfoMsg,
+  DataLocationMsg,
   DerivedBootstrapKeys,
   DeviceTelemetry,
   HelloAckMsg,
   IceCandidateMsg,
+  MediaSourceMode,
   PortalOperationalState,
   PortalStatusMsg,
   SdpOfferMsg,
@@ -49,6 +53,10 @@ export interface ControllerCallbacks {
   onAuthError: (err: AuthErrMsg) => void;
   onRemoteStream: (stream: MediaStream | null) => void;
   onStatsUpdate: (stats: StreamRealtimeStats | null) => void;
+  onContactsData?: (data: DataContactsMsg) => void;
+  onLocationData?: (data: DataLocationMsg) => void;
+  onDeviceInfoData?: (data: DataDeviceInfoMsg) => void;
+  onStreamError?: (message: string) => void;
 }
 
 export class SentinelWebRtcController {
@@ -64,6 +72,7 @@ export class SentinelWebRtcController {
   private authenticated = false;
 
   private desiredStreaming = false;
+  private desiredMediaMode: MediaSourceMode = 'camera';
   private desiredFacing: CameraFacingMode = 'front';
   private desiredAudio = false;
   private desiredQuality: StreamQualityPreset = 'hd';
@@ -94,6 +103,7 @@ export class SentinelWebRtcController {
     this.tokenId = getOrCreateControllerTokenId();
     this.authenticated = false;
     this.desiredStreaming = autoStartCamera;
+    this.desiredMediaMode = 'camera';
 
     this.callbacks.onStateChange('connecting');
 
@@ -167,6 +177,7 @@ export class SentinelWebRtcController {
         proofHex,
         autoStartStream: this.desiredStreaming,
         sessionId: this.activeSessionId || randomHex(10),
+        mediaMode: this.desiredMediaMode,
         cameraFacing: this.desiredFacing,
         enableAudio: this.desiredAudio,
         quality: this.desiredQuality,
@@ -199,6 +210,43 @@ export class SentinelWebRtcController {
     }
   }
 
+  public async requestContacts(query = ''): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_CONTACTS',
+        requestId: randomHex(8),
+        query: query.trim(),
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async requestLocation(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_LOCATION',
+        requestId: randomHex(8),
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async requestDeviceInfo(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_DEVICE_INFO',
+        requestId: randomHex(8),
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -223,6 +271,18 @@ export class SentinelWebRtcController {
 
       case 'STREAM_STATE':
         this.handleStreamState(msg);
+        break;
+
+      case 'DATA_CONTACTS':
+        this.callbacks.onContactsData?.(msg);
+        break;
+
+      case 'DATA_LOCATION':
+        this.callbacks.onLocationData?.(msg);
+        break;
+
+      case 'DATA_DEVICE_INFO':
+        this.callbacks.onDeviceInfoData?.(msg);
         break;
 
       default:
@@ -265,6 +325,10 @@ export class SentinelWebRtcController {
       expiresAt: msg.accessExpiresAt ?? null,
       allowAudio: msg.allowAudio ?? true,
       allowSwitchCamera: msg.allowSwitchCamera ?? true,
+      allowScreenShare: msg.allowScreenShare ?? false,
+      allowContacts: msg.allowContacts ?? false,
+      allowLocation: msg.allowLocation ?? false,
+      allowDeviceInfo: msg.allowDeviceInfo ?? true,
     };
 
     this.authenticated = true;
@@ -294,6 +358,7 @@ export class SentinelWebRtcController {
       isCharging: msg.isCharging,
       networkType: msg.networkType,
       cameraFacing: msg.cameraFacing,
+      mediaMode: msg.mediaMode ?? 'camera',
       micEnabled: msg.micEnabled,
       uptimeSec: msg.uptimeSec,
       accessRole: accessGrant.role,
@@ -301,6 +366,10 @@ export class SentinelWebRtcController {
       accessExpiresAt: accessGrant.expiresAt,
       allowAudio: accessGrant.allowAudio,
       allowSwitchCamera: accessGrant.allowSwitchCamera,
+      allowScreenShare: accessGrant.allowScreenShare,
+      allowContacts: accessGrant.allowContacts,
+      allowLocation: accessGrant.allowLocation,
+      allowDeviceInfo: accessGrant.allowDeviceInfo,
       updatedAt: Date.now(),
     });
 
@@ -331,6 +400,7 @@ export class SentinelWebRtcController {
       batteryTempC: msg.batteryTempC,
       networkType: msg.networkType,
       cameraFacing: msg.cameraFacing,
+      mediaMode: msg.mediaMode ?? 'camera',
       micEnabled: msg.micEnabled,
       uptimeSec: msg.uptimeSec,
       accessRole: msg.accessRole,
@@ -338,6 +408,10 @@ export class SentinelWebRtcController {
       accessExpiresAt: msg.accessExpiresAt,
       allowAudio: msg.allowAudio,
       allowSwitchCamera: msg.allowSwitchCamera,
+      allowScreenShare: msg.allowScreenShare,
+      allowContacts: msg.allowContacts,
+      allowLocation: msg.allowLocation,
+      allowDeviceInfo: msg.allowDeviceInfo,
       updatedAt: Date.now(),
     });
 
@@ -377,9 +451,11 @@ export class SentinelWebRtcController {
   public async startCameraStream(
     cameraFacing: CameraFacingMode = 'front',
     enableAudio = false,
-    quality: StreamQualityPreset = 'hd'
+    quality: StreamQualityPreset = 'hd',
+    mediaMode: MediaSourceMode = 'camera'
   ): Promise<void> {
     this.desiredStreaming = true;
+    this.desiredMediaMode = mediaMode;
     this.desiredFacing = cameraFacing;
     this.desiredAudio = enableAudio;
     this.desiredQuality = quality;
@@ -402,6 +478,7 @@ export class SentinelWebRtcController {
       {
         type: 'CMD_START_STREAM',
         sessionId: this.activeSessionId,
+        mediaMode,
         cameraFacing,
         enableAudio,
         quality,
@@ -419,9 +496,14 @@ export class SentinelWebRtcController {
         this.activeSessionId === currentSid &&
         this.pc?.connectionState !== 'connected'
       ) {
-        void this.startCameraStream(this.desiredFacing, this.desiredAudio, this.desiredQuality);
+        void this.startCameraStream(
+          this.desiredFacing,
+          this.desiredAudio,
+          this.desiredQuality,
+          this.desiredMediaMode
+        );
       }
-    }, 5500);
+    }, 6500);
   }
 
   public async stopCameraStream(): Promise<void> {
@@ -542,7 +624,12 @@ export class SentinelWebRtcController {
             if (this.desiredStreaming && this.pc === pc && pc.connectionState !== 'connected') {
               this.closePeerConnectionOnly();
               if (this.authenticated) {
-                void this.startCameraStream(this.desiredFacing, this.desiredAudio, this.desiredQuality);
+                void this.startCameraStream(
+                  this.desiredFacing,
+                  this.desiredAudio,
+                  this.desiredQuality,
+                  this.desiredMediaMode
+                );
               } else {
                 void this.sendHelloWake();
               }
@@ -640,6 +727,22 @@ export class SentinelWebRtcController {
         failedAttempts: 0,
         ts: Date.now(),
       });
+      return;
+    }
+
+    if (msg.state === 'error') {
+      this.desiredStreaming = false;
+      if (this.streamRecoverTimer) {
+        window.clearTimeout(this.streamRecoverTimer);
+        this.streamRecoverTimer = null;
+      }
+      this.closePeerConnectionOnly();
+      if (this.authenticated) {
+        this.callbacks.onStateChange('standby');
+      }
+      if (msg.error) {
+        this.callbacks.onStreamError?.(msg.error);
+      }
       return;
     }
 

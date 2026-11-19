@@ -2,21 +2,25 @@ package com.sentinelcam.app.plugin
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.activity.result.ActivityResult
 import androidx.core.content.ContextCompat
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
+import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
@@ -38,6 +42,19 @@ import org.json.JSONObject
             alias = "notifications",
             strings = [
                 "android.permission.POST_NOTIFICATIONS"
+            ]
+        ),
+        Permission(
+            alias = "contacts",
+            strings = [
+                Manifest.permission.READ_CONTACTS
+            ]
+        ),
+        Permission(
+            alias = "location",
+            strings = [
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
             ]
         )
     ]
@@ -91,6 +108,101 @@ class SentinelNativePlugin : Plugin() {
     @PermissionCallback
     fun permissionsCallback(call: PluginCall) {
         call.resolve(buildPermissionStatusObject())
+    }
+
+    @PluginMethod
+    fun requestContactsPermission(call: PluginCall) {
+        try {
+            requestPermissionForAlias("contacts", call, "contactsPermissionCallback")
+        } catch (_: Throwable) {
+            call.resolve(buildPortalStateObject())
+        }
+    }
+
+    @PermissionCallback
+    fun contactsPermissionCallback(call: PluginCall) {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+        prefs.globalAllowContacts = granted
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun requestLocationPermission(call: PluginCall) {
+        try {
+            requestPermissionForAlias("location", call, "locationPermissionCallback")
+        } catch (_: Throwable) {
+            call.resolve(buildPortalStateObject())
+        }
+    }
+
+    @PermissionCallback
+    fun locationPermissionCallback(call: PluginCall) {
+        val fine = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        prefs.globalAllowLocation = fine || coarse
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun requestScreenSharePermission(call: PluginCall) {
+        try {
+            val mpm = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val captureIntent = mpm.createScreenCaptureIntent()
+            startActivityForResult(call, captureIntent, "screenSharePermissionCallback")
+        } catch (_: Throwable) {
+            call.resolve(buildPortalStateObject())
+        }
+    }
+
+    @ActivityCallback
+    fun screenSharePermissionCallback(call: PluginCall?, result: ActivityResult) {
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            prefs.globalAllowScreenShare = true
+            prefs.userManuallyStopped = false
+            CameraForegroundService.grantScreenShareConsent(context, result.data!!)
+        } else {
+            prefs.globalAllowScreenShare = false
+            CameraForegroundService.revokeScreenShareConsent()
+        }
+        call?.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun revokeScreenSharePermission(call: PluginCall) {
+        prefs.globalAllowScreenShare = false
+        CameraForegroundService.revokeScreenShareConsent()
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun setGlobalShareSettings(call: PluginCall) {
+        if (call.data.has("allowScreenShare")) {
+            val v = call.getBoolean("allowScreenShare", false) ?: false
+            prefs.globalAllowScreenShare = v
+            if (!v) CameraForegroundService.revokeScreenShareConsent()
+        }
+        if (call.data.has("allowContacts")) {
+            prefs.globalAllowContacts = call.getBoolean("allowContacts", false) ?: false
+        }
+        if (call.data.has("allowLocation")) {
+            prefs.globalAllowLocation = call.getBoolean("allowLocation", false) ?: false
+        }
+        if (call.data.has("allowDeviceInfo")) {
+            prefs.globalAllowDeviceInfo = call.getBoolean("allowDeviceInfo", true) ?: true
+        }
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
     }
 
     @SuppressLint("BatteryLife")
@@ -199,6 +311,10 @@ class SentinelNativePlugin : Plugin() {
             }
             val allowAudio = call.getBoolean("allowAudio", true) ?: true
             val allowSwitchCamera = call.getBoolean("allowSwitchCamera", true) ?: true
+            val allowScreenShare = call.getBoolean("allowScreenShare", false) ?: false
+            val allowContacts = call.getBoolean("allowContacts", false) ?: false
+            val allowLocation = call.getBoolean("allowLocation", false) ?: false
+            val allowDeviceInfo = call.getBoolean("allowDeviceInfo", true) ?: true
 
             prefs.upsertAccessProfile(
                 id = id,
@@ -208,7 +324,11 @@ class SentinelNativePlugin : Plugin() {
                 enabled = enabled,
                 expiresAt = expiresAt,
                 allowAudio = allowAudio,
-                allowSwitchCamera = allowSwitchCamera
+                allowSwitchCamera = allowSwitchCamera,
+                allowScreenShare = allowScreenShare,
+                allowContacts = allowContacts,
+                allowLocation = allowLocation,
+                allowDeviceInfo = allowDeviceInfo
             )
             CameraForegroundService.syncAccessChannels(context)
             call.resolve(buildPortalStateObject())
@@ -270,6 +390,20 @@ class SentinelNativePlugin : Plugin() {
             true
         }
 
+        val contactsGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val locationGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         val batteryIgnored = pm.isIgnoringBatteryOptimizations(context.packageName)
 
@@ -278,6 +412,9 @@ class SentinelNativePlugin : Plugin() {
             put("microphone", micGranted)
             put("notifications", notifGranted)
             put("batteryOptimizationIgnored", batteryIgnored)
+            put("contacts", contactsGranted)
+            put("location", locationGranted)
+            put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
         }
     }
 
@@ -329,9 +466,21 @@ class SentinelNativePlugin : Plugin() {
                     put("expiresAt", p.expiresAt ?: JSONObject.NULL)
                     put("allowAudio", p.allowAudio)
                     put("allowSwitchCamera", p.allowSwitchCamera)
+                    put("allowScreenShare", p.allowScreenShare)
+                    put("allowContacts", p.allowContacts)
+                    put("allowLocation", p.allowLocation)
+                    put("allowDeviceInfo", p.allowDeviceInfo)
                     put("lastAccessAt", p.lastAccessAt ?: JSONObject.NULL)
                 }
             )
+        }
+
+        val globalSharesObj = JSObject().apply {
+            put("allowScreenShare", prefs.globalAllowScreenShare)
+            put("allowContacts", prefs.globalAllowContacts)
+            put("allowLocation", prefs.globalAllowLocation)
+            put("allowDeviceInfo", prefs.globalAllowDeviceInfo)
+            put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
         }
 
         return JSObject().apply {
@@ -350,11 +499,13 @@ class SentinelNativePlugin : Plugin() {
             put("batteryLevel", batteryPct)
             put("isCharging", isCharging)
             put("cameraFacing", CameraForegroundService.currentFacing)
+            put("mediaMode", CameraForegroundService.currentMediaMode)
             put("micEnabled", CameraForegroundService.currentMic)
             put("autoStartOnBoot", prefs.autoStartOnBoot)
             put("failedAttempts", prefs.failedAttempts)
             put("lockoutRemainingMs", lockoutRem)
             put("permissions", buildPermissionStatusObject())
+            put("globalShares", globalSharesObj)
             put("logs", logsArray)
             put("accessProfiles", profilesArray)
             put("activeViewerName", CameraForegroundService.activeViewerName ?: JSONObject.NULL)

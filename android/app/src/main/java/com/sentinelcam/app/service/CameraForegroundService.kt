@@ -24,6 +24,7 @@ import androidx.core.content.ContextCompat
 import com.sentinelcam.app.MainActivity
 import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
+import com.sentinelcam.app.data.DeviceDataHelper
 import com.sentinelcam.app.receiver.KeepAliveReceiver
 import com.sentinelcam.app.receiver.StopPortalReceiver
 import com.sentinelcam.app.signaling.MqttSignalingEngine
@@ -64,6 +65,9 @@ class CameraForegroundService : Service() {
     @Volatile
     private var cameraFgsPromoted: Boolean = false
 
+    @Volatile
+    private var mediaProjectionFgsPromoted: Boolean = false
+
     private data class ResolvedGrant(
         val allowed: Boolean,
         val denyReason: String? = null,
@@ -72,7 +76,11 @@ class CameraForegroundService : Service() {
         val name: String = "Propriétaire",
         val expiresAt: Long? = null,
         val allowAudio: Boolean = true,
-        val allowSwitchCamera: Boolean = true
+        val allowSwitchCamera: Boolean = true,
+        val allowScreenShare: Boolean = false,
+        val allowContacts: Boolean = false,
+        val allowLocation: Boolean = false,
+        val allowDeviceInfo: Boolean = true
     )
 
     override fun onCreate() {
@@ -91,8 +99,9 @@ class CameraForegroundService : Service() {
 
         isRunning = true
         val fromUi = intent?.getBooleanExtra(EXTRA_FROM_UI, false) ?: false
+        val promoteScreen = intent?.action == ACTION_PROMOTE_MEDIA_PROJECTION
 
-        if (!startInForegroundSafely(promoteCamera = fromUi)) {
+        if (!startInForegroundSafely(promoteCamera = fromUi, promoteScreen = promoteScreen)) {
             isRunning = false
             stopSelf()
             return START_NOT_STICKY
@@ -110,6 +119,13 @@ class CameraForegroundService : Service() {
 
             ACTION_SYNC_CHANNELS -> {
                 syncChannelsHot()
+                return START_STICKY
+            }
+
+            ACTION_PROMOTE_MEDIA_PROJECTION -> {
+                ensureSignalingRunning(forceRebuild = false)
+                updateNotificationAndNotifyListeners()
+                broadcastPresenceNow(activeStreamChannelId)
                 return START_STICKY
             }
 
@@ -150,6 +166,8 @@ class CameraForegroundService : Service() {
         mqttConnected = false
         isStreaming = false
         cameraFgsPromoted = false
+        mediaProjectionFgsPromoted = false
+        screenProjectionIntent = null
         activeViewerName = null
         activeViewerRole = null
         activeViewerExpiresAt = null
@@ -264,6 +282,7 @@ class CameraForegroundService : Service() {
             },
             onStreamStateChanged = { active, err ->
                 isStreaming = active
+                currentMediaMode = webRtcEngine?.currentMediaMode ?: "camera"
                 if (active) {
                     acquireStreamingLocks()
                 } else {
@@ -276,11 +295,35 @@ class CameraForegroundService : Service() {
                 currentMic = webRtcEngine?.currentMicEnabled ?: false
                 if (err != null) {
                     prefs.appendLog("warn", err)
+                    signalingEngine?.send(
+                        channelId = activeStreamChannelId,
+                        payload = JSONObject().apply {
+                            put("type", "STREAM_STATE")
+                            put("sessionId", webRtcEngine?.currentSessionId.orEmpty())
+                            put("state", "error")
+                            put("cameraFacing", currentFacing)
+                            put("mediaMode", currentMediaMode)
+                            put("micEnabled", false)
+                            put("error", err)
+                            put("ts", System.currentTimeMillis())
+                        },
+                        mode = "sess"
+                    )
                 }
                 if (isRunning) {
                     serviceScope.launch(Dispatchers.Main) {
                         updateNotificationAndNotifyListeners()
                         broadcastPresenceNow(activeStreamChannelId)
+                    }
+                }
+            },
+            onScreenProjectionEnded = {
+                screenProjectionIntent = null
+                mediaProjectionFgsPromoted = false
+                prefs.globalAllowScreenShare = false
+                if (isRunning) {
+                    serviceScope.launch(Dispatchers.Main) {
+                        updateNotificationAndNotifyListeners()
                     }
                 }
             }
@@ -359,6 +402,7 @@ class CameraForegroundService : Service() {
                 val specs = buildAllChannelSpecs()
                 engine.syncChannels(specs)
                 enforceActiveViewerValidity()
+                broadcastPresenceNow(activeStreamChannelId)
                 notifyStateListeners()
             } catch (_: Throwable) {
             }
@@ -383,7 +427,16 @@ class CameraForegroundService : Service() {
         }
     }
 
+    private fun isScreenReadyNow(): Boolean {
+        return prefs.globalAllowScreenShare && screenProjectionIntent != null
+    }
+
     private fun resolveGrant(channelId: String): ResolvedGrant {
+        val globalScreen = isScreenReadyNow()
+        val globalContacts = prefs.globalAllowContacts
+        val globalLocation = prefs.globalAllowLocation
+        val globalDevInfo = prefs.globalAllowDeviceInfo
+
         if (channelId == OWNER_CHANNEL_ID) {
             return ResolvedGrant(
                 allowed = true,
@@ -391,7 +444,11 @@ class CameraForegroundService : Service() {
                 name = "Propriétaire",
                 expiresAt = null,
                 allowAudio = true,
-                allowSwitchCamera = true
+                allowSwitchCamera = true,
+                allowScreenShare = globalScreen,
+                allowContacts = globalContacts,
+                allowLocation = globalLocation,
+                allowDeviceInfo = globalDevInfo
             )
         }
 
@@ -431,12 +488,16 @@ class CameraForegroundService : Service() {
             name = prof.name,
             expiresAt = exp,
             allowAudio = prof.allowAudio,
-            allowSwitchCamera = prof.allowSwitchCamera
+            allowSwitchCamera = prof.allowSwitchCamera,
+            allowScreenShare = globalScreen && prof.allowScreenShare,
+            allowContacts = globalContacts && prof.allowContacts,
+            allowLocation = globalLocation && prof.allowLocation,
+            allowDeviceInfo = globalDevInfo && prof.allowDeviceInfo
         )
     }
 
     private fun enforceActiveViewerValidity() {
-        if (!isStreaming || activeStreamChannelId == OWNER_CHANNEL_ID) return
+        if (!isStreaming) return
         val grant = resolveGrant(activeStreamChannelId)
         if (!grant.allowed) {
             val isExpired = grant.denyReason == "ACCESS_EXPIRED"
@@ -445,6 +506,11 @@ class CameraForegroundService : Service() {
                 authReason = grant.denyReason ?: "ACCESS_REVOKED",
                 message = grant.denyMessage ?: "Accès terminé."
             )
+            return
+        }
+        // If user revoked screen share while someone was viewing screen -> stop stream immediately
+        if (currentMediaMode == "screen" && !grant.allowScreenShare) {
+            sleepCameraInternal()
         }
     }
 
@@ -466,6 +532,7 @@ class CameraForegroundService : Service() {
                     put("sessionId", activeSession)
                     put("state", reasonState)
                     put("cameraFacing", currentFacing)
+                    put("mediaMode", currentMediaMode)
                     put("micEnabled", false)
                     put("error", message)
                     put("ts", System.currentTimeMillis())
@@ -512,6 +579,7 @@ class CameraForegroundService : Service() {
                     put("sessionId", activeSession)
                     put("state", "standby")
                     put("cameraFacing", currentFacing)
+                    put("mediaMode", currentMediaMode)
                     put("micEnabled", currentMic)
                     put("ts", System.currentTimeMillis())
                 },
@@ -544,6 +612,7 @@ class CameraForegroundService : Service() {
             put("isCharging", bat.second)
             put("networkType", readNetworkTypeLabel())
             put("cameraFacing", currentFacing)
+            put("mediaMode", currentMediaMode)
             put("micEnabled", currentMic)
             put("uptimeSec", ((System.currentTimeMillis() - startedAtMs) / 1000L).coerceAtLeast(0L))
             put("accessRole", grant.role)
@@ -551,6 +620,10 @@ class CameraForegroundService : Service() {
             put("accessExpiresAt", grant.expiresAt ?: JSONObject.NULL)
             put("allowAudio", grant.allowAudio)
             put("allowSwitchCamera", grant.allowSwitchCamera)
+            put("allowScreenShare", grant.allowScreenShare)
+            put("allowContacts", grant.allowContacts)
+            put("allowLocation", grant.allowLocation)
+            put("allowDeviceInfo", grant.allowDeviceInfo)
             put("ts", System.currentTimeMillis())
         }
     }
@@ -561,6 +634,70 @@ class CameraForegroundService : Service() {
             signalingEngine?.send(channelId, status, mode = "boot", toPresence = true)
             webRtcEngine?.sendTelemetryOverDataChannel(status)
         } catch (_: Throwable) {
+        }
+    }
+
+    private fun startRequestedMedia(
+        channelId: String,
+        grant: ResolvedGrant,
+        sessionId: String,
+        mediaMode: String,
+        reqFacing: String,
+        reqAudio: Boolean,
+        quality: String
+    ) {
+        if (mediaMode == "screen") {
+            val projIntent = screenProjectionIntent
+            if (!grant.allowScreenShare || projIntent == null) {
+                signalingEngine?.send(
+                    channelId = channelId,
+                    payload = JSONObject().apply {
+                        put("type", "STREAM_STATE")
+                        put("sessionId", sessionId)
+                        put("state", "error")
+                        put("cameraFacing", currentFacing)
+                        put("mediaMode", "screen")
+                        put("micEnabled", false)
+                        put("error", "Le propriétaire doit activer « Autoriser le partage d’écran » sur son smartphone.")
+                        put("ts", System.currentTimeMillis())
+                    },
+                    mode = "sess"
+                )
+                return
+            }
+
+            // On Android 14+, MediaProjection token is single-use: consume cleanly on launch
+            val intentCopy = Intent(projIntent)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                screenProjectionIntent = null
+            }
+
+            val effectiveAudio = if (grant.allowAudio) reqAudio else false
+            activeStreamChannelId = channelId
+            activeViewerName = grant.name
+            activeViewerRole = grant.role
+            activeViewerExpiresAt = grant.expiresAt
+            currentMediaMode = "screen"
+            if (channelId != OWNER_CHANNEL_ID) {
+                prefs.touchProfileLastAccess(channelId)
+            }
+            acquireStreamingLocks()
+            ensureWebRtcInitialized().startScreenStream(sessionId, intentCopy, effectiveAudio, quality)
+            serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
+        } else {
+            val effectiveFacing = if (grant.allowSwitchCamera) reqFacing else "front"
+            val effectiveAudio = if (grant.allowAudio) reqAudio else false
+            activeStreamChannelId = channelId
+            activeViewerName = grant.name
+            activeViewerRole = grant.role
+            activeViewerExpiresAt = grant.expiresAt
+            currentMediaMode = "camera"
+            if (channelId != OWNER_CHANNEL_ID) {
+                prefs.touchProfileLastAccess(channelId)
+            }
+            acquireStreamingLocks()
+            ensureWebRtcInitialized().startStream(sessionId, effectiveFacing, effectiveAudio, quality)
+            serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
         }
     }
 
@@ -596,22 +733,12 @@ class CameraForegroundService : Service() {
 
                 "CMD_START_STREAM" -> {
                     val sessionId = msg.optString("sessionId", "")
+                    val mediaMode = msg.optString("mediaMode", "camera")
                     val reqFacing = msg.optString("cameraFacing", "front")
                     val reqAudio = msg.optBoolean("enableAudio", false)
                     val quality = msg.optString("quality", "hd")
                     if (sessionId.isNotEmpty()) {
-                        val effectiveFacing = if (grant.allowSwitchCamera) reqFacing else "front"
-                        val effectiveAudio = if (grant.allowAudio) reqAudio else false
-                        activeStreamChannelId = channelId
-                        activeViewerName = grant.name
-                        activeViewerRole = grant.role
-                        activeViewerExpiresAt = grant.expiresAt
-                        if (channelId != OWNER_CHANNEL_ID) {
-                            prefs.touchProfileLastAccess(channelId)
-                        }
-                        acquireStreamingLocks()
-                        ensureWebRtcInitialized().startStream(sessionId, effectiveFacing, effectiveAudio, quality)
-                        serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
+                        startRequestedMedia(channelId, grant, sessionId, mediaMode, reqFacing, reqAudio, quality)
                     }
                 }
 
@@ -630,6 +757,7 @@ class CameraForegroundService : Service() {
                                 put("sessionId", sessionId)
                                 put("state", "standby")
                                 put("cameraFacing", currentFacing)
+                                put("mediaMode", currentMediaMode)
                                 put("micEnabled", currentMic)
                                 put("ts", System.currentTimeMillis())
                             },
@@ -656,6 +784,109 @@ class CameraForegroundService : Service() {
                         currentMic = enableAudio
                         broadcastPresenceNow(channelId)
                         notifyStateListeners()
+                    }
+                }
+
+                "CMD_GET_CONTACTS" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val query = msg.optString("query", "")
+                    if (!grant.allowContacts) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_CONTACTS")
+                                put("requestId", reqId)
+                                put("contacts", org.json.JSONArray())
+                                put("totalCount", 0)
+                                put("error", "Le propriétaire n’a pas autorisé le partage de ses contacts.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val res = DeviceDataHelper.readContacts(applicationContext, query, 200)
+                            signalingEngine?.send(
+                                channelId = channelId,
+                                payload = JSONObject().apply {
+                                    put("type", "DATA_CONTACTS")
+                                    put("requestId", reqId)
+                                    put("contacts", res.contactsArray)
+                                    put("totalCount", res.totalMatched)
+                                    if (res.error != null) put("error", res.error)
+                                    put("ts", System.currentTimeMillis())
+                                },
+                                mode = "sess"
+                            )
+                        }
+                    }
+                }
+
+                "CMD_GET_LOCATION" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowLocation) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_LOCATION")
+                                put("requestId", reqId)
+                                put("location", JSONObject.NULL)
+                                put("error", "Le propriétaire n’a pas autorisé le partage de la localisation GPS.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val (locJson, err) = DeviceDataHelper.readBestKnownLocation(applicationContext)
+                            signalingEngine?.send(
+                                channelId = channelId,
+                                payload = JSONObject().apply {
+                                    put("type", "DATA_LOCATION")
+                                    put("requestId", reqId)
+                                    put("location", locJson ?: JSONObject.NULL)
+                                    if (err != null) put("error", err)
+                                    put("ts", System.currentTimeMillis())
+                                },
+                                mode = "sess"
+                            )
+                        }
+                    }
+                }
+
+                "CMD_GET_DEVICE_INFO" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceInfo) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_DEVICE_INFO")
+                                put("requestId", reqId)
+                                put("info", JSONObject.NULL)
+                                put("error", "Accès aux infos appareil désactivé.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        val bat = readBatteryInfo()
+                        val infoJson = DeviceDataHelper.readDeviceInfo(
+                            deviceName = prefs.deviceName,
+                            batteryLevel = bat.first,
+                            isCharging = bat.second,
+                            networkType = readNetworkTypeLabel(),
+                            uptimeSec = ((System.currentTimeMillis() - startedAtMs) / 1000L).coerceAtLeast(0L)
+                        )
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_DEVICE_INFO")
+                                put("requestId", reqId)
+                                put("info", infoJson)
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
                     }
                 }
 
@@ -770,6 +1001,7 @@ class CameraForegroundService : Service() {
                 put("isCharging", bat.second)
                 put("networkType", readNetworkTypeLabel())
                 put("cameraFacing", currentFacing)
+                put("mediaMode", currentMediaMode)
                 put("micEnabled", currentMic)
                 put("uptimeSec", ((now - startedAtMs) / 1000L).coerceAtLeast(0L))
                 put("accessRole", grant.role)
@@ -777,6 +1009,10 @@ class CameraForegroundService : Service() {
                 put("accessExpiresAt", grant.expiresAt ?: JSONObject.NULL)
                 put("allowAudio", grant.allowAudio)
                 put("allowSwitchCamera", grant.allowSwitchCamera)
+                put("allowScreenShare", grant.allowScreenShare)
+                put("allowContacts", grant.allowContacts)
+                put("allowLocation", grant.allowLocation)
+                put("allowDeviceInfo", grant.allowDeviceInfo)
                 put("ts", now)
             },
             mode = "boot"
@@ -785,19 +1021,11 @@ class CameraForegroundService : Service() {
         val autoStart = msg.optBoolean("autoStartStream", false)
         val sessionId = msg.optString("sessionId", "")
         if (autoStart && sessionId.isNotEmpty()) {
+            val mediaMode = msg.optString("mediaMode", "camera")
             val reqFacing = msg.optString("cameraFacing", "front")
             val reqAudio = msg.optBoolean("enableAudio", false)
             val quality = msg.optString("quality", "hd")
-            val effectiveFacing = if (grant.allowSwitchCamera) reqFacing else "front"
-            val effectiveAudio = if (grant.allowAudio) reqAudio else false
-
-            activeStreamChannelId = channelId
-            activeViewerName = grant.name
-            activeViewerRole = grant.role
-            activeViewerExpiresAt = grant.expiresAt
-            acquireStreamingLocks()
-            ensureWebRtcInitialized().startStream(sessionId, effectiveFacing, effectiveAudio, quality)
-            serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
+            startRequestedMedia(channelId, grant, sessionId, mediaMode, reqFacing, reqAudio, quality)
         }
 
         notifyStateListeners()
@@ -811,7 +1039,7 @@ class CameraForegroundService : Service() {
                     "Portail Éco-Veille SentinelCam",
                     NotificationManager.IMPORTANCE_LOW
                 ).apply {
-                    description = "Écoute éco-énergie en tâche de fond SentinelCam"
+                    description = "Écoute éco-énergie et partage autorisé SentinelCam"
                     setShowBadge(false)
                 }
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -843,23 +1071,20 @@ class CameraForegroundService : Service() {
         )
 
         val viewerLabel = activeViewerName
+        val streamKind = if (currentMediaMode == "screen") "Partage d’écran" else "Caméra"
         val title = if (isStreaming && viewerLabel != null) {
-            "Streaming en cours • $viewerLabel"
+            "$streamKind en cours • $viewerLabel"
         } else if (isStreaming) {
-            "Streaming caméra en cours"
+            "$streamKind en cours"
         } else {
             "SentinelCam actif (Éco-Veille)"
         }
 
-        val activeAccessCount = prefs.getAccessProfiles().count {
-            it.enabled && (it.expiresAt == null || it.expiresAt > System.currentTimeMillis())
-        }
         val subtitle = if (isStreaming) {
-            "Flux direct actif (${if (currentFacing == "front") "Selfie" else "Arrière"})"
-        } else if (activeAccessCount > 0) {
-            "Code : ${prefs.pairingCode} • +$activeAccessCount accès ami/pass actif(s)"
+            if (currentMediaMode == "screen") "Votre écran est partagé en direct"
+            else "Flux direct actif (${if (currentFacing == "front") "Selfie" else "Arrière"})"
         } else {
-            "Code : ${prefs.pairingCode} • Capteur éteint (0% conso)"
+            "Code : ${prefs.pairingCode} • Contrôle total actif"
         }
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -884,7 +1109,7 @@ class CameraForegroundService : Service() {
             )
             builder.addAction(
                 android.R.drawable.ic_media_pause,
-                "Couper la vidéo",
+                "Couper le flux",
                 sleepPi
             )
         }
@@ -898,7 +1123,7 @@ class CameraForegroundService : Service() {
         return builder.build()
     }
 
-    private fun startInForegroundSafely(promoteCamera: Boolean): Boolean {
+    private fun startInForegroundSafely(promoteCamera: Boolean, promoteScreen: Boolean): Boolean {
         val notification = try {
             buildOngoingNotification()
         } catch (_: Throwable) {
@@ -914,23 +1139,32 @@ class CameraForegroundService : Service() {
             }
         }
 
-        val appVisible = promoteCamera || isAppInForeground() || cameraFgsPromoted
+        val appVisible = promoteCamera || promoteScreen || isAppInForeground() || cameraFgsPromoted
         val hasCam = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
         val hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
+        val hasScreenConsent = (promoteScreen || mediaProjectionFgsPromoted) && screenProjectionIntent != null
 
+        var fgType = 0
         if (appVisible && hasCam) {
-            var fullType = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-            if (hasMic) {
-                fullType = fullType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                fullType = fullType or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            }
+            fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+        }
+        if (appVisible && hasMic) {
+            fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        }
+        if (hasScreenConsent) {
+            fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            fgType = fgType or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        }
+
+        if (fgType != 0) {
             try {
-                startForeground(NOTIFICATION_ID, notification, fullType)
-                cameraFgsPromoted = true
+                startForeground(NOTIFICATION_ID, notification, fgType)
+                if (appVisible && hasCam) cameraFgsPromoted = true
+                if (hasScreenConsent) mediaProjectionFgsPromoted = true
                 return true
             } catch (_: Throwable) {
             }
@@ -942,12 +1176,6 @@ class CameraForegroundService : Service() {
                     NOTIFICATION_ID,
                     notification,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                )
-            } else if (hasCam) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
                 )
             } else {
                 startForeground(NOTIFICATION_ID, notification)
@@ -1008,10 +1236,14 @@ class CameraForegroundService : Service() {
         const val ACTION_RESTART_SIGNALING = "com.sentinelcam.app.ACTION_RESTART_SIGNALING"
         const val ACTION_SYNC_CHANNELS = "com.sentinelcam.app.ACTION_SYNC_CHANNELS"
         const val ACTION_NUDGE_NETWORK = "com.sentinelcam.app.ACTION_NUDGE_NETWORK"
+        const val ACTION_PROMOTE_MEDIA_PROJECTION = "com.sentinelcam.app.ACTION_PROMOTE_MEDIA_PROJECTION"
         private const val EXTRA_FROM_UI = "extra_from_ui"
 
         @Volatile
         private var instance: CameraForegroundService? = null
+
+        @Volatile
+        private var screenProjectionIntent: Intent? = null
 
         @Volatile
         var isRunning: Boolean = false
@@ -1034,6 +1266,10 @@ class CameraForegroundService : Service() {
             private set
 
         @Volatile
+        var currentMediaMode: String = "camera"
+            private set
+
+        @Volatile
         var currentMic: Boolean = false
             private set
 
@@ -1049,7 +1285,7 @@ class CameraForegroundService : Service() {
         var activeViewerExpiresAt: Long? = null
             private set
 
-        private val listeners = CopyOnWriteArraySet<() -> Unit>()
+        fun hasActiveScreenProjectionConsent(): Boolean = screenProjectionIntent != null
 
         fun addStateListener(listener: () -> Unit) {
             listeners.add(listener)
@@ -1058,6 +1294,8 @@ class CameraForegroundService : Service() {
         fun removeStateListener(listener: () -> Unit) {
             listeners.remove(listener)
         }
+
+        private val listeners = CopyOnWriteArraySet<() -> Unit>()
 
         private fun notifyStateListeners() {
             for (l in listeners) {
@@ -1074,6 +1312,33 @@ class CameraForegroundService : Service() {
             } catch (_: Throwable) {
                 false
             }
+        }
+
+        fun grantScreenShareConsent(context: Context, projectionData: Intent) {
+            screenProjectionIntent = Intent(projectionData)
+            try {
+                val appCtx = context.applicationContext
+                val intent = Intent(appCtx, CameraForegroundService::class.java).apply {
+                    action = ACTION_PROMOTE_MEDIA_PROJECTION
+                    putExtra(EXTRA_FROM_UI, true)
+                }
+                ContextCompat.startForegroundService(appCtx, intent)
+            } catch (_: Throwable) {
+            }
+            notifyStateListeners()
+        }
+
+        fun revokeScreenShareConsent() {
+            screenProjectionIntent = null
+            try {
+                if (currentMediaMode == "screen") {
+                    instance?.sleepCameraInternal()
+                } else {
+                    instance?.syncChannelsHot()
+                }
+            } catch (_: Throwable) {
+            }
+            notifyStateListeners()
         }
 
         fun startFromUi(context: Context) {
@@ -1163,6 +1428,7 @@ class CameraForegroundService : Service() {
                 isRunning = false
                 isStreaming = false
                 mqttConnected = false
+                screenProjectionIntent = null
                 activeViewerName = null
                 activeViewerRole = null
                 activeViewerExpiresAt = null

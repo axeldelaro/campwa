@@ -16,12 +16,17 @@ import type {
   AccessProfileInput,
   AccessProfileRole,
   CameraFacingMode,
+  CmdGetContactsMsg,
+  CmdGetDeviceInfoMsg,
+  CmdGetLocationMsg,
   CmdStartStreamMsg,
   CmdSwitchCameraMsg,
   CmdToggleMicMsg,
   DerivedBootstrapKeys,
+  GlobalShareSettings,
   HelloWakeMsg,
   IceCandidateMsg,
+  MediaSourceMode,
   NativeAuditEntry,
   NativePortalState,
   PortalStatusMsg,
@@ -31,7 +36,7 @@ import type {
 import { buildIceServers } from './deviceVault';
 import { EncryptedSignalingChannel } from './signalingService';
 
-const WEB_EMITTER_STORAGE_KEY = 'sentinelcam.web_emitter.v4';
+const WEB_EMITTER_STORAGE_KEY = 'sentinelcam.web_emitter.v5';
 
 interface PersistedWebEmitterConfig {
   onboardingCompleted: boolean;
@@ -42,6 +47,12 @@ interface PersistedWebEmitterConfig {
   sasSymbols: string | null;
   failedAttempts: number;
   lockoutUntil: number;
+  globalShares: {
+    allowScreenShare: boolean;
+    allowContacts: boolean;
+    allowLocation: boolean;
+    allowDeviceInfo: boolean;
+  };
   accessProfiles: AccessProfile[];
 }
 
@@ -57,11 +68,13 @@ export class BrowserEmitterEngine {
   private pc: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
   private mediaStream: MediaStream | null = null;
+  private preAuthorizedScreenStream: MediaStream | null = null;
 
   private serviceRunning = false;
   private mqttConnected = false;
   private activeBroker = 'Déconnecté';
   private cameraFacing: CameraFacingMode = 'front';
+  private mediaMode: MediaSourceMode = 'camera';
   private micEnabled = false;
   private activeSessionId = '';
   private activeViewerChannelId: string | null = null;
@@ -89,6 +102,12 @@ export class BrowserEmitterEngine {
         const parsed = JSON.parse(raw) as PersistedWebEmitterConfig;
         return {
           ...parsed,
+          globalShares: parsed.globalShares ?? {
+            allowScreenShare: false,
+            allowContacts: false,
+            allowLocation: false,
+            allowDeviceInfo: true,
+          },
           accessProfiles: Array.isArray(parsed.accessProfiles) ? parsed.accessProfiles : [],
         };
       }
@@ -104,6 +123,12 @@ export class BrowserEmitterEngine {
       sasSymbols: null,
       failedAttempts: 0,
       lockoutUntil: 0,
+      globalShares: {
+        allowScreenShare: false,
+        allowContacts: false,
+        allowLocation: false,
+        allowDeviceInfo: true,
+      },
       accessProfiles: [],
     };
     this.saveConfig(fresh);
@@ -153,6 +178,12 @@ export class BrowserEmitterEngine {
       else portalState = 'standby';
     }
 
+    const screenReady = Boolean(this.preAuthorizedScreenStream?.active);
+    const globalShares: GlobalShareSettings = {
+      ...this.config.globalShares,
+      screenShareReady: screenReady,
+    };
+
     return {
       onboardingCompleted: this.config.onboardingCompleted,
       serviceRunning: this.serviceRunning,
@@ -169,6 +200,7 @@ export class BrowserEmitterEngine {
       batteryLevel: this.batteryLevel,
       isCharging: this.isCharging,
       cameraFacing: this.cameraFacing,
+      mediaMode: this.mediaMode,
       micEnabled: this.micEnabled,
       autoStartOnBoot: false,
       failedAttempts: this.config.failedAttempts,
@@ -178,7 +210,11 @@ export class BrowserEmitterEngine {
         microphone: true,
         notifications: true,
         batteryOptimizationIgnored: true,
+        contacts: false,
+        location: 'geolocation' in navigator,
+        screenShareReady: screenReady,
       },
+      globalShares,
       logs: [...this.logs],
       accessProfiles: [...this.config.accessProfiles],
       activeViewerName: this.activeViewerName,
@@ -189,6 +225,55 @@ export class BrowserEmitterEngine {
 
   private emitState(): void {
     this.onUpdate(this.getState());
+  }
+
+  public async setGlobalShareSettings(
+    partial: Partial<PersistedWebEmitterConfig['globalShares']>
+  ): Promise<NativePortalState> {
+    this.config.globalShares = {
+      ...this.config.globalShares,
+      ...partial,
+    };
+    if (partial.allowScreenShare === false) {
+      this.revokeScreenShare();
+    }
+    this.saveConfig();
+    this.emitState();
+    return this.getState();
+  }
+
+  public async requestScreenSharePermission(): Promise<NativePortalState> {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 24, max: 30 } },
+        audio: false,
+      });
+      this.preAuthorizedScreenStream = stream;
+      this.config.globalShares.allowScreenShare = true;
+      this.saveConfig();
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+        this.preAuthorizedScreenStream = null;
+        this.emitState();
+      });
+    } catch {
+      // User cancelled screen capture dialog
+    }
+    this.emitState();
+    return this.getState();
+  }
+
+  public revokeScreenShare(): NativePortalState {
+    if (this.preAuthorizedScreenStream) {
+      this.preAuthorizedScreenStream.getTracks().forEach((t) => t.stop());
+      this.preAuthorizedScreenStream = null;
+    }
+    if (this.mediaMode === 'screen') {
+      this.stopMediaAndPeer();
+    }
+    this.config.globalShares.allowScreenShare = false;
+    this.saveConfig();
+    this.emitState();
+    return this.getState();
   }
 
   public async startPortal(): Promise<NativePortalState> {
@@ -270,6 +355,10 @@ export class BrowserEmitterEngine {
       expiresAt: input.expiresAt,
       allowAudio: input.allowAudio,
       allowSwitchCamera: input.allowSwitchCamera,
+      allowScreenShare: input.allowScreenShare,
+      allowContacts: input.allowContacts,
+      allowLocation: input.allowLocation,
+      allowDeviceInfo: input.allowDeviceInfo,
       lastAccessAt: existing?.lastAccessAt ?? null,
     };
 
@@ -325,6 +414,7 @@ export class BrowserEmitterEngine {
               sessionId: sid,
               state: reason,
               cameraFacing: this.cameraFacing,
+              mediaMode: this.mediaMode,
               micEnabled: false,
               error:
                 reason === 'expired'
@@ -363,7 +453,6 @@ export class BrowserEmitterEngine {
       desired.set(p.id, p.code);
     }
 
-    // Remove stale channels
     for (const [id, handle] of this.channels.entries()) {
       const targetCode = desired.get(id);
       if (!targetCode || handle.keys.normalizedCode !== targetCode) {
@@ -372,7 +461,6 @@ export class BrowserEmitterEngine {
       }
     }
 
-    // Add missing channels
     for (const [channelId, code] of desired.entries()) {
       if (this.channels.has(channelId)) continue;
       const keys = await deriveBootstrapKeys(code);
@@ -397,24 +485,20 @@ export class BrowserEmitterEngine {
     }
   }
 
-  private resolveChannelGrant(channelId: string): {
-    allowed: boolean;
-    reason?: 'ACCESS_EXPIRED' | 'ACCESS_REVOKED';
-    message?: string;
-    role: AccessProfileRole;
-    name: string;
-    expiresAt: number | null;
-    allowAudio: boolean;
-    allowSwitchCamera: boolean;
-  } {
+  private resolveChannelGrant(channelId: string) {
+    const g = this.config.globalShares;
     if (channelId === 'owner') {
       return {
         allowed: true,
-        role: 'owner',
+        role: 'owner' as AccessProfileRole,
         name: 'Propriétaire',
-        expiresAt: null,
+        expiresAt: null as number | null,
         allowAudio: true,
         allowSwitchCamera: true,
+        allowScreenShare: g.allowScreenShare,
+        allowContacts: g.allowContacts,
+        allowLocation: g.allowLocation,
+        allowDeviceInfo: g.allowDeviceInfo,
       };
     }
 
@@ -422,36 +506,48 @@ export class BrowserEmitterEngine {
     if (!prof || !prof.enabled) {
       return {
         allowed: false,
-        reason: 'ACCESS_REVOKED',
-        message: 'Ce profil ami ou pass invité est actuellement désactivé par le propriétaire.',
-        role: prof?.role ?? 'guest',
+        reason: 'ACCESS_REVOKED' as const,
+        message: 'Ce profil ami ou pass invité est désactivé par le propriétaire.',
+        role: (prof?.role ?? 'guest') as AccessProfileRole,
         name: prof?.name ?? 'Invité',
         expiresAt: prof?.expiresAt ?? null,
         allowAudio: false,
         allowSwitchCamera: false,
+        allowScreenShare: false,
+        allowContacts: false,
+        allowLocation: false,
+        allowDeviceInfo: false,
       };
     }
 
     if (prof.expiresAt !== null && Date.now() > prof.expiresAt) {
       return {
         allowed: false,
-        reason: 'ACCESS_EXPIRED',
+        reason: 'ACCESS_EXPIRED' as const,
         message: `Le pass temporaire « ${prof.name} » est arrivé à expiration.`,
-        role: prof.role,
+        role: prof.role as AccessProfileRole,
         name: prof.name,
         expiresAt: prof.expiresAt,
         allowAudio: false,
         allowSwitchCamera: false,
+        allowScreenShare: false,
+        allowContacts: false,
+        allowLocation: false,
+        allowDeviceInfo: false,
       };
     }
 
     return {
       allowed: true,
-      role: prof.role,
+      role: prof.role as AccessProfileRole,
       name: prof.name,
       expiresAt: prof.expiresAt,
       allowAudio: prof.allowAudio,
       allowSwitchCamera: prof.allowSwitchCamera,
+      allowScreenShare: g.allowScreenShare && prof.allowScreenShare,
+      allowContacts: g.allowContacts && prof.allowContacts,
+      allowLocation: g.allowLocation && prof.allowLocation,
+      allowDeviceInfo: g.allowDeviceInfo && prof.allowDeviceInfo,
     };
   }
 
@@ -479,6 +575,7 @@ export class BrowserEmitterEngine {
       isCharging: this.isCharging,
       networkType: 'Web WSS',
       cameraFacing: this.cameraFacing,
+      mediaMode: this.mediaMode,
       micEnabled: this.micEnabled,
       uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000),
       accessRole: grant.role,
@@ -486,6 +583,10 @@ export class BrowserEmitterEngine {
       accessExpiresAt: grant.expiresAt,
       allowAudio: grant.allowAudio,
       allowSwitchCamera: grant.allowSwitchCamera,
+      allowScreenShare: grant.allowScreenShare,
+      allowContacts: grant.allowContacts,
+      allowLocation: grant.allowLocation,
+      allowDeviceInfo: grant.allowDeviceInfo,
       ts: Date.now(),
     };
   }
@@ -531,6 +632,7 @@ export class BrowserEmitterEngine {
             sessionId: msg.sessionId,
             state: 'standby',
             cameraFacing: this.cameraFacing,
+            mediaMode: this.mediaMode,
             micEnabled: this.micEnabled,
             ts: Date.now(),
           },
@@ -550,6 +652,18 @@ export class BrowserEmitterEngine {
         }
         break;
 
+      case 'CMD_GET_CONTACTS':
+        await this.handleGetContacts(handle, msg, grant.allowContacts);
+        break;
+
+      case 'CMD_GET_LOCATION':
+        await this.handleGetLocation(handle, msg, grant.allowLocation);
+        break;
+
+      case 'CMD_GET_DEVICE_INFO':
+        await this.handleGetDeviceInfo(handle, msg, grant.allowDeviceInfo);
+        break;
+
       case 'SDP_ANSWER':
         await this.handleSdpAnswer(msg);
         break;
@@ -561,6 +675,136 @@ export class BrowserEmitterEngine {
       default:
         break;
     }
+  }
+
+  private async handleGetContacts(
+    handle: ActiveChannelHandle,
+    msg: CmdGetContactsMsg,
+    allowed: boolean
+  ): Promise<void> {
+    await handle.signaling.send(
+      {
+        type: 'DATA_CONTACTS',
+        requestId: msg.requestId,
+        contacts: [],
+        totalCount: 0,
+        error: allowed
+          ? 'Le partage du répertoire Contacts est disponible uniquement sur l’application Android native (APK).'
+          : 'Le propriétaire n’a pas autorisé le partage des contacts.',
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  private async handleGetLocation(
+    handle: ActiveChannelHandle,
+    msg: CmdGetLocationMsg,
+    allowed: boolean
+  ): Promise<void> {
+    if (!allowed) {
+      await handle.signaling.send(
+        {
+          type: 'DATA_LOCATION',
+          requestId: msg.requestId,
+          location: null,
+          error: 'Le propriétaire n’a pas autorisé le partage de la localisation.',
+          ts: Date.now(),
+        },
+        'sess'
+      );
+      return;
+    }
+
+    if (!('geolocation' in navigator)) {
+      await handle.signaling.send(
+        {
+          type: 'DATA_LOCATION',
+          requestId: msg.requestId,
+          location: null,
+          error: 'Géolocalisation non disponible sur ce navigateur.',
+          ts: Date.now(),
+        },
+        'sess'
+      );
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        void handle.signaling.send(
+          {
+            type: 'DATA_LOCATION',
+            requestId: msg.requestId,
+            location: {
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracyMeters: Math.round(pos.coords.accuracy),
+              provider: 'Web Geolocation',
+              timestamp: pos.timestamp,
+            },
+            ts: Date.now(),
+          },
+          'sess'
+        );
+      },
+      (err) => {
+        void handle.signaling.send(
+          {
+            type: 'DATA_LOCATION',
+            requestId: msg.requestId,
+            location: null,
+            error: err.message || 'Position GPS refusée.',
+            ts: Date.now(),
+          },
+          'sess'
+        );
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }
+
+  private async handleGetDeviceInfo(
+    handle: ActiveChannelHandle,
+    msg: CmdGetDeviceInfoMsg,
+    allowed: boolean
+  ): Promise<void> {
+    if (!allowed) {
+      await handle.signaling.send(
+        {
+          type: 'DATA_DEVICE_INFO',
+          requestId: msg.requestId,
+          info: null,
+          error: 'Accès aux informations appareil désactivé.',
+          ts: Date.now(),
+        },
+        'sess'
+      );
+      return;
+    }
+
+    await handle.signaling.send(
+      {
+        type: 'DATA_DEVICE_INFO',
+        requestId: msg.requestId,
+        info: {
+          deviceName: 'Portail Navigateur Web',
+          manufacturer: 'Browser',
+          model: navigator.platform || 'Web',
+          androidVersion: 'PWA Web',
+          sdkInt: 0,
+          batteryLevel: this.batteryLevel,
+          isCharging: this.isCharging,
+          networkType: 'Web WSS',
+          storageFreeMb: 0,
+          storageTotalMb: 0,
+          uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000),
+          timestamp: Date.now(),
+        },
+        ts: Date.now(),
+      },
+      'sess'
+    );
   }
 
   private async handleHelloWake(handle: ActiveChannelHandle, msg: HelloWakeMsg): Promise<void> {
@@ -648,6 +892,7 @@ export class BrowserEmitterEngine {
         isCharging: this.isCharging,
         networkType: 'Web WSS',
         cameraFacing: this.cameraFacing,
+        mediaMode: this.mediaMode,
         micEnabled: this.micEnabled,
         uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000),
         accessRole: grant.role,
@@ -655,6 +900,10 @@ export class BrowserEmitterEngine {
         accessExpiresAt: grant.expiresAt,
         allowAudio: grant.allowAudio,
         allowSwitchCamera: grant.allowSwitchCamera,
+        allowScreenShare: grant.allowScreenShare,
+        allowContacts: grant.allowContacts,
+        allowLocation: grant.allowLocation,
+        allowDeviceInfo: grant.allowDeviceInfo,
         ts: Date.now(),
       },
       'boot'
@@ -664,6 +913,7 @@ export class BrowserEmitterEngine {
       await this.handleStartStream(handle, {
         type: 'CMD_START_STREAM',
         sessionId: msg.sessionId,
+        mediaMode: msg.mediaMode ?? 'camera',
         cameraFacing: grant.allowSwitchCamera ? msg.cameraFacing : 'front',
         enableAudio: grant.allowAudio ? msg.enableAudio : false,
         quality: msg.quality,
@@ -679,6 +929,24 @@ export class BrowserEmitterEngine {
     const grant = this.resolveChannelGrant(handle.channelId);
     if (!grant.allowed) return;
 
+    const requestedMode: MediaSourceMode = msg.mediaMode ?? 'camera';
+    if (requestedMode === 'screen' && !grant.allowScreenShare) {
+      await handle.signaling.send(
+        {
+          type: 'STREAM_STATE',
+          sessionId: msg.sessionId,
+          state: 'error',
+          cameraFacing: this.cameraFacing,
+          mediaMode: 'camera',
+          micEnabled: false,
+          error: 'Le partage d’écran n’est pas autorisé par le propriétaire.',
+          ts: Date.now(),
+        },
+        'sess'
+      );
+      return;
+    }
+
     this.stopMediaAndPeer();
 
     this.activeSessionId = msg.sessionId;
@@ -686,19 +954,43 @@ export class BrowserEmitterEngine {
     this.activeViewerName = grant.name;
     this.activeViewerRole = grant.role;
     this.activeViewerExpiresAt = grant.expiresAt;
+    this.mediaMode = requestedMode;
     this.cameraFacing = grant.allowSwitchCamera ? msg.cameraFacing : 'front';
     this.micEnabled = grant.allowAudio ? msg.enableAudio : false;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: this.cameraFacing === 'front' ? 'user' : 'environment',
-          width: { ideal: msg.quality === 'hd' ? 1280 : 640 },
-          height: { ideal: msg.quality === 'hd' ? 720 : 480 },
-          frameRate: { ideal: 30, max: 30 },
-        },
-        audio: this.micEnabled,
-      });
+      let stream: MediaStream;
+      if (requestedMode === 'screen') {
+        if (this.preAuthorizedScreenStream?.active) {
+          stream = this.preAuthorizedScreenStream;
+        } else {
+          await handle.signaling.send(
+            {
+              type: 'STREAM_STATE',
+              sessionId: msg.sessionId,
+              state: 'error',
+              cameraFacing: this.cameraFacing,
+              mediaMode: 'screen',
+              micEnabled: false,
+              error: 'Activez « Autoriser le partage d’écran » sur l’appareil émetteur.',
+              ts: Date.now(),
+            },
+            'sess'
+          );
+          return;
+        }
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: this.cameraFacing === 'front' ? 'user' : 'environment',
+            width: { ideal: msg.quality === 'hd' ? 1280 : 640 },
+            height: { ideal: msg.quality === 'hd' ? 720 : 480 },
+            frameRate: { ideal: 30, max: 30 },
+          },
+          audio: this.micEnabled,
+        });
+      }
+
       this.mediaStream = stream;
 
       const pc = new RTCPeerConnection({
@@ -749,7 +1041,7 @@ export class BrowserEmitterEngine {
   }
 
   private async handleSwitchCamera(msg: CmdSwitchCameraMsg): Promise<void> {
-    if (!this.pc || !this.mediaStream) return;
+    if (!this.pc || !this.mediaStream || this.mediaMode !== 'camera') return;
     this.cameraFacing = msg.cameraFacing;
     try {
       const newStream = await navigator.mediaDevices.getUserMedia({
@@ -817,12 +1109,12 @@ export class BrowserEmitterEngine {
     this.activeViewerName = null;
     this.activeViewerRole = null;
     this.activeViewerExpiresAt = null;
-    if (this.mediaStream) {
+    if (this.mediaStream && this.mediaStream !== this.preAuthorizedScreenStream) {
       for (const track of this.mediaStream.getTracks()) {
         track.stop();
       }
-      this.mediaStream = null;
     }
+    this.mediaStream = null;
     if (this.dataChannel) {
       try {
         this.dataChannel.close();
