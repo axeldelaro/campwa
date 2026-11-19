@@ -150,6 +150,7 @@ export interface PairedDeviceRecord {
   pairingCode: string;
   deviceId: string;
   deviceName: string;
+  childName?: string;
   tokenId: string;
   sasCode: string;
   sasSymbols: string;
@@ -794,6 +795,11 @@ export interface FamilyAnnounceMsg {
   batteryLevel: number;
   isCharging: boolean;
   portalState: string;
+  pendingRequestsCount?: number;
+  unpairRequestPending?: boolean;
+  activeAppLocksCount?: number;
+  screenPausedUntilMs?: number;
+  lostModeEnabled?: boolean;
   ts: number;
 }
 

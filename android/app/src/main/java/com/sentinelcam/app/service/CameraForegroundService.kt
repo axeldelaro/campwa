@@ -956,6 +956,7 @@ class CameraForegroundService : Service() {
         if (channelId == FAMILY_CHANNEL_ID) {
             if (msg.optString("type") == "FAMILY_DISCOVER") {
                 val bat = readBatteryInfo()
+                val now = System.currentTimeMillis()
                 signalingEngine?.send(
                     channelId = FAMILY_CHANNEL_ID,
                     payload = JSONObject().apply {
@@ -966,7 +967,12 @@ class CameraForegroundService : Service() {
                         put("batteryLevel", bat.first)
                         put("isCharging", bat.second)
                         put("portalState", if (isStreaming) "streaming" else "standby")
-                        put("ts", System.currentTimeMillis())
+                        put("pendingRequestsCount", prefs.getPendingTimeRequests().size)
+                        put("unpairRequestPending", prefs.unpairRequestPending)
+                        put("activeAppLocksCount", prefs.getActiveAppLockRules(now).size)
+                        put("screenPausedUntilMs", prefs.screenPausedUntilMs.takeIf { it > now } ?: 0L)
+                        put("lostModeEnabled", prefs.lostModeEnabled)
+                        put("ts", now)
                     },
                     mode = "boot"
                 )

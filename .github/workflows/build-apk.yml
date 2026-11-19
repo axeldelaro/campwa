@@ -130,17 +130,16 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v17.0.${{ github.run_number }}
-          name: "SentinelCam v17.0.${{ github.run_number }} (Dissociation Validée Parent • Admin Verrouillé par Défaut • Site Ultra-Épuré)"
+          tag_name: v18.0.${{ github.run_number }}
+          name: "SentinelCam v18.0.${{ github.run_number }} (Comptes Parent Sans Serveur • Multi-Enfants • Zéro Perte)"
           body: |
-            ### SentinelCam v17.0 (`v17.0.${{ github.run_number }}`)
+            ### SentinelCam v18.0 (`v18.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Autorisation du Parent obligatoire pour délier** : impossible de dissocier l’appareil localement côté enfant. L’enfant peut uniquement envoyer une demande de dissociation que le Parent **autorise ou refuse** à distance depuis le site Web (l’autorisation lève automatiquement les verrous et les droits administrateur Android).
-            - **Droits Administrateur demandés dès l’installation & verrouillés par défaut** : l’étape 1 de l’installation demande les droits administrateur anti-désinstallation, le code administrateur est défini dès l’association, le blocage Paramètres/Play Store s’active par défaut et la notification persistante ne propose plus aucun bouton d’arrêt côté enfant.
-            - **Site Parent ultra-épuré & mieux organisé** : onglet **Règles** restructuré en 5 sections accordéon sereines (Filtre IA mosaïque, Horaires & École, Sécurité & Dissociation, Autorisations à distance, Journal d’alertes), onglet **Position** centré sur la carte, et navigation mobile fluide.
-            - **Pixellisation IA mosaïque couleur 60 FPS** (ML Kit + NudeNet local), Galerie publique hors dossiers masqués, Clé Famille sans serveur et 100 % gratuit.
+            - **Comptes Parent 100 % gratuits & sans serveur payant** : créez un compte Parent (`E-mail / Identifiant + Mot de passe`) chiffré localement (PBKDF2-SHA256 + coffre AES-256-GCM répliqué sans serveur). Même en changeant de téléphone, d’ordinateur ou de navigateur, il suffit de se reconnecter pour retrouver **tous** ses appareils verrouillés (y compris ceux actuellement éteints).
+            - **Gestion Multi-Enfants en direct** : ajoutez plusieurs enfants (prénom personnalisable, renommage rapide, vue en direct sur le statut En ligne / Hors ligne, batterie % et alertes `+15 min` / demande de dissociation pour chaque enfant), et connexion Co-Parent possible depuis plusieurs appareils.
+            - **Protection blindée** : droits administrateur Android demandés dès l’installation et verrouillés par défaut, autorisation parentale obligatoire pour délier l’appareil, pixellisation IA mosaïque couleur 60 FPS (ML Kit + NudeNet local), Galerie publique hors dossiers masqués, et interface ultra-épurée.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

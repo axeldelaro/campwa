@@ -64,11 +64,24 @@ export function findPairedDeviceByCode(code: string): PairedDeviceRecord | undef
 
 export function savePairedDevice(record: PairedDeviceRecord): void {
   try {
+    const existing = listPairedDevices().find((d) => d.pairingCode === record.pairingCode);
+    const merged: PairedDeviceRecord = {
+      ...record,
+      childName: record.childName ?? existing?.childName,
+    };
     const list = listPairedDevices().filter((d) => d.pairingCode !== record.pairingCode);
-    list.unshift(record);
-    localStorage.setItem(VAULT_PAIRED_KEY, JSON.stringify(list.slice(0, 12)));
+    list.unshift(merged);
+    localStorage.setItem(VAULT_PAIRED_KEY, JSON.stringify(list.slice(0, 20)));
   } catch {
     // Ignore storage quota errors
+  }
+}
+
+export function replacePairedDevices(records: PairedDeviceRecord[]): void {
+  try {
+    localStorage.setItem(VAULT_PAIRED_KEY, JSON.stringify(records.slice(0, 20)));
+  } catch {
+    // Ignore
   }
 }
 

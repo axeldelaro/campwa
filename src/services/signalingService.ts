@@ -110,6 +110,130 @@ export function warmUpSignalingPool(): PooledBrokerNode[] {
   return sharedPool;
 }
 
+async function waitForConnectedBrokers(timeoutMs = 3500): Promise<PooledBrokerNode[]> {
+  const pool = warmUpSignalingPool();
+  const ready = pool.filter((n) => n.connected);
+  if (ready.length > 0) return ready;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const cleanup = () => {
+      pool.forEach((n) => n.statusListeners.delete(onStatus));
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(pool.filter((n) => n.connected));
+    };
+    const onStatus = () => {
+      if (pool.some((n) => n.connected)) {
+        // Give 220ms for second broker to also finish TLS handshake
+        window.setTimeout(finish, 220);
+      }
+    };
+    pool.forEach((n) => n.statusListeners.add(onStatus));
+    window.setTimeout(finish, timeoutMs);
+  });
+}
+
+/**
+ * Publishes an end-to-end encrypted JSON record with MQTT retain=true across ALL public brokers
+ * in our pool (100% free, zero paid backend). Replicates automatically if a second broker connects.
+ */
+export async function publishRetainedRecord(topic: string, payload: string): Promise<boolean> {
+  const pool = warmUpSignalingPool();
+  const connected = await waitForConnectedBrokers(4000);
+  if (connected.length === 0) return false;
+
+  const publishedUrls = new Set<string>();
+  const doPublish = (node: PooledBrokerNode) => {
+    if (!node.connected || publishedUrls.has(node.url)) return;
+    publishedUrls.add(node.url);
+    try {
+      node.client.publish(topic, payload, { qos: 1, retain: true });
+    } catch {
+      // Ignore transient publish failure
+    }
+  };
+
+  connected.forEach(doPublish);
+
+  // Replicate to any remaining broker if it comes online within 6s
+  const pendingNodes = pool.filter((n) => !publishedUrls.has(n.url));
+  if (pendingNodes.length > 0) {
+    const onLate = () => {
+      pendingNodes.forEach(doPublish);
+    };
+    pendingNodes.forEach((n) => n.statusListeners.add(onLate));
+    window.setTimeout(() => {
+      pendingNodes.forEach((n) => n.statusListeners.delete(onLate));
+    }, 6000);
+  }
+
+  return publishedUrls.size > 0;
+}
+
+/**
+ * Reads all retained payloads for a topic across all connected public MQTT brokers.
+ * Resolves quickly once brokers respond or after timeoutMs if no retained record exists.
+ */
+export async function readRetainedRecord(topic: string, timeoutMs = 2000): Promise<string[]> {
+  const connected = await waitForConnectedBrokers(3500);
+  if (connected.length === 0) return [];
+
+  const textDecoder = new TextDecoder();
+  const payloads: string[] = [];
+  const seen = new Set<string>();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let settleEarlyTimer: number | null = null;
+    const listeners = new Map<PooledBrokerNode, (t: string, p: Uint8Array) => void>();
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (settleEarlyTimer !== null) window.clearTimeout(settleEarlyTimer);
+      listeners.forEach((fn, node) => {
+        node.listeners.delete(fn);
+        if (node.connected) {
+          try {
+            node.client.unsubscribe(topic);
+          } catch {
+            // Ignore
+          }
+        }
+      });
+      resolve(payloads);
+    };
+
+    connected.forEach((node) => {
+      const listener = (msgTopic: string, buf: Uint8Array) => {
+        if (msgTopic !== topic || buf.length === 0) return;
+        const txt = textDecoder.decode(buf).trim();
+        if (txt && !seen.has(txt)) {
+          seen.add(txt);
+          payloads.push(txt);
+        }
+        // Once we receive at least one retained record, wait briefly for a potentially newer copy from broker #2
+        if (settleEarlyTimer === null) {
+          settleEarlyTimer = window.setTimeout(finish, 420);
+        }
+      };
+      listeners.set(node, listener);
+      node.listeners.add(listener);
+      try {
+        node.client.subscribe(topic, { qos: 1 });
+      } catch {
+        // Ignore
+      }
+    });
+
+    window.setTimeout(finish, timeoutMs);
+  });
+}
+
 interface SignalingOptions {
   role: SignalingRole;
   topicId: string;

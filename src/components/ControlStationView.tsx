@@ -21,7 +21,6 @@ import {
   FlipHorizontal,
   HardDrive,
   Image as ImageIcon,
-  KeyRound,
   LayoutDashboard,
   Lock,
   Mail,
@@ -33,16 +32,12 @@ import {
   Monitor,
   Navigation,
   Phone,
-  Plus,
   Power,
   RefreshCw,
   Search,
   Send,
-  ShieldAlert,
   ShieldCheck,
-  Smartphone,
   Square,
-  Trash2,
   Unplug,
   UserCheck,
   Video,
@@ -52,14 +47,21 @@ import {
   Zap,
   ZoomIn,
 } from 'lucide-react';
-import { formatFamilyKey, normalizeFamilyKey, normalizePairingCode } from '../crypto/cryptoEngine';
+import { normalizePairingCode } from '../crypto/cryptoEngine';
+import { removePairedDevice } from '../services/deviceVault';
 import {
-  getOrCreateFamilyKey,
-  listPairedDevices,
-  removePairedDevice,
-  setFamilyKey,
-} from '../services/deviceVault';
-import { discoverFamilyDevices, ParentPairingSession } from '../services/parentPairingService';
+  loadParentAccountSession,
+  loginParentAccount,
+  logoutParentAccount,
+  registerParentAccount,
+  removeAccountChild,
+  renameAccountChild,
+  syncParentAccountLive,
+  upsertAccountChild,
+  type ChildLiveStatus,
+  type ParentAccountSession,
+} from '../services/parentAccountService';
+import { ParentPairingSession } from '../services/parentPairingService';
 import type { BrokerHealth } from '../services/signalingService';
 import { SentinelWebRtcController } from '../services/webrtcController';
 import type {
@@ -74,7 +76,6 @@ import type {
   GpsTrackPoint,
   LocationHistoryBundle,
   MediaSourceMode,
-  PairedDeviceRecord,
   PortalOperationalState,
   SharedContactItem,
   SharedDeviceInfoData,
@@ -86,6 +87,7 @@ import type {
 import { GeofenceZonesCard, ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
 import { GalleryTab } from './GalleryTab';
 import { GpsTrailMap } from './GpsTrailMap';
+import { ParentFamilyHub } from './ParentFamilyHub';
 import { SecuritySasModal } from './SecuritySasModal';
 
 interface ControlStationViewProps {
@@ -113,12 +115,15 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   onBrokerHealthChange,
   initialCode,
 }) => {
-  const [codeChars, setCodeChars] = useState<string[]>(['', '', '', '', '', '']);
-  const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
-
-  const [savedDevices, setSavedDevices] = useState<PairedDeviceRecord[]>(() =>
-    listPairedDevices()
+  const [activeCode, setActiveCode] = useState('');
+  const [account, setAccount] = useState<ParentAccountSession | null>(() =>
+    loadParentAccountSession()
   );
+  const accountRef = useRef<ParentAccountSession | null>(account);
+  accountRef.current = account;
+  const [liveStatuses, setLiveStatuses] = useState<Record<string, ChildLiveStatus>>({});
+  const [accountSyncing, setAccountSyncing] = useState(false);
+
   const [portalState, setPortalState] = useState<PortalOperationalState>('offline');
   const [telemetry, setTelemetry] = useState<DeviceTelemetry | null>(null);
   const [stats, setStats] = useState<StreamRealtimeStats | null>(null);
@@ -130,16 +135,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [viewerTab, setViewerTab] = useState<ViewerTab>('home');
   const [liveSubTab, setLiveSubTab] = useState<'media' | 'gallery' | 'contacts'>('media');
 
-  // Zero-Loss Parent Family Space & Parent-Initiated Pairing state
-  const [familyKey, setFamilyKeyState] = useState<string>(() => getOrCreateFamilyKey());
+  // Parent-Initiated Add Child Pairing state
   const [pairingActiveCode, setPairingActiveCode] = useState<string | null>(null);
-  const [pairingAdminPin, setPairingAdminPin] = useState('');
   const [pairingStatus, setPairingStatus] = useState<string | null>(null);
-  const [familyDrawerOpen, setFamilyDrawerOpen] = useState(false);
-  const [restoreKeyInput, setRestoreKeyInput] = useState('');
-  const [restoringFamily, setRestoringFamily] = useState(false);
-  const [restoreFeedback, setRestoreFeedback] = useState<string | null>(null);
-  const [directCodeOpen, setDirectCodeOpen] = useState(false);
   const pairingSessionRef = useRef<ParentPairingSession | null>(null);
 
   // Remote Photo Gallery (excluding hidden folders)
@@ -267,7 +265,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           sasCode: info.sasCode,
           sasSymbols: info.sasSymbols,
         });
-        setSavedDevices(listPairedDevices());
         if (info.accessGrant.allowDeviceControl) {
           setViewerTab('home');
           setScreenTimeLoading(true);
@@ -439,12 +436,37 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     const clean = normalizePairingCode(initialCode);
     if (clean.length === 6) {
       autoConnectedInitialRef.current = true;
-      setCodeChars(clean.split(''));
+      setActiveCode(clean);
       void controllerRef.current?.connectToPortal(clean, false);
     }
   }, [initialCode]);
 
-  const fullCode = codeChars.join('');
+  const fullCode = activeCode;
+
+  // Auto-refresh multi-child vault & live child status when viewing the Family Dashboard
+  const handleSyncAccountLive = async (targetSession = accountRef.current) => {
+    if (!targetSession) return;
+    setAccountSyncing(true);
+    try {
+      const { session: synced, liveStatuses: fresh } = await syncParentAccountLive(
+        targetSession,
+        (st) => {
+          setLiveStatuses((prev) => ({ ...prev, [st.deviceCode]: st }));
+        }
+      );
+      setAccount(synced);
+      setLiveStatuses((prev) => ({ ...prev, ...fresh }));
+    } finally {
+      setAccountSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (account && !sasInfo && portalState === 'offline') {
+      void handleSyncAccountLive(account);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account?.email]);
 
   const handleConnect = async (targetCode: string) => {
     const normalized = normalizePairingCode(targetCode);
@@ -462,7 +484,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setScreenTime(null);
     setControlFeedback(null);
     setDeviceInfo(null);
-    setCodeChars(normalized.split(''));
+    setActiveCode(normalized);
     try {
       await controllerRef.current?.connectToPortal(normalized, false);
     } catch {
@@ -504,67 +526,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     window.setTimeout(() => setPushSentFeedback(null), 4000);
   };
 
-  const handleCharChange = (index: number, val: string) => {
-    const clean = val.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-    if (!clean) {
-      const next = [...codeChars];
-      next[index] = '';
-      setCodeChars(next);
-      return;
-    }
-
-    if (clean.length > 1) {
-      const chars = clean.slice(0, 6).split('');
-      const next = [...codeChars];
-      for (let i = 0; i < 6; i++) {
-        if (index + i < 6 && chars[i]) {
-          next[index + i] = chars[i];
-        }
-      }
-      setCodeChars(next);
-      const joined = next.join('');
-      if (joined.length === 6) {
-        void handleConnect(joined);
-      } else {
-        inputRefs.current[Math.min(5, index + chars.length)]?.focus();
-      }
-      return;
-    }
-
-    const next = [...codeChars];
-    next[index] = clean;
-    setCodeChars(next);
-    if (index < 5) {
-      inputRefs.current[index + 1]?.focus();
-    }
-    const joined = next.join('');
-    if (joined.length === 6) {
-      void handleConnect(joined);
-    }
-  };
-
-  const handleKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Backspace' && !codeChars[index] && index > 0) {
-      inputRefs.current[index - 1]?.focus();
-    } else if (e.key === 'Enter' && fullCode.length === 6) {
-      void handleConnect(fullCode);
-    }
-  };
-
-  const handlePaste = (e: React.ClipboardEvent) => {
-    e.preventDefault();
-    const pasted = normalizePairingCode(e.clipboardData.getData('text'));
-    if (!pasted) return;
-    const next = ['', '', '', '', '', ''];
-    for (let i = 0; i < pasted.length && i < 6; i++) {
-      next[i] = pasted[i];
-    }
-    setCodeChars(next);
-    if (pasted.length === 6) {
-      void handleConnect(pasted);
-    }
-  };
-
   const handleDisconnect = () => {
     setTalkieLocked(false);
     setTalkieActive(false);
@@ -574,6 +535,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setSasInfo(null);
     setAccessGrant(null);
     setStreamNotice(null);
+    if (accountRef.current) {
+      void handleSyncAccountLive(accountRef.current);
+    }
   };
 
   const handleTalkiePressStart = () => {
@@ -597,12 +561,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       setTalkieLocked(true);
       void controllerRef.current?.startTalkie();
     }
-  };
-
-  const handleForgetDevice = (code: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    removePairedDevice(code);
-    setSavedDevices(listPairedDevices());
   };
 
   const handleWakeMedia = async (mode: MediaSourceMode) => {
@@ -688,17 +646,65 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     await controllerRef.current?.requestGalleryPhoto(item.id);
   };
 
-  const handleStartParentPairing = async () => {
+  const handleLoginParentAccount = async (email: string, password: string) => {
+    const { session, liveStatuses: fresh } = await loginParentAccount({
+      email,
+      password,
+      onLiveChild: (st) => {
+        setLiveStatuses((prev) => ({ ...prev, [st.deviceCode]: st }));
+      },
+    });
+    setAccount(session);
+    setLiveStatuses(fresh);
+  };
+
+  const handleRegisterParentAccount = async (
+    email: string,
+    password: string,
+    displayName: string
+  ) => {
+    const session = await registerParentAccount({ email, password, displayName });
+    setAccount(session);
+    setLiveStatuses({});
+  };
+
+  const handleLogoutParentAccount = () => {
+    pairingSessionRef.current?.stop();
+    setPairingActiveCode(null);
+    setPairingStatus(null);
+    logoutParentAccount();
+    setAccount(null);
+    setLiveStatuses({});
+  };
+
+  const handleRenameChild = async (code: string, newName: string) => {
+    if (!accountRef.current) return;
+    const updated = await renameAccountChild(accountRef.current, code, newName);
+    setAccount(updated);
+  };
+
+  const handleStartAddChild = async (childName: string, adminPin: string) => {
+    const curAccount = accountRef.current;
+    if (!curAccount) return;
     pairingSessionRef.current?.stop();
     const session = new ParentPairingSession({
-      familyKey,
-      adminPin: pairingAdminPin.trim(),
+      familyKey: curAccount.familyKey,
+      adminPin,
       onStatus: (msg) => setPairingStatus(msg),
       onPaired: (info) => {
         setPairingActiveCode(null);
         setPairingStatus(null);
-        setPairingAdminPin('');
-        setSavedDevices(listPairedDevices());
+        const now = Date.now();
+        if (accountRef.current) {
+          void upsertAccountChild(accountRef.current, {
+            pairingCode: info.deviceCode,
+            deviceId: info.deviceId,
+            deviceName: info.deviceName,
+            childName: childName.trim() || info.deviceName,
+            pairedAt: now,
+            lastConnectedAt: now,
+          }).then((updated) => setAccount(updated));
+        }
         void handleConnect(info.deviceCode);
       },
     });
@@ -713,33 +719,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     pairingSessionRef.current = null;
     setPairingActiveCode(null);
     setPairingStatus(null);
-  };
-
-  const handleRestoreFamily = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const clean = normalizeFamilyKey(restoreKeyInput);
-    if (clean.length !== 12) {
-      setRestoreFeedback('La Clé Famille doit contenir 12 caractères.');
-      return;
-    }
-    setFamilyKey(clean);
-    setFamilyKeyState(clean);
-    setRestoringFamily(true);
-    setRestoreFeedback('Recherche des appareils associés…');
-    try {
-      const found = await discoverFamilyDevices(clean, () => {
-        setSavedDevices(listPairedDevices());
-      });
-      setSavedDevices(listPairedDevices());
-      setRestoreFeedback(
-        found.length > 0
-          ? `${found.length} appareil${found.length > 1 ? 's' : ''} retrouvé${found.length > 1 ? 's' : ''} !`
-          : 'Clé Famille enregistrée. Aucun appareil en ligne pour le moment (réessayez quand le téléphone est connecté).'
-      );
-      setRestoreKeyInput('');
-    } finally {
-      setRestoringFamily(false);
-    }
   };
 
   const handleOpenLocationTab = () => {
@@ -914,7 +893,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       window.setTimeout(() => {
         if (codeToRemove.length === 6) {
           removePairedDevice(codeToRemove);
-          setSavedDevices(listPairedDevices());
+          if (accountRef.current) {
+            void removeAccountChild(accountRef.current, codeToRemove).then((updated) =>
+              setAccount(updated)
+            );
+          }
         }
         handleDisconnect();
       }, 650);
@@ -1063,261 +1046,33 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     ? `https://wa.me/${cleanWaDigits}?text=${encodeURIComponent(composedPreviewText)}`
     : `https://wa.me/?text=${encodeURIComponent(composedPreviewText)}`;
 
-  /* ==================== SCREEN 1: PARENT FAMILY SPACE (ZERO-LOSS PAIRING) ==================== */
+  const activeChildRecord = account?.children.find((c) => c.pairingCode === fullCode) ?? null;
+
+  /* ==================== SCREEN 1: PARENT ACCOUNT & MULTI-CHILD HUB ==================== */
   if (!isSessionOpen) {
     return (
-      <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-md flex-col justify-center px-3.5 py-6 sm:px-4 sm:py-10">
-        <div className="space-y-4 rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5 sm:p-7">
-          <div className="text-center">
-            <h1 className="text-xl font-semibold tracking-tight text-white">Espace Parent</h1>
-            <p className="mt-1 text-xs text-zinc-400">
-              Associez un smartphone et pilotez toutes ses règles à distance
-            </p>
-          </div>
-
-          {/* Saved / Paired Devices (1-Click Open) */}
-          {savedDevices.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="text-[11px] font-medium text-zinc-500">Appareils associés</div>
-              {savedDevices.map((dev) => (
-                <div
-                  key={dev.pairingCode}
-                  onClick={() => void handleConnect(dev.pairingCode)}
-                  className="flex cursor-pointer items-center justify-between gap-2 rounded-xl border border-white/[0.07] bg-zinc-950/80 px-3.5 py-3 transition hover:border-white/20"
-                >
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <Smartphone className="h-4 w-4 shrink-0 text-emerald-400" />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-xs font-semibold text-white">
-                          {dev.deviceName}
-                        </span>
-                        <span className="shrink-0 font-mono text-[11px] text-zinc-500">
-                          {dev.pairingCode}
-                        </span>
-                      </div>
-                      {dev.accessRole && dev.accessRole !== 'owner' && (
-                        <div className="truncate text-[10px] text-zinc-500">{dev.accessName}</div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <span className="text-[11px] font-medium text-zinc-300">Ouvrir →</span>
-                    <button
-                      type="button"
-                      onClick={(e) => handleForgetDevice(dev.pairingCode, e)}
-                      className="rounded-lg p-1.5 text-zinc-600 transition hover:text-rose-400"
-                      title="Retirer de la liste"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Parent-Generated Pairing Wizard */}
-          {pairingActiveCode ? (
-            <div className="rounded-xl border border-emerald-500/35 bg-zinc-950 p-4 text-center">
-              <div className="text-[11px] font-medium text-zinc-400">
-                Saisissez ce code dans l’application du smartphone
-              </div>
-              <div className="mt-3 grid grid-cols-6 gap-1.5">
-                {pairingActiveCode.split('').map((ch, i) => (
-                  <span
-                    key={i}
-                    className="flex h-12 items-center justify-center rounded-lg border border-emerald-500/40 bg-zinc-900 font-mono text-lg font-semibold text-emerald-300 sm:text-xl"
-                  >
-                    {ch}
-                  </span>
-                ))}
-              </div>
-              <div className="mt-3 flex items-center justify-center gap-1.5 text-xs text-zinc-400">
-                <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin text-emerald-400" />
-                <span>{pairingStatus || 'En attente du smartphone…'}</span>
-              </div>
-              <button
-                type="button"
-                onClick={handleCancelParentPairing}
-                className="mt-3 text-xs text-zinc-500 hover:text-zinc-300"
-              >
-                Annuler
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-2.5">
-              <input
-                type="password"
-                maxLength={12}
-                value={pairingAdminPin}
-                onChange={(e) => setPairingAdminPin(e.target.value)}
-                placeholder="Code administrateur requis (4–12 car.)"
-                className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
-              />
-              <button
-                type="button"
-                disabled={pairingAdminPin.trim().length < 4}
-                onClick={() => void handleStartParentPairing()}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:opacity-35"
-              >
-                <Plus className="h-4 w-4" />
-                <span>Associer un nouvel appareil</span>
-              </button>
-            </div>
-          )}
-
-          {/* Connecting indicator */}
-          {portalState === 'connecting' && (
-            <div className="flex items-center justify-between rounded-xl border border-white/10 bg-zinc-950 px-3.5 py-2.5 text-xs text-zinc-300">
-              <span className="inline-flex items-center gap-2">
-                <RefreshCw className="h-3.5 w-3.5 animate-spin text-emerald-400" />
-                Connexion à {fullCode}…
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleSendPushInvite()}
-                  className="text-emerald-300 hover:underline"
-                >
-                  Réveiller
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDisconnect}
-                  className="text-zinc-500 hover:text-white"
-                >
-                  Annuler
-                </button>
-              </div>
-            </div>
-          )}
-
-          {pushSentFeedback && (
-            <div className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300">
-              <Check className="h-3.5 w-3.5" />
-              <span>{pushSentFeedback}</span>
-            </div>
-          )}
-
-          {authError && (
-            <div className="flex items-start gap-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
-              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
-              <div>
-                <div className="font-medium">
-                  {authError.reason === 'ACCESS_EXPIRED'
-                    ? 'Accès expiré'
-                    : authError.reason === 'ACCESS_REVOKED'
-                    ? 'Accès révoqué'
-                    : 'Connexion refusée'}
-                </div>
-                <div className="mt-0.5 text-rose-300/80">{authError.message}</div>
-              </div>
-            </div>
-          )}
-
-          {/* Zero-Loss Family Key Backup & Multi-Device Restore */}
-          <div className="border-t border-white/[0.07] pt-3.5">
-            <div className="flex items-center justify-between gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => setFamilyDrawerOpen((v) => !v)}
-                className="inline-flex items-center gap-1.5 text-zinc-400 hover:text-white"
-              >
-                <KeyRound className="h-3.5 w-3.5 text-emerald-400" />
-                <span>Clé Famille (récupération sans perte)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setDirectCodeOpen((v) => !v)}
-                className="text-[11px] text-zinc-500 hover:text-zinc-300"
-              >
-                Code direct
-              </button>
-            </div>
-
-            {familyDrawerOpen && (
-              <div className="mt-3 space-y-3 rounded-xl border border-white/[0.07] bg-zinc-950 p-3.5 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <div className="text-[10px] text-zinc-500">Votre Clé Famille (à conserver)</div>
-                    <div className="mt-0.5 font-mono text-sm font-semibold tracking-wider text-emerald-300">
-                      {formatFamilyKey(familyKey)}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleCopySmall(formatFamilyKey(familyKey), 'fam-key')}
-                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1 text-[11px] text-zinc-200 hover:border-white/25"
-                  >
-                    {copiedKey === 'fam-key' ? (
-                      <Check className="h-3 w-3 text-emerald-400" />
-                    ) : (
-                      <Copy className="h-3 w-3" />
-                    )}
-                    <span>{copiedKey === 'fam-key' ? 'Copiée' : 'Copier'}</span>
-                  </button>
-                </div>
-
-                <form onSubmit={(e) => void handleRestoreFamily(e)} className="flex gap-1.5 border-t border-white/[0.06] pt-2.5">
-                  <input
-                    type="text"
-                    value={restoreKeyInput}
-                    onChange={(e) => setRestoreKeyInput(e.target.value)}
-                    placeholder="Restaurer une Clé Famille (XXXX-XXXX-XXXX)"
-                    className="min-w-0 flex-1 rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1.5 font-mono text-[11px] uppercase text-white placeholder-zinc-500"
-                  />
-                  <button
-                    type="submit"
-                    disabled={restoringFamily || normalizeFamilyKey(restoreKeyInput).length !== 12}
-                    className="shrink-0 rounded-lg bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-950 disabled:opacity-35"
-                  >
-                    {restoringFamily ? '…' : 'Retrouver'}
-                  </button>
-                </form>
-
-                {restoreFeedback && (
-                  <div className="text-[11px] text-emerald-300">{restoreFeedback}</div>
-                )}
-              </div>
-            )}
-
-            {/* Direct 6-Char Code Fallback */}
-            {directCodeOpen && (
-              <div className="mt-3 space-y-2.5 rounded-xl border border-white/[0.07] bg-zinc-950 p-3.5">
-                <div className="grid grid-cols-6 gap-1.5" onPaste={handlePaste}>
-                  {codeChars.map((ch, idx) => (
-                    <input
-                      key={idx}
-                      ref={(el) => {
-                        inputRefs.current[idx] = el;
-                      }}
-                      type="text"
-                      inputMode="text"
-                      autoComplete="off"
-                      autoCapitalize="characters"
-                      maxLength={6}
-                      value={ch}
-                      onChange={(e) => handleCharChange(idx, e.target.value)}
-                      onKeyDown={(e) => handleKeyDown(idx, e)}
-                      className="h-11 w-full rounded-lg border border-white/10 bg-zinc-900 text-center font-mono text-base font-semibold uppercase text-white focus:border-emerald-400 focus:outline-none"
-                      placeholder="·"
-                    />
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  disabled={fullCode.length !== 6}
-                  onClick={() => void handleConnect(fullCode)}
-                  className="w-full rounded-lg bg-white py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-35"
-                >
-                  Connexion directe
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+      <ParentFamilyHub
+        account={account}
+        liveStatuses={liveStatuses}
+        syncing={accountSyncing}
+        portalState={portalState}
+        connectingCode={fullCode}
+        authError={authError}
+        pushSentFeedback={pushSentFeedback}
+        pairingActiveCode={pairingActiveCode}
+        pairingStatus={pairingStatus}
+        onLogin={handleLoginParentAccount}
+        onRegister={handleRegisterParentAccount}
+        onLogout={handleLogoutParentAccount}
+        onSyncLive={() => handleSyncAccountLive()}
+        onSelectChild={(code) => void handleConnect(code)}
+        onRenameChild={handleRenameChild}
+        onStartAddChild={handleStartAddChild}
+        onCancelAddChild={handleCancelParentPairing}
+        onDirectConnect={(code) => void handleConnect(code)}
+        onSendWakePush={() => void handleSendPushInvite()}
+        onCancelConnecting={handleDisconnect}
+      />
     );
   }
 
@@ -1339,11 +1094,13 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-sm font-semibold text-white">
-                {telemetry?.deviceName || sasInfo?.deviceName || 'Smartphone'}
+                {activeChildRecord?.childName || telemetry?.deviceName || sasInfo?.deviceName || 'Smartphone'}
               </span>
-              <span className="hidden rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-zinc-400 sm:inline">
-                {fullCode}
-              </span>
+              {activeChildRecord && activeChildRecord.childName !== activeChildRecord.deviceName && (
+                <span className="hidden truncate text-[11px] text-zinc-500 sm:inline">
+                  · {activeChildRecord.deviceName}
+                </span>
+              )}
             </div>
             {telemetry && (
               <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
@@ -1416,11 +1173,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           <button
             type="button"
             onClick={handleDisconnect}
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs font-medium text-zinc-300 transition hover:border-rose-500/40 hover:text-rose-300"
-            title="Quitter la session"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs font-medium text-zinc-300 transition hover:border-white/25 hover:text-white"
+            title={account ? 'Revenir à la liste des enfants' : 'Quitter la session'}
           >
             <Unplug className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Quitter</span>
+            <span className="hidden sm:inline">{account ? 'Enfants' : 'Quitter'}</span>
           </button>
         </div>
       </div>
