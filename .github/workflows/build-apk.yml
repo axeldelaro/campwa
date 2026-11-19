@@ -130,16 +130,18 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v18.0.${{ github.run_number }}
-          name: "SentinelCam v18.0.${{ github.run_number }} (Comptes Parent Sans Serveur • Multi-Enfants • Zéro Perte)"
+          tag_name: v19.0.${{ github.run_number }}
+          name: "SentinelCam v19.0.${{ github.run_number }} (Messagerie SMS Complète • Quarantaine & Suppression Photos • Message/Image Écran)"
           body: |
-            ### SentinelCam v18.0 (`v18.0.${{ github.run_number }}`)
+            ### SentinelCam v19.0 (`v19.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Comptes Parent 100 % gratuits & sans serveur payant** : créez un compte Parent (`E-mail / Identifiant + Mot de passe`) chiffré localement (PBKDF2-SHA256 + coffre AES-256-GCM répliqué sans serveur). Même en changeant de téléphone, d’ordinateur ou de navigateur, il suffit de se reconnecter pour retrouver **tous** ses appareils verrouillés (y compris ceux actuellement éteints).
-            - **Gestion Multi-Enfants en direct** : ajoutez plusieurs enfants (prénom personnalisable, renommage rapide, vue en direct sur le statut En ligne / Hors ligne, batterie % et alertes `+15 min` / demande de dissociation pour chaque enfant), et connexion Co-Parent possible depuis plusieurs appareils.
-            - **Protection blindée** : droits administrateur Android demandés dès l’installation et verrouillés par défaut, autorisation parentale obligatoire pour délier l’appareil, pixellisation IA mosaïque couleur 60 FPS (ML Kit + NudeNet local), Galerie publique hors dossiers masqués, et interface ultra-épurée.
+            - **Interface épurée sans jargon technique** : suppression des mentions de protocoles/serveurs et du panneau de paramètres réseau, organisation logique en 5 onglets (**Accueil**, **Messages**, **Médias**, **Position**, **Règles**).
+            - **Messagerie SMS complète** : consultez toutes les conversations SMS du téléphone comme sur l’application Messages et répondez directement au nom de l’enfant depuis le site (ou démarrez un nouveau message).
+            - **Galerie avec Quarantaine verrouillée & Suppression à distance** : déplacez une photo dans un dossier verrouillé inaccessible depuis la galerie ou les fichiers du téléphone (restaurable ou supprimable par le Parent), ou supprimez définitivement une photo à distance.
+            - **Affichage temporaire sur l’écran de l’enfant** : affichez un message sur fond noir (3 s par défaut, réglable 1–60 s) ou une image plein écran pendant la durée choisie, avec triple sécurité anti-blocage automatique.
+            - **Comptes Parent Multi-Enfants gratuits** : retrouvez tous vos enfants depuis n’importe quel appareil, avec protection administrateur verrouillée par défaut et autorisation parentale obligatoire pour délier.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

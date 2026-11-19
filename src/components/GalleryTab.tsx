@@ -1,66 +1,152 @@
-import React from 'react';
-import { Download, Image as ImageIcon, RefreshCw, X } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  Download,
+  Image as ImageIcon,
+  Lock,
+  RefreshCw,
+  RotateCcw,
+  ShieldAlert,
+  Trash2,
+  X,
+} from 'lucide-react';
 import type { GalleryAlbumItem, GalleryPhotoItem } from '../types/sentinel';
 
 interface GalleryTabProps {
   items: GalleryPhotoItem[];
+  quarantineItems: GalleryPhotoItem[];
   albums: GalleryAlbumItem[];
   activeAlbum: string;
   totalCount: number;
+  quarantineCount: number;
   hasMore: boolean;
   loading: boolean;
+  quarantineLoading: boolean;
   error: string | null;
+  actionFeedback: { ok: boolean; text: string } | null;
   canViewGallery: boolean;
   lightboxPhoto: { item: GalleryPhotoItem; base64?: string; loading: boolean; error?: string } | null;
   onRefresh: (album?: string) => Promise<void>;
   onLoadMore: () => Promise<void>;
+  onRefreshQuarantine: () => Promise<void>;
   onSelectPhoto: (item: GalleryPhotoItem) => Promise<void>;
+  onQuarantinePhoto: (item: GalleryPhotoItem) => Promise<void>;
+  onDeletePhoto: (item: GalleryPhotoItem) => Promise<void>;
+  onRestoreQuarantine: (item: GalleryPhotoItem) => Promise<void>;
+  onDeleteQuarantine: (item: GalleryPhotoItem) => Promise<void>;
   onCloseLightbox: () => void;
+  onDismissFeedback: () => void;
 }
 
 export const GalleryTab: React.FC<GalleryTabProps> = ({
   items,
+  quarantineItems,
   albums,
   activeAlbum,
   totalCount,
+  quarantineCount,
   hasMore,
   loading,
+  quarantineLoading,
   error,
+  actionFeedback,
   canViewGallery,
   lightboxPhoto,
   onRefresh,
   onLoadMore,
+  onRefreshQuarantine,
   onSelectPhoto,
+  onQuarantinePhoto,
+  onDeletePhoto,
+  onRestoreQuarantine,
+  onDeleteQuarantine,
   onCloseLightbox,
+  onDismissFeedback,
 }) => {
+  const [viewMode, setViewMode] = useState<'public' | 'quarantine'>('public');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const handleSwitchMode = (mode: 'public' | 'quarantine') => {
+    setViewMode(mode);
+    setConfirmDeleteId(null);
+    if (mode === 'quarantine') {
+      void onRefreshQuarantine();
+    } else if (items.length === 0) {
+      void onRefresh(activeAlbum);
+    }
+  };
+
+  const shownItems = viewMode === 'public' ? items : quarantineItems;
+  const isBusy = viewMode === 'public' ? loading : quarantineLoading;
+
   return (
-    <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <ImageIcon className="h-4 w-4 text-zinc-400" />
-          <div>
-            <h2 className="text-sm font-semibold text-white">Galerie photos</h2>
-            <p className="text-[11px] text-zinc-400">
-              {totalCount > 0
-                ? `${totalCount} photos publiques (dossiers masqués exclus)`
-                : 'Dossiers masqués et corbeille automatiquement exclus'}
-            </p>
-          </div>
+    <div className="space-y-3 rounded-2xl border border-white/[0.07] bg-zinc-900/65 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1 rounded-xl border border-white/[0.07] bg-zinc-950 p-1">
+          <button
+            type="button"
+            onClick={() => handleSwitchMode('public')}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+              viewMode === 'public' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <ImageIcon className="h-3.5 w-3.5" />
+            <span>Galerie</span>
+            {totalCount > 0 && <span className="opacity-65">({totalCount})</span>}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSwitchMode('quarantine')}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+              viewMode === 'quarantine'
+                ? 'bg-white text-zinc-950'
+                : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <Lock className="h-3.5 w-3.5" />
+            <span>Quarantaine</span>
+            {quarantineCount > 0 && <span className="opacity-65">({quarantineCount})</span>}
+          </button>
         </div>
 
         <button
           type="button"
-          disabled={loading}
-          onClick={() => void onRefresh(activeAlbum)}
+          disabled={isBusy}
+          onClick={() =>
+            viewMode === 'public' ? void onRefresh(activeAlbum) : void onRefreshQuarantine()
+          }
           className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:text-white disabled:opacity-40"
         >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`h-3.5 w-3.5 ${isBusy ? 'animate-spin' : ''}`} />
           <span>Actualiser</span>
         </button>
       </div>
 
-      {albums.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-1.5">
+      {viewMode === 'quarantine' && (
+        <div className="flex items-center gap-2 rounded-xl border border-white/[0.06] bg-zinc-950/75 px-3 py-2 text-[11px] text-zinc-400">
+          <Lock className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+          <span>
+            Dossier verrouillé inaccessible depuis la galerie et les fichiers du téléphone.
+          </span>
+        </div>
+      )}
+
+      {actionFeedback && (
+        <div
+          className={`flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2 text-xs ${
+            actionFeedback.ok
+              ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
+              : 'border-rose-500/35 bg-rose-500/10 text-rose-200'
+          }`}
+        >
+          <span>{actionFeedback.text}</span>
+          <button type="button" onClick={onDismissFeedback} className="text-zinc-400 hover:text-white">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {viewMode === 'public' && albums.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
           <button
             type="button"
             onClick={() => void onRefresh('')}
@@ -90,34 +176,39 @@ export const GalleryTab: React.FC<GalleryTabProps> = ({
       )}
 
       {error && (
-        <div className="mt-4 rounded-xl border border-rose-500/35 bg-rose-500/10 p-3 text-xs text-rose-200">
+        <div className="rounded-xl border border-rose-500/35 bg-rose-500/10 p-3 text-xs text-rose-200">
           {error}
         </div>
       )}
 
       {!canViewGallery && !error && (
-        <div className="mt-4 rounded-xl border border-white/[0.06] bg-zinc-950/70 p-4 text-xs text-zinc-400">
-          Autorisez la Galerie sur le smartphone (ou activez-la dans l’onglet Règles).
+        <div className="rounded-xl border border-white/[0.06] bg-zinc-950/70 p-4 text-xs text-zinc-400">
+          Activez « Galerie photos » dans l’onglet Règles → Autorisations à distance.
         </div>
       )}
 
-      {loading && items.length === 0 ? (
+      {isBusy && shownItems.length === 0 ? (
         <div className="flex items-center justify-center py-12 text-xs text-zinc-400">
           <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-          Chargement de la galerie…
+          Chargement…
         </div>
-      ) : items.length === 0 && !error ? (
+      ) : shownItems.length === 0 && !error ? (
         <div className="py-10 text-center text-xs text-zinc-500">
-          Cliquez sur « Actualiser » pour parcourir les photos publiques.
+          {viewMode === 'quarantine'
+            ? 'Aucune photo en quarantaine.'
+            : 'Aucune photo trouvée.'}
         </div>
       ) : (
         <>
-          <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
-            {items.map((item) => (
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+            {shownItems.map((item) => (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => void onSelectPhoto(item)}
+                onClick={() => {
+                  setConfirmDeleteId(null);
+                  void onSelectPhoto(item);
+                }}
                 className="group relative aspect-square overflow-hidden rounded-xl border border-white/[0.06] bg-zinc-950 text-left transition hover:border-white/25"
               >
                 <img
@@ -126,15 +217,17 @@ export const GalleryTab: React.FC<GalleryTabProps> = ({
                   loading="lazy"
                   className="h-full w-full object-cover transition duration-200 group-hover:scale-105"
                 />
-                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-1.5 py-1 text-[9px] text-zinc-300 opacity-0 transition group-hover:opacity-100">
-                  {new Date(item.dateTaken).toLocaleDateString('fr-FR')}
-                </div>
+                {item.quarantined && (
+                  <span className="absolute right-1.5 top-1.5 rounded-md bg-black/75 p-1 text-amber-300">
+                    <Lock className="h-3 w-3" />
+                  </span>
+                )}
               </button>
             ))}
           </div>
 
-          {hasMore && (
-            <div className="mt-4 text-center">
+          {viewMode === 'public' && hasMore && (
+            <div className="pt-1 text-center">
               <button
                 type="button"
                 disabled={loading}
@@ -148,50 +241,37 @@ export const GalleryTab: React.FC<GalleryTabProps> = ({
         </>
       )}
 
-      {/* Fullscreen Photo Lightbox */}
+      {/* Fullscreen Photo Viewer with Quarantine / Restore / Delete */}
       {lightboxPhoto && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 backdrop-blur-sm sm:p-4"
           onClick={onCloseLightbox}
         >
           <div
             className="w-full max-w-2xl overflow-hidden rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-white/[0.07] px-4 py-3 text-xs">
+            <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] px-4 py-3 text-xs">
               <div className="min-w-0 truncate">
                 <span className="font-medium text-white">{lightboxPhoto.item.name}</span>
                 <span className="ml-2 text-zinc-500">
-                  {lightboxPhoto.item.album} ·{' '}
-                  {new Date(lightboxPhoto.item.dateTaken).toLocaleString('fr-FR')}
+                  {new Date(lightboxPhoto.item.dateTaken).toLocaleDateString('fr-FR')}
                 </span>
               </div>
-              <div className="flex items-center gap-2">
-                {lightboxPhoto.base64 && (
-                  <a
-                    href={`data:image/jpeg;base64,${lightboxPhoto.base64}`}
-                    download={lightboxPhoto.item.name || `photo-${lightboxPhoto.item.id}.jpg`}
-                    className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-[11px] font-semibold text-zinc-950 hover:bg-zinc-200"
-                  >
-                    <Download className="h-3 w-3" />
-                    <span>Télécharger</span>
-                  </a>
-                )}
-                <button
-                  type="button"
-                  onClick={onCloseLightbox}
-                  className="rounded-lg p-1 text-zinc-400 hover:bg-white/10 hover:text-white"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={onCloseLightbox}
+                className="rounded-lg p-1 text-zinc-400 hover:bg-white/10 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
 
-            <div className="flex min-h-[260px] items-center justify-center bg-black p-2">
+            <div className="flex min-h-[240px] items-center justify-center bg-black p-2">
               {lightboxPhoto.loading ? (
                 <div className="flex items-center gap-2 text-xs text-zinc-400">
                   <RefreshCw className="h-4 w-4 animate-spin" />
-                  <span>Chargement HD chiffré…</span>
+                  <span>Chargement…</span>
                 </div>
               ) : lightboxPhoto.error ? (
                 <div className="text-xs text-rose-300">{lightboxPhoto.error}</div>
@@ -199,9 +279,72 @@ export const GalleryTab: React.FC<GalleryTabProps> = ({
                 <img
                   src={`data:image/jpeg;base64,${lightboxPhoto.base64}`}
                   alt={lightboxPhoto.item.name}
-                  className="max-h-[72vh] w-auto object-contain"
+                  className="max-h-[62vh] w-auto object-contain"
                 />
               ) : null}
+            </div>
+
+            {/* Parent Moderation Bar: Quarantine / Restore / Delete / Download */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.07] px-4 py-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                {lightboxPhoto.item.quarantined ? (
+                  <button
+                    type="button"
+                    onClick={() => void onRestoreQuarantine(lightboxPhoto.item)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 font-medium text-emerald-200 hover:bg-emerald-500/25"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    <span>Restaurer</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void onQuarantinePhoto(lightboxPhoto.item)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-2 font-medium text-amber-200 hover:bg-amber-500/25"
+                  >
+                    <ShieldAlert className="h-3.5 w-3.5" />
+                    <span>Quarantaine</span>
+                  </button>
+                )}
+
+                {confirmDeleteId === lightboxPhoto.item.id ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmDeleteId(null);
+                      if (lightboxPhoto.item.quarantined) {
+                        void onDeleteQuarantine(lightboxPhoto.item);
+                      } else {
+                        void onDeletePhoto(lightboxPhoto.item);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-rose-500 px-3 py-2 font-semibold text-white hover:bg-rose-400"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Confirmer suppression</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteId(lightboxPhoto.item.id)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 font-medium text-rose-200 hover:bg-rose-500/20"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Supprimer</span>
+                  </button>
+                )}
+              </div>
+
+              {lightboxPhoto.base64 && (
+                <a
+                  href={`data:image/jpeg;base64,${lightboxPhoto.base64}`}
+                  download={lightboxPhoto.item.name || `photo-${lightboxPhoto.item.id}.jpg`}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 font-semibold text-zinc-950 hover:bg-zinc-200"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>Enregistrer</span>
+                </a>
+              )}
             </div>
           </div>
         </div>

@@ -265,7 +265,7 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
                 <>
                   <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                   <span>
-                    {authMode === 'register' ? 'Création chiffrée…' : 'Synchronisation…'}
+                    {authMode === 'register' ? 'Création du compte…' : 'Connexion…'}
                   </span>
                 </>
               ) : (
@@ -277,7 +277,7 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
           </form>
 
           <p className="text-center text-[11px] text-zinc-500">
-            Chiffrement AES-256 local · 100 % gratuit & sans serveur payant
+            Gratuit, privé et synchronisé sur tous vos appareils
           </p>
 
           {renderConnectingBar()}

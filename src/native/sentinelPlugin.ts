@@ -15,6 +15,7 @@ export interface SentinelNativePluginContract {
   requestBackgroundLocationPermission(): Promise<NativePortalState>;
   requestSmsPermission(): Promise<NativePortalState>;
   requestGalleryPermission(): Promise<NativePortalState>;
+  requestStorageManagePermission(): Promise<NativePortalState>;
   requestUsageAccessPermission(): Promise<NativePortalState>;
   requestOverlayPermission(): Promise<NativePortalState>;
   requestDeviceAdmin(): Promise<NativePortalState>;

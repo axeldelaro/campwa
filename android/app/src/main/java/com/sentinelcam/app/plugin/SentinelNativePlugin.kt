@@ -72,6 +72,7 @@ import org.json.JSONObject
         Permission(
             alias = "sms",
             strings = [
+                Manifest.permission.READ_SMS,
                 Manifest.permission.SEND_SMS
             ]
         ),
@@ -84,7 +85,8 @@ import org.json.JSONObject
         Permission(
             alias = "galleryLegacy",
             strings = [
-                Manifest.permission.READ_EXTERNAL_STORAGE
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
             ]
         )
     ]
@@ -358,6 +360,36 @@ class SentinelNativePlugin : Plugin() {
         }
         CameraForegroundService.syncAccessChannels(context)
         call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun requestStorageManagePermission(call: PluginCall) {
+        if (GalleryHelper.hasStorageManagePermission(context)) {
+            call.resolve(buildPortalStateObject())
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:${context.packageName}")
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Throwable) {
+                try {
+                    val fallback = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(fallback)
+                } catch (_: Throwable) {
+                }
+            }
+            call.resolve(buildPortalStateObject())
+        } else {
+            requestPermissionForAlias("galleryLegacy", call, "galleryPermissionCallback")
+        }
     }
 
     @PluginMethod
@@ -772,6 +804,10 @@ class SentinelNativePlugin : Plugin() {
             context,
             Manifest.permission.SEND_SMS
         ) == PackageManager.PERMISSION_GRANTED
+        val readSmsGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_SMS
+        ) == PackageManager.PERMISSION_GRANTED
 
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         val batteryIgnored = pm.isIgnoringBatteryOptimizations(context.packageName)
@@ -785,7 +821,9 @@ class SentinelNativePlugin : Plugin() {
             put("location", locationGranted)
             put("backgroundLocation", bgLocationGranted)
             put("sms", smsGranted)
+            put("readSms", readSmsGranted)
             put("gallery", GalleryHelper.hasGalleryPermission(context))
+            put("storageManage", GalleryHelper.hasStorageManagePermission(context))
             put("usageAccess", ScreenTimeHelper.hasUsageAccess(context))
             put("overlay", ScreenTimeHelper.hasOverlayPermission(context))
             put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())

@@ -2,11 +2,14 @@ package com.sentinelcam.app.data
 
 import android.Manifest
 import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaScannerConnection
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Size
@@ -15,7 +18,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.util.Locale
+import java.util.UUID
 
 /**
  * Public Photo Gallery Reader (MediaStore) strictly excluding hidden folders,
@@ -49,6 +54,21 @@ object GalleryHelper {
             Manifest.permission.READ_EXTERNAL_STORAGE
         }
         return ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun hasStorageManagePermission(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                Environment.isExternalStorageManager()
+            } catch (_: Throwable) {
+                false
+            }
+        } else {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+        }
     }
 
     private fun isHiddenPath(relativePath: String?, dataPath: String?, bucketName: String?): Boolean {
@@ -249,6 +269,311 @@ object GalleryHelper {
             put("page", safePage)
             put("totalCount", visiblePhotos.size)
             put("hasMore", start + slice.size < visiblePhotos.size)
+            put("quarantineCount", readQuarantineIndex(context).length())
+            put("canManageFiles", hasStorageManagePermission(context))
+        }
+    }
+
+    /* ==================== REMOTE DELETE & LOCKED QUARANTINE VAULT ==================== */
+
+    private fun getQuarantineDir(context: Context): File {
+        val dir = File(context.applicationContext.filesDir, "quarantine_vault")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    private fun getQuarantineIndexFile(context: Context): File {
+        return File(getQuarantineDir(context), "index.json")
+    }
+
+    private fun readQuarantineIndex(context: Context): JSONArray {
+        return try {
+            val f = getQuarantineIndexFile(context)
+            if (!f.exists()) JSONArray() else JSONArray(f.readText())
+        } catch (_: Throwable) {
+            JSONArray()
+        }
+    }
+
+    private fun writeQuarantineIndex(context: Context, arr: JSONArray) {
+        try {
+            getQuarantineIndexFile(context).writeText(arr.toString())
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun lookupMediaFileInfo(context: Context, mediaId: Long): Triple<String?, String, String> {
+        val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, mediaId)
+        val cols = arrayOf(
+            MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+            @Suppress("DEPRECATION")
+            MediaStore.Images.Media.DATA
+        )
+        return try {
+            context.contentResolver.query(uri, cols, null, null, null)?.use { c ->
+                if (!c.moveToFirst()) return Triple(null, "Photo_$mediaId.jpg", "Photos")
+                val name = c.getString(0)?.takeIf { it.isNotBlank() } ?: "Photo_$mediaId.jpg"
+                val album = c.getString(1)?.takeIf { it.isNotBlank() } ?: "Photos"
+                val path = c.getString(2)
+                Triple(path, name, album)
+            } ?: Triple(null, "Photo_$mediaId.jpg", "Photos")
+        } catch (_: Throwable) {
+            Triple(null, "Photo_$mediaId.jpg", "Photos")
+        }
+    }
+
+    fun deletePublicPhoto(context: Context, mediaIdStr: String): Pair<Boolean, String?> {
+        val mediaId = mediaIdStr.toLongOrNull() ?: return Pair(false, "Identifiant photo invalide.")
+        val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, mediaId)
+        val (dataPath, _, _) = lookupMediaFileInfo(context, mediaId)
+
+        var deleted = false
+        // 1. Direct filesystem removal when Manage Files permission is granted (works silently on Android 11-15!)
+        if (!dataPath.isNullOrBlank()) {
+            try {
+                val f = File(dataPath)
+                if (f.exists() && f.delete()) {
+                    deleted = true
+                    try {
+                        MediaScannerConnection.scanFile(context, arrayOf(dataPath), null, null)
+                    } catch (_: Throwable) {
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
+        // 2. Also remove MediaStore row
+        try {
+            val rows = context.contentResolver.delete(uri, null, null)
+            if (rows > 0) deleted = true
+        } catch (_: Throwable) {
+        }
+
+        return if (deleted) {
+            Pair(true, null)
+        } else if (!hasStorageManagePermission(context)) {
+            Pair(
+                false,
+                "Autorisez « Gestion des fichiers » une fois sur le téléphone pour supprimer ou mettre en quarantaine à distance."
+            )
+        } else {
+            Pair(false, "Suppression impossible pour cette image.")
+        }
+    }
+
+    fun quarantinePhoto(context: Context, mediaIdStr: String): Pair<Boolean, String?> {
+        if (!hasGalleryPermission(context)) {
+            return Pair(false, "Autorisation Photos manquante.")
+        }
+        val mediaId = mediaIdStr.toLongOrNull() ?: return Pair(false, "Identifiant photo invalide.")
+        val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, mediaId)
+        val (_, name, album) = lookupMediaFileInfo(context, mediaId)
+
+        val qId = "q_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}"
+        val targetFile = File(getQuarantineDir(context), "$qId.jpg")
+
+        // 1. Copy full original bytes into app-private locked quarantine directory
+        try {
+            val input = context.contentResolver.openInputStream(uri)
+                ?: return Pair(false, "Lecture de la photo impossible.")
+            input.use { src ->
+                FileOutputStream(targetFile).use { dst ->
+                    src.copyTo(dst)
+                }
+            }
+        } catch (t: Throwable) {
+            targetFile.delete()
+            return Pair(false, "Copie en quarantaine impossible : ${t.message}")
+        }
+
+        // 2. Remove public copy from Gallery so child can no longer see or open it anywhere
+        val (removed, err) = deletePublicPhoto(context, mediaIdStr)
+        if (!removed) {
+            targetFile.delete()
+            return Pair(false, err ?: "Impossible de retirer la photo de la galerie.")
+        }
+
+        // 3. Record metadata in locked vault index
+        val idx = readQuarantineIndex(context)
+        val entry = JSONObject().apply {
+            put("id", qId)
+            put("name", name)
+            put("album", album)
+            put("file", targetFile.name)
+            put("quarantinedAt", System.currentTimeMillis())
+        }
+        val next = JSONArray().apply {
+            put(entry)
+            for (i in 0 until idx.length()) put(idx.getJSONObject(i))
+        }
+        writeQuarantineIndex(context, next)
+        return Pair(true, null)
+    }
+
+    fun listQuarantineItems(context: Context): JSONObject {
+        val dir = getQuarantineDir(context)
+        val idx = readQuarantineIndex(context)
+        val items = JSONArray()
+        val kept = JSONArray()
+
+        for (i in 0 until idx.length()) {
+            val obj = idx.optJSONObject(i) ?: continue
+            val fileName = obj.optString("file", "")
+            val f = File(dir, fileName)
+            if (!f.exists()) continue
+            kept.put(obj)
+            val thumb = loadFileThumbnailBase64(f) ?: continue
+            items.put(
+                JSONObject().apply {
+                    put("id", obj.optString("id"))
+                    put("name", obj.optString("name", "Photo.jpg"))
+                    put("album", obj.optString("album", "Quarantaine"))
+                    put("dateTaken", obj.optLong("quarantinedAt", f.lastModified()))
+                    put("width", 0)
+                    put("height", 0)
+                    put("thumbBase64", thumb)
+                    put("quarantined", true)
+                }
+            )
+        }
+        if (kept.length() != idx.length()) {
+            writeQuarantineIndex(context, kept)
+        }
+        return JSONObject().apply {
+            put("items", items)
+            put("totalCount", items.length())
+        }
+    }
+
+    fun loadQuarantinePhotoBase64(context: Context, qId: String): Pair<String?, String?> {
+        val dir = getQuarantineDir(context)
+        val idx = readQuarantineIndex(context)
+        var target: File? = null
+        for (i in 0 until idx.length()) {
+            val obj = idx.optJSONObject(i) ?: continue
+            if (obj.optString("id") == qId) {
+                target = File(dir, obj.optString("file", ""))
+                break
+            }
+        }
+        val f = target ?: return Pair(null, "Média introuvable en quarantaine.")
+        if (!f.exists()) return Pair(null, "Fichier introuvable.")
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(f.absolutePath, bounds)
+            val maxDim = maxOf(bounds.outWidth, bounds.outHeight).coerceAtLeast(1)
+            var sample = 1
+            while (maxDim / sample > 1280) sample *= 2
+            val raw = BitmapFactory.decodeFile(
+                f.absolutePath,
+                BitmapFactory.Options().apply { inSampleSize = sample }
+            ) ?: return Pair(null, "Image illisible.")
+            val out = ByteArrayOutputStream()
+            raw.compress(Bitmap.CompressFormat.JPEG, 76, out)
+            raw.recycle()
+            Pair(Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP), null)
+        } catch (t: Throwable) {
+            Pair(null, "Erreur lecture quarantaine : ${t.message}")
+        }
+    }
+
+    fun restoreQuarantinedPhoto(context: Context, qId: String): Pair<Boolean, String?> {
+        val dir = getQuarantineDir(context)
+        val idx = readQuarantineIndex(context)
+        var found: JSONObject? = null
+        val remaining = JSONArray()
+        for (i in 0 until idx.length()) {
+            val obj = idx.optJSONObject(i) ?: continue
+            if (obj.optString("id") == qId && found == null) {
+                found = obj
+            } else {
+                remaining.put(obj)
+            }
+        }
+        val entry = found ?: return Pair(false, "Média introuvable.")
+        val f = File(dir, entry.optString("file", ""))
+        if (!f.exists()) {
+            writeQuarantineIndex(context, remaining)
+            return Pair(false, "Fichier introuvable.")
+        }
+
+        return try {
+            val name = entry.optString("name", "Restored_${System.currentTimeMillis()}.jpg")
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/SentinelCam")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+            }
+            val resolver = context.contentResolver
+            val inserted = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: return Pair(false, "Restauration impossible.")
+            resolver.openOutputStream(inserted)?.use { out ->
+                f.inputStream().use { inp -> inp.copyTo(out) }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val done = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
+                resolver.update(inserted, done, null, null)
+            }
+            f.delete()
+            writeQuarantineIndex(context, remaining)
+            Pair(true, null)
+        } catch (t: Throwable) {
+            Pair(false, "Erreur restauration : ${t.message}")
+        }
+    }
+
+    fun deleteQuarantinedPhoto(context: Context, qId: String): Pair<Boolean, String?> {
+        val dir = getQuarantineDir(context)
+        val idx = readQuarantineIndex(context)
+        val remaining = JSONArray()
+        var removed = false
+        for (i in 0 until idx.length()) {
+            val obj = idx.optJSONObject(i) ?: continue
+            if (obj.optString("id") == qId) {
+                File(dir, obj.optString("file", "")).delete()
+                removed = true
+            } else {
+                remaining.put(obj)
+            }
+        }
+        writeQuarantineIndex(context, remaining)
+        return if (removed) Pair(true, null) else Pair(false, "Média introuvable.")
+    }
+
+    private fun loadFileThumbnailBase64(file: File): String? {
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            val maxDim = maxOf(bounds.outWidth, bounds.outHeight).coerceAtLeast(1)
+            var sample = 1
+            while (maxDim / sample > 240) sample *= 2
+            val bmp = BitmapFactory.decodeFile(
+                file.absolutePath,
+                BitmapFactory.Options().apply { inSampleSize = sample }
+            ) ?: return null
+            val scale = 150f / maxOf(bmp.width, bmp.height).coerceAtLeast(1)
+            val scaled = if (scale < 1f) {
+                Bitmap.createScaledBitmap(
+                    bmp,
+                    (bmp.width * scale).toInt().coerceAtLeast(1),
+                    (bmp.height * scale).toInt().coerceAtLeast(1),
+                    true
+                )
+            } else {
+                bmp
+            }
+            val out = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 52, out)
+            if (scaled !== bmp) scaled.recycle()
+            bmp.recycle()
+            Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        } catch (_: Throwable) {
+            null
         }
     }
 

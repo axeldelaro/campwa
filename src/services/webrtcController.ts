@@ -24,8 +24,11 @@ import type {
   DataGalleryPhotoMsg,
   DataLocationHistoryMsg,
   DataLocationMsg,
+  DataQuarantineListMsg,
   DataScreenTimeMsg,
+  DataSmsMessagesMsg,
   DataSmsResultMsg,
+  DataSmsThreadsMsg,
   DerivedBootstrapKeys,
   DeviceTelemetry,
   GpsTrackingMode,
@@ -70,9 +73,12 @@ export interface ControllerCallbacks {
   onLocationHistoryData?: (data: LocationHistoryBundle) => void;
   onDeviceInfoData?: (data: DataDeviceInfoMsg) => void;
   onSmsResult?: (data: DataSmsResultMsg) => void;
+  onSmsThreadsData?: (data: DataSmsThreadsMsg) => void;
+  onSmsMessagesData?: (data: DataSmsMessagesMsg) => void;
   onScreenTimeData?: (data: DataScreenTimeMsg) => void;
   onControlResult?: (data: DataControlResultMsg) => void;
   onGalleryData?: (data: DataGalleryMsg) => void;
+  onQuarantineListData?: (data: DataQuarantineListMsg) => void;
   onGalleryPhotoData?: (info: { mediaId: string; base64?: string; error?: string }) => void;
   onStreamError?: (message: string) => void;
   onTalkieStateChange?: (active: boolean) => void;
@@ -842,6 +848,104 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async requestSmsThreads(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_SMS_THREADS',
+        requestId: randomHex(8),
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async requestSmsMessages(threadId: string, address = ''): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_SMS_MESSAGES',
+        requestId: randomHex(8),
+        threadId,
+        address,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async performGalleryAction(
+    action:
+      | 'delete'
+      | 'quarantine'
+      | 'list_quarantine'
+      | 'get_quarantine_photo'
+      | 'restore_quarantine'
+      | 'delete_quarantine',
+    mediaId?: string
+  ): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GALLERY_ACTION',
+        requestId: randomHex(8),
+        action,
+        mediaId,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async flashRemoteText(text: string, durationSec = 3): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_FLASH_SCREEN',
+        requestId: randomHex(8),
+        mode: 'text',
+        text: text.trim().slice(0, 280),
+        durationSec: Math.max(1, Math.min(60, Math.round(durationSec))),
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async flashRemoteImage(
+    base64Jpeg: string,
+    durationSec = 5,
+    caption = ''
+  ): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    const clean = base64Jpeg.includes(',') ? base64Jpeg.split(',')[1] : base64Jpeg;
+    const reqId = randomHex(8);
+    const chunkSize = 36_000;
+    const totalChunks = Math.max(1, Math.ceil(clean.length / chunkSize));
+    const safeSec = Math.max(1, Math.min(60, Math.round(durationSec)));
+
+    for (let i = 0; i < totalChunks; i++) {
+      const slice = clean.slice(i * chunkSize, (i + 1) * chunkSize);
+      await this.signaling.send(
+        {
+          type: 'CMD_FLASH_SCREEN',
+          requestId: reqId,
+          mode: 'image',
+          caption: i === 0 ? caption.trim().slice(0, 160) : undefined,
+          durationSec: safeSec,
+          chunkIndex: i,
+          totalChunks,
+          data: slice,
+          ts: Date.now(),
+        },
+        'sess'
+      );
+      if (totalChunks > 1) {
+        await new Promise((r) => window.setTimeout(r, 40));
+      }
+    }
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -888,6 +992,14 @@ export class SentinelWebRtcController {
         this.callbacks.onSmsResult?.(msg);
         break;
 
+      case 'DATA_SMS_THREADS':
+        this.callbacks.onSmsThreadsData?.(msg);
+        break;
+
+      case 'DATA_SMS_MESSAGES':
+        this.callbacks.onSmsMessagesData?.(msg);
+        break;
+
       case 'DATA_SCREEN_TIME':
         this.callbacks.onScreenTimeData?.(msg);
         break;
@@ -898,6 +1010,10 @@ export class SentinelWebRtcController {
 
       case 'DATA_GALLERY':
         this.callbacks.onGalleryData?.(msg);
+        break;
+
+      case 'DATA_QUARANTINE_LIST':
+        this.callbacks.onQuarantineListData?.(msg);
         break;
 
       case 'DATA_GALLERY_PHOTO':

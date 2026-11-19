@@ -137,7 +137,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       await handleRequestDeviceAdmin();
       return;
     }
-    setPairMessage('Association chiffrée avec l’Espace Parent…');
+    setPairMessage('Association avec l’Espace Parent en cours…');
     setBusy(true);
     try {
       const next = await SentinelNative.pairWithParentCode({ code: clean });
@@ -218,9 +218,17 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   if (!p.gallery) {
     missingOsSteps.push({
       key: 'gallery',
-      label: 'Galerie photos publique',
+      label: 'Galerie photos',
       icon: ImageIcon,
       action: () => runAction(() => SentinelNative.requestGalleryPermission()),
+    });
+  }
+  if (!p.storageManage) {
+    missingOsSteps.push({
+      key: 'storage-manage',
+      label: 'Gestion photos (quarantaine & suppression)',
+      icon: Lock,
+      action: () => runAction(() => SentinelNative.requestStorageManagePermission()),
     });
   }
   if (!p.camera || !p.microphone) {
@@ -243,10 +251,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       action: () => runAction(() => SentinelNative.requestContactsPermission()),
     });
   }
-  if (!p.sms) {
+  if (!p.sms || !p.readSms) {
     missingOsSteps.push({
       key: 'sms',
-      label: 'Envoi SMS',
+      label: 'Messages SMS (lecture & réponse)',
       icon: MessageSquare,
       action: () => runAction(() => SentinelNative.requestSmsPermission()),
     });

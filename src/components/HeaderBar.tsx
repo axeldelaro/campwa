@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Download, Settings, Shield } from 'lucide-react';
+import { Download, Shield } from 'lucide-react';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -9,14 +9,12 @@ interface BeforeInstallPromptEvent extends Event {
 interface HeaderBarProps {
   isNativeAndroid: boolean;
   brokerConnected: boolean;
-  onOpenSettings: () => void;
   apkDownloadUrl: string;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
   isNativeAndroid,
   brokerConnected,
-  onOpenSettings,
   apkDownloadUrl,
 }) => {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
@@ -40,7 +38,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   return (
     <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#09090b]/90 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-2 px-3.5 py-2.5 sm:px-6 sm:py-3">
-        {/* Clean Brand */}
+        {/* Clean Consumer Brand */}
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] ring-1 ring-white/10">
             <Shield className="h-4 w-4 text-emerald-400" />
@@ -62,7 +60,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           </div>
         </div>
 
-        {/* Right Actions */}
+        {/* Minimal Right Actions (NO Technical Network Settings) */}
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           {deferredPrompt && !isNativeAndroid && (
             <button
@@ -83,18 +81,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               title="Télécharger l’application Android"
             >
               <Download className="h-3.5 w-3.5" />
-              <span>APK</span>
+              <span>App Android</span>
             </a>
           )}
-
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.04] text-zinc-400 ring-1 ring-white/[0.07] transition hover:text-white"
-            title="Paramètres réseau"
-          >
-            <Settings className="h-4 w-4" />
-          </button>
         </div>
       </div>
     </header>

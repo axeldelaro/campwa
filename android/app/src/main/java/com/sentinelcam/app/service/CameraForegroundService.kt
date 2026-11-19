@@ -20,18 +20,21 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.sentinelcam.app.MainActivity
 import com.sentinelcam.app.ai.AiScreenShieldEngine
 import com.sentinelcam.app.control.AppLockMonitor
 import com.sentinelcam.app.control.DeviceSecurityMonitor
+import com.sentinelcam.app.control.FlashOverlayManager
 import com.sentinelcam.app.control.ScreenTimeHelper
 import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.data.DeviceActionHelper
 import com.sentinelcam.app.data.DeviceDataHelper
 import com.sentinelcam.app.data.GalleryHelper
+import com.sentinelcam.app.data.SmsInboxHelper
 import com.sentinelcam.app.data.SmsRelayHelper
 import com.sentinelcam.app.location.LocationHistoryStore
 import com.sentinelcam.app.location.SmartLocationTracker
@@ -60,6 +63,16 @@ class CameraForegroundService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+
+    private data class FlashChunkBucket(
+        val totalChunks: Int,
+        val durationSec: Int,
+        val caption: String,
+        val createdAt: Long,
+        val chunks: HashMap<Int, String> = HashMap()
+    )
+
+    private val flashImageBuckets = ConcurrentHashMap<String, FlashChunkBucket>()
 
     private val channelKeysById = ConcurrentHashMap<String, BootstrapKeys>()
     private var signalingEngine: MqttSignalingEngine? = null
@@ -205,6 +218,7 @@ class CameraForegroundService : Service() {
 
     override fun onDestroy() {
         instance = null
+        FlashOverlayManager.dismissNow()
         val shouldRevive = try {
             prefs.onboardingCompleted && !prefs.userManuallyStopped
         } catch (_: Throwable) {
@@ -2091,6 +2105,220 @@ class CameraForegroundService : Service() {
                         prefs.unpairRequestedAt = 0L
                         prefs.appendLog("security", "Demande de dissociation refusée par le Parent.")
                         pushScreenTimeAndResult(channelId, reqId, "unpair_decision")
+                    }
+                }
+
+                "CMD_GET_SMS_THREADS" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_SMS_THREADS")
+                                put("requestId", reqId)
+                                put("error", "Accès non autorisé.")
+                                put("threads", org.json.JSONArray())
+                                put("hasReadPermission", false)
+                                put("hasSendPermission", false)
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val resp = SmsInboxHelper.listConversations(applicationContext, 45)
+                            resp.put("type", "DATA_SMS_THREADS")
+                            resp.put("requestId", reqId)
+                            resp.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, resp, mode = "sess")
+                        }
+                    }
+                }
+
+                "CMD_GET_SMS_MESSAGES" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val threadId = msg.optString("threadId", "")
+                    val address = msg.optString("address", "")
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_SMS_MESSAGES")
+                                put("requestId", reqId)
+                                put("threadId", threadId)
+                                put("address", address)
+                                put("error", "Accès non autorisé.")
+                                put("messages", org.json.JSONArray())
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val resp = SmsInboxHelper.getThreadMessages(applicationContext, threadId, address, 80)
+                            resp.put("type", "DATA_SMS_MESSAGES")
+                            resp.put("requestId", reqId)
+                            resp.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, resp, mode = "sess")
+                        }
+                    }
+                }
+
+                "CMD_GALLERY_ACTION" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val action = msg.optString("action", "")
+                    val mediaId = msg.optString("mediaId", "")
+                    if (!grant.allowDeviceControl || !prefs.globalAllowGallery) {
+                        sendControlResult(channelId, reqId, "gallery_$action", false, "Accès Galerie désactivé.")
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            when (action) {
+                                "delete" -> {
+                                    val (ok, err) = GalleryHelper.deletePublicPhoto(applicationContext, mediaId)
+                                    sendControlResult(channelId, reqId, "gallery_delete", ok, err ?: "Photo supprimée.")
+                                }
+
+                                "quarantine" -> {
+                                    val (ok, err) = GalleryHelper.quarantinePhoto(applicationContext, mediaId)
+                                    sendControlResult(channelId, reqId, "gallery_quarantine", ok, err ?: "Photo placée en quarantaine verrouillée.")
+                                }
+
+                                "list_quarantine" -> {
+                                    val resp = GalleryHelper.listQuarantineItems(applicationContext)
+                                    resp.put("type", "DATA_QUARANTINE_LIST")
+                                    resp.put("requestId", reqId)
+                                    resp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, resp, mode = "sess")
+                                }
+
+                                "get_quarantine_photo" -> {
+                                    val (b64, err) = GalleryHelper.loadQuarantinePhotoBase64(applicationContext, mediaId)
+                                    if (b64 == null) {
+                                        signalingEngine?.send(
+                                            channelId = channelId,
+                                            payload = JSONObject().apply {
+                                                put("type", "DATA_GALLERY_PHOTO")
+                                                put("requestId", reqId)
+                                                put("mediaId", mediaId)
+                                                put("chunkIndex", 0)
+                                                put("totalChunks", 1)
+                                                put("data", "")
+                                                put("error", err ?: "Photo introuvable.")
+                                                put("ts", System.currentTimeMillis())
+                                            },
+                                            mode = "sess"
+                                        )
+                                    } else {
+                                        val chunkSize = 48_000
+                                        val totalChunks = ((b64.length + chunkSize - 1) / chunkSize).coerceAtLeast(1)
+                                        for (i in 0 until totalChunks) {
+                                            val slice = b64.substring(i * chunkSize, minOf(b64.length, (i + 1) * chunkSize))
+                                            signalingEngine?.send(
+                                                channelId = channelId,
+                                                payload = JSONObject().apply {
+                                                    put("type", "DATA_GALLERY_PHOTO")
+                                                    put("requestId", reqId)
+                                                    put("mediaId", mediaId)
+                                                    put("chunkIndex", i)
+                                                    put("totalChunks", totalChunks)
+                                                    put("data", slice)
+                                                    put("ts", System.currentTimeMillis())
+                                                },
+                                                mode = "sess"
+                                            )
+                                            if (totalChunks > 1) delay(40L)
+                                        }
+                                    }
+                                }
+
+                                "restore_quarantine" -> {
+                                    val (ok, err) = GalleryHelper.restoreQuarantinedPhoto(applicationContext, mediaId)
+                                    sendControlResult(channelId, reqId, "gallery_restore", ok, err ?: "Photo restaurée dans la galerie.")
+                                }
+
+                                "delete_quarantine" -> {
+                                    val (ok, err) = GalleryHelper.deleteQuarantinedPhoto(applicationContext, mediaId)
+                                    sendControlResult(channelId, reqId, "gallery_delete_quarantine", ok, err ?: "Photo supprimée définitivement.")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                "CMD_FLASH_SCREEN" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val mode = msg.optString("mode", "text")
+                    val durationSec = msg.optInt("durationSec", if (mode == "text") 3 else 5).coerceIn(1, 60)
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "flash_screen", false, "Contrôle non autorisé.")
+                    } else if (mode == "text") {
+                        val text = msg.optString("text", "")
+                        val (ok, err) = FlashOverlayManager.showTextMessage(applicationContext, text, durationSec)
+                        sendControlResult(
+                            channelId,
+                            reqId,
+                            "flash_screen",
+                            ok,
+                            err ?: "Message affiché pendant $durationSec s."
+                        )
+                    } else if (mode == "image") {
+                        val totalChunks = msg.optInt("totalChunks", 1).coerceIn(1, 32)
+                        val chunkIndex = msg.optInt("chunkIndex", 0)
+                        val data = msg.optString("data", "")
+                        val caption = msg.optString("caption", "")
+                        val now = System.currentTimeMillis()
+                        // Evict stale incomplete buckets (>20s)
+                        flashImageBuckets.entries.removeIf { now - it.value.createdAt > 20_000L }
+
+                        if (totalChunks <= 1) {
+                            serviceScope.launch(Dispatchers.IO) {
+                                val bytes = try {
+                                    Base64.decode(data, Base64.DEFAULT)
+                                } catch (_: Throwable) {
+                                    ByteArray(0)
+                                }
+                                val (ok, err) = FlashOverlayManager.showImage(applicationContext, bytes, caption, durationSec)
+                                sendControlResult(
+                                    channelId,
+                                    reqId,
+                                    "flash_screen",
+                                    ok,
+                                    err ?: "Image affichée pendant $durationSec s."
+                                )
+                            }
+                        } else {
+                            val bucket = flashImageBuckets.getOrPut(reqId) {
+                                FlashChunkBucket(totalChunks, durationSec, caption, now)
+                            }
+                            bucket.chunks[chunkIndex] = data
+                            if (bucket.chunks.size >= bucket.totalChunks) {
+                                flashImageBuckets.remove(reqId)
+                                serviceScope.launch(Dispatchers.IO) {
+                                    val sb = StringBuilder()
+                                    for (i in 0 until bucket.totalChunks) {
+                                        sb.append(bucket.chunks[i].orEmpty())
+                                    }
+                                    val bytes = try {
+                                        Base64.decode(sb.toString(), Base64.DEFAULT)
+                                    } catch (_: Throwable) {
+                                        ByteArray(0)
+                                    }
+                                    val (ok, err) = FlashOverlayManager.showImage(
+                                        applicationContext,
+                                        bytes,
+                                        bucket.caption,
+                                        bucket.durationSec
+                                    )
+                                    sendControlResult(
+                                        channelId,
+                                        reqId,
+                                        "flash_screen",
+                                        ok,
+                                        err ?: "Image affichée pendant ${bucket.durationSec} s."
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 

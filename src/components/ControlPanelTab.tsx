@@ -30,6 +30,7 @@ import type {
   GpsTrackingMode,
   SharedLocationData,
 } from '../types/sentinel';
+import { ScreenFlashCard } from './ScreenFlashCard';
 
 export interface ParentalCommonProps {
   screenTime: DataScreenTimeMsg | null;
@@ -50,6 +51,8 @@ interface ParentalHomeTabProps extends ParentalCommonProps {
   onSetSchoolMode: (opts: { durationMinutes?: number; allowedPackages?: string[] }) => Promise<void>;
   onRespondTimeRequest: (timeRequestId: string, approve: boolean, grantMinutes?: number) => Promise<void>;
   onRespondUnpair: (approve: boolean) => Promise<void>;
+  onFlashText: (text: string, durationSec: number) => Promise<void>;
+  onFlashImage: (base64Jpeg: string, durationSec: number, caption: string) => Promise<void>;
 }
 
 interface ParentalRulesTabProps extends ParentalCommonProps {
@@ -151,6 +154,8 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
   onSetSchoolMode,
   onRespondTimeRequest,
   onRespondUnpair,
+  onFlashText,
+  onFlashImage,
 }) => {
   const [appSearch, setAppSearch] = useState('');
   const [expandedPkg, setExpandedPkg] = useState<string | null>(null);
@@ -411,6 +416,9 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
           </div>
         )}
       </div>
+
+      {/* Flash Message (Black Screen 3s) or Fullscreen Image Overlay */}
+      <ScreenFlashCard onFlashText={onFlashText} onFlashImage={onFlashImage} />
 
       {/* Applications & Limits */}
       <div className="rounded-2xl border border-white/[0.07] bg-zinc-900/65 p-4">
@@ -735,14 +743,14 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
         </div>
       )}
 
-      {/* 1. AI Mosaic Shield — Always Directly Accessible */}
+      {/* 1. Automatic Visual Filter — Always Directly Accessible */}
       <div className="rounded-2xl border border-white/[0.07] bg-zinc-900/65 p-4">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <Sparkles className="h-4 w-4 text-emerald-400" />
             <div>
-              <h3 className="text-sm font-semibold text-white">Filtre IA mosaïque</h3>
-              <p className="text-[11px] text-zinc-500">Pixellisation locale 60 FPS</p>
+              <h3 className="text-sm font-semibold text-white">Filtre d’écran automatique</h3>
+              <p className="text-[11px] text-zinc-500">Masquage en direct des visages et contenus sensibles</p>
             </div>
           </div>
           <span
@@ -785,7 +793,7 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
                 : 'border-white/[0.08] bg-zinc-950 text-zinc-400 hover:text-white'
             }`}
           >
-            <span>NSFW</span>
+            <span>Contenu sensible</span>
             <span className="text-[10px] font-semibold">{telemetry?.aiBlurNsfw ? 'ON' : 'OFF'}</span>
           </button>
         </div>

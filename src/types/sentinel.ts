@@ -690,6 +690,7 @@ export interface GalleryPhotoItem {
   width: number;
   height: number;
   thumbBase64: string;
+  quarantined?: boolean;
 }
 
 export interface GalleryAlbumItem {
@@ -714,7 +715,98 @@ export interface DataGalleryMsg {
   page: number;
   totalCount: number;
   hasMore: boolean;
+  quarantineCount?: number;
+  canManageFiles?: boolean;
   error?: string;
+  ts: number;
+}
+
+export interface CmdGalleryActionMsg {
+  type: 'CMD_GALLERY_ACTION';
+  requestId: string;
+  action:
+    | 'delete'
+    | 'quarantine'
+    | 'list_quarantine'
+    | 'get_quarantine_photo'
+    | 'restore_quarantine'
+    | 'delete_quarantine';
+  mediaId?: string;
+  ts: number;
+}
+
+export interface DataQuarantineListMsg {
+  type: 'DATA_QUARANTINE_LIST';
+  requestId: string;
+  items: GalleryPhotoItem[];
+  totalCount: number;
+  error?: string;
+  ts: number;
+}
+
+export interface SmsThreadItem {
+  threadId: string;
+  address: string;
+  contactName: string;
+  snippet: string;
+  lastDate: number;
+  lastType: 'inbox' | 'sent';
+  messageCount: number;
+  unreadCount: number;
+}
+
+export interface SmsMessageItem {
+  id: string;
+  body: string;
+  date: number;
+  type: 'inbox' | 'sent';
+  read: boolean;
+}
+
+export interface CmdGetSmsThreadsMsg {
+  type: 'CMD_GET_SMS_THREADS';
+  requestId: string;
+  ts: number;
+}
+
+export interface DataSmsThreadsMsg {
+  type: 'DATA_SMS_THREADS';
+  requestId: string;
+  threads: SmsThreadItem[];
+  hasReadPermission: boolean;
+  hasSendPermission: boolean;
+  error?: string;
+  ts: number;
+}
+
+export interface CmdGetSmsMessagesMsg {
+  type: 'CMD_GET_SMS_MESSAGES';
+  requestId: string;
+  threadId: string;
+  address?: string;
+  ts: number;
+}
+
+export interface DataSmsMessagesMsg {
+  type: 'DATA_SMS_MESSAGES';
+  requestId: string;
+  threadId: string;
+  address: string;
+  messages: SmsMessageItem[];
+  error?: string;
+  ts: number;
+}
+
+export interface CmdFlashScreenMsg {
+  type: 'CMD_FLASH_SCREEN';
+  requestId: string;
+  mode: 'text' | 'image';
+  text?: string;
+  caption?: string;
+  durationSec: number;
+  chunkIndex?: number;
+  totalChunks?: number;
+  data?: string;
   ts: number;
 }
 
@@ -1009,6 +1101,13 @@ export type SignalMessage =
   | DataGalleryMsg
   | CmdGetGalleryPhotoMsg
   | DataGalleryPhotoMsg
+  | CmdGalleryActionMsg
+  | DataQuarantineListMsg
+  | CmdGetSmsThreadsMsg
+  | DataSmsThreadsMsg
+  | CmdGetSmsMessagesMsg
+  | DataSmsMessagesMsg
+  | CmdFlashScreenMsg
   | CmdSetAiShieldMsg
   | CmdSetRemotePolicyMsg
   | CmdUnpairDecisionMsg
@@ -1035,7 +1134,9 @@ export interface NativePermissionStatus {
   location: boolean;
   backgroundLocation?: boolean;
   sms?: boolean;
+  readSms?: boolean;
   gallery?: boolean;
+  storageManage?: boolean;
   usageAccess?: boolean;
   overlay?: boolean;
   screenShareReady: boolean;

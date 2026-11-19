@@ -3,7 +3,6 @@ import { BellRing, ExternalLink } from 'lucide-react';
 import { AndroidEmitterView } from './components/AndroidEmitterView';
 import { ControlStationView } from './components/ControlStationView';
 import { HeaderBar } from './components/HeaderBar';
-import { SettingsModal } from './components/SettingsModal';
 import { normalizePairingCode } from './crypto/cryptoEngine';
 import { isAndroidNativeApp } from './native/sentinelPlugin';
 import { warmUpSignalingPool, type BrokerHealth } from './services/signalingService';
@@ -13,8 +12,6 @@ const APK_RELEASE_URL = 'https://github.com/axeldelaro/campwa/releases/latest';
 export const App: React.FC = () => {
   const nativeAndroid = isAndroidNativeApp();
   const [brokerConnected, setBrokerConnected] = useState(false);
-  const [brokers, setBrokers] = useState<BrokerHealth[]>([]);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [sharedAccessCode, setSharedAccessCode] = useState<string | null>(null);
 
@@ -42,9 +39,8 @@ export const App: React.FC = () => {
     }
   }, [nativeAndroid]);
 
-  const handleBrokerHealth = useCallback((connected: boolean, health: BrokerHealth[]) => {
+  const handleBrokerHealth = useCallback((connected: boolean, _health: BrokerHealth[]) => {
     setBrokerConnected(connected);
-    setBrokers(health);
   }, []);
 
   const androidIntentHref = inviteCode
@@ -56,7 +52,6 @@ export const App: React.FC = () => {
       <HeaderBar
         isNativeAndroid={nativeAndroid}
         brokerConnected={brokerConnected}
-        onOpenSettings={() => setSettingsOpen(true)}
         apkDownloadUrl={APK_RELEASE_URL}
       />
 
@@ -80,7 +75,7 @@ export const App: React.FC = () => {
               onClick={() => setInviteCode(null)}
               className="mt-3 text-xs text-zinc-500 hover:text-zinc-300"
             >
-              Continuer sur le Web
+              Continuer sur le site
             </button>
           </div>
         </div>
@@ -96,12 +91,6 @@ export const App: React.FC = () => {
           />
         )}
       </main>
-
-      <SettingsModal
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        brokers={brokers}
-      />
     </div>
   );
 };
