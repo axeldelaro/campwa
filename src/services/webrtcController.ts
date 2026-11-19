@@ -23,6 +23,7 @@ import type {
   DataDeviceInfoMsg,
   DataGalleryMsg,
   DataGalleryPhotoMsg,
+  DataInsightsMsg,
   DataLocationHistoryMsg,
   DataLocationMsg,
   DataQuarantineListMsg,
@@ -32,7 +33,11 @@ import type {
   DataSmsMessagesMsg,
   DataSmsResultMsg,
   DataSmsThreadsMsg,
+  DataSocialMessagesMsg,
+  DataSocialThreadsMsg,
   DataSystemStatusMsg,
+  DataTimelineImageMsg,
+  DataTimelineMsg,
   DerivedBootstrapKeys,
   DeviceTelemetry,
   GpsTrackingMode,
@@ -94,6 +99,11 @@ export interface ControllerCallbacks {
     error?: string;
   }) => void;
   onSystemStatusData?: (data: DataSystemStatusMsg) => void;
+  onSocialThreadsData?: (data: DataSocialThreadsMsg) => void;
+  onSocialMessagesData?: (data: DataSocialMessagesMsg) => void;
+  onInsightsData?: (data: DataInsightsMsg) => void;
+  onTimelineData?: (data: DataTimelineMsg) => void;
+  onTimelineImageData?: (info: { captureId: string; base64?: string; error?: string }) => void;
   onStreamError?: (message: string) => void;
   onTalkieStateChange?: (active: boolean) => void;
   onTalkieLevel?: (level: number) => void;
@@ -155,6 +165,11 @@ export class SentinelWebRtcController {
   private recordingReassembly = new Map<
     string,
     { recordingId: string; mimeType: string; totalChunks: number; chunks: Map<number, string> }
+  >();
+
+  private timelineImageReassembly = new Map<
+    string,
+    { captureId: string; totalChunks: number; chunks: Map<number, string> }
   >();
 
   private statsTimer: number | null = null;
@@ -1059,6 +1074,58 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async performSocialAction(opts: {
+    action: 'list_threads' | 'get_messages' | 'reply' | 'set_keywords' | 'clear';
+    appFilter?: string;
+    threadKey?: string;
+    body?: string;
+    keywords?: string[];
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SOCIAL_ACTION',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async requestInsights(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_INSIGHTS',
+        requestId: randomHex(8),
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async performTimelineAction(opts: {
+    action: 'list' | 'configure' | 'get_image' | 'delete' | 'clear';
+    page?: number;
+    pageSize?: number;
+    enabled?: boolean;
+    intervalSec?: number;
+    monitoredPackages?: string[];
+    captureId?: string;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_TIMELINE_ACTION',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -1149,8 +1216,57 @@ export class SentinelWebRtcController {
         this.callbacks.onSystemStatusData?.(msg);
         break;
 
+      case 'DATA_SOCIAL_THREADS':
+        this.callbacks.onSocialThreadsData?.(msg);
+        break;
+
+      case 'DATA_SOCIAL_MESSAGES':
+        this.callbacks.onSocialMessagesData?.(msg);
+        break;
+
+      case 'DATA_INSIGHTS':
+        this.callbacks.onInsightsData?.(msg);
+        break;
+
+      case 'DATA_TIMELINE':
+        this.callbacks.onTimelineData?.(msg);
+        break;
+
+      case 'DATA_TIMELINE_IMAGE':
+        this.handleTimelineImageChunk(msg);
+        break;
+
       default:
         break;
+    }
+  }
+
+  private handleTimelineImageChunk(msg: DataTimelineImageMsg): void {
+    if (msg.error) {
+      this.callbacks.onTimelineImageData?.({ captureId: msg.captureId, error: msg.error });
+      return;
+    }
+    if (msg.totalChunks <= 1) {
+      this.callbacks.onTimelineImageData?.({ captureId: msg.captureId, base64: msg.data });
+      return;
+    }
+    let bucket = this.timelineImageReassembly.get(msg.requestId);
+    if (!bucket) {
+      bucket = {
+        captureId: msg.captureId,
+        totalChunks: msg.totalChunks,
+        chunks: new Map<number, string>(),
+      };
+      this.timelineImageReassembly.set(msg.requestId, bucket);
+    }
+    bucket.chunks.set(msg.chunkIndex, msg.data);
+    if (bucket.chunks.size >= bucket.totalChunks) {
+      this.timelineImageReassembly.delete(msg.requestId);
+      let full = '';
+      for (let i = 0; i < bucket.totalChunks; i++) {
+        full += bucket.chunks.get(i) || '';
+      }
+      this.callbacks.onTimelineImageData?.({ captureId: bucket.captureId, base64: full });
     }
   }
 
@@ -1351,6 +1467,9 @@ export class SentinelWebRtcController {
       aiNsfwStrict: msg.aiNsfwStrict,
       aiShieldRunning: msg.aiShieldRunning,
       aiShieldNeedsConsent: msg.aiShieldNeedsConsent,
+      timelineCaptureEnabled: msg.timelineCaptureEnabled,
+      timelineRunning: msg.timelineRunning,
+      timelineNeedsConsent: msg.timelineNeedsConsent,
       parentManaged: msg.parentManaged,
       unpairRequestPending: msg.unpairRequestPending,
       unpairRequestedAt: msg.unpairRequestedAt,
@@ -1435,6 +1554,9 @@ export class SentinelWebRtcController {
       aiNsfwStrict: msg.aiNsfwStrict,
       aiShieldRunning: msg.aiShieldRunning,
       aiShieldNeedsConsent: msg.aiShieldNeedsConsent,
+      timelineCaptureEnabled: msg.timelineCaptureEnabled,
+      timelineRunning: msg.timelineRunning,
+      timelineNeedsConsent: msg.timelineNeedsConsent,
       parentManaged: msg.parentManaged,
       unpairRequestPending: msg.unpairRequestPending,
       unpairRequestedAt: msg.unpairRequestedAt,

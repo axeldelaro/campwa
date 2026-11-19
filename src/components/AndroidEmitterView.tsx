@@ -159,6 +159,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
 
   const p = portal.permissions;
   const aiNeedsScreenCapture = Boolean((portal.aiBlurFaces || portal.aiBlurNsfw) && !portal.aiShieldRunning);
+  const timelineNeedsScreenCapture = Boolean(portal.timelineCaptureEnabled && !portal.timelineRunning);
   const needsDeviceAdmin = !portal.deviceAdminActive;
 
   const missingOsSteps: Array<{
@@ -169,10 +170,15 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     action: () => Promise<void>;
   }> = [];
 
-  if (aiNeedsScreenCapture) {
+  if (aiNeedsScreenCapture || timelineNeedsScreenCapture) {
     missingOsSteps.push({
       key: 'ai-screen',
-      label: 'Capture écran pour le Filtre IA',
+      label:
+        aiNeedsScreenCapture && timelineNeedsScreenCapture
+          ? 'Autoriser capture écran (Filtre IA & Captures auto)'
+          : timelineNeedsScreenCapture
+            ? 'Autoriser capture écran (Captures auto)'
+            : 'Capture écran pour le Filtre IA',
       highlight: true,
       icon: Sparkles,
       action: () => runAction(() => SentinelNative.requestScreenSharePermission()),
@@ -281,6 +287,14 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       label: 'Filtre d’appels bloqués',
       icon: ShieldAlert,
       action: () => runAction(() => SentinelNative.requestCallScreeningRole()),
+    });
+  }
+  if (!p.notificationListener) {
+    missingOsSteps.push({
+      key: 'notif-listener',
+      label: 'Messages réseaux sociaux (accès notifications)',
+      icon: MessageSquare,
+      action: () => runAction(() => SentinelNative.requestNotificationListenerPermission()),
     });
   }
   if (!p.writeSettings) {

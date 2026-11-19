@@ -60,9 +60,13 @@ import type {
   AuthErrMsg,
   CameraFacingMode,
   DataCallLogMsg,
+  DataInsightsMsg,
   DataRecordingsMsg,
   DataScreenTimeMsg,
+  DataSocialMessagesMsg,
+  DataSocialThreadsMsg,
   DataSystemStatusMsg,
+  DataTimelineMsg,
   DeviceTelemetry,
   GalleryAlbumItem,
   GalleryPhotoItem,
@@ -77,7 +81,9 @@ import type {
   SmsMessageItem,
   SmsThreadItem,
   SnapshotItem,
+  SocialThreadItem,
   StreamQualityPreset,
+  TimelineCaptureItem,
 } from '../types/sentinel';
 import { CallsTab } from './CallsTab';
 import { GeofenceZonesCard, ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
@@ -86,7 +92,9 @@ import { GpsTrailMap } from './GpsTrailMap';
 import { ParentFamilyHub } from './ParentFamilyHub';
 import { RecordingsTab } from './RecordingsTab';
 import { SmsMessagesTab } from './SmsMessagesTab';
+import { SocialMessagesTab } from './SocialMessagesTab';
 import { SystemCommandCard } from './SystemCommandCard';
+import { TimelineTab } from './TimelineTab';
 
 interface ControlStationViewProps {
   onBrokerHealthChange: (connected: boolean, brokers: BrokerHealth[]) => void;
@@ -118,8 +126,28 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [accessGrant, setAccessGrant] = useState<ActiveAccessGrant | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [viewerTab, setViewerTab] = useState<ViewerTab>('home');
-  const [messagesSubTab, setMessagesSubTab] = useState<'sms' | 'calls'>('sms');
-  const [mediaSubTab, setMediaSubTab] = useState<'photos' | 'live' | 'recordings'>('photos');
+  const [messagesSubTab, setMessagesSubTab] = useState<'sms' | 'social' | 'calls'>('sms');
+  const [mediaSubTab, setMediaSubTab] = useState<'photos' | 'live' | 'recordings' | 'timeline'>('photos');
+
+  // Social Messages Archive + Direct Reply State (v24)
+  const [socialThreadsData, setSocialThreadsData] = useState<DataSocialThreadsMsg | null>(null);
+  const [socialMessagesData, setSocialMessagesData] = useState<DataSocialMessagesMsg | null>(null);
+  const [socialThreadsLoading, setSocialThreadsLoading] = useState(false);
+  const [socialMessagesLoading, setSocialMessagesLoading] = useState(false);
+
+  // Conversation & Behavioral Insights State (v24)
+  const [insightsData, setInsightsData] = useState<DataInsightsMsg | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+
+  // Visual Activity Timeline State (v24)
+  const [timelineData, setTimelineData] = useState<DataTimelineMsg | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineLightbox, setTimelineLightbox] = useState<{
+    item: TimelineCaptureItem;
+    base64?: string;
+    loading: boolean;
+    error?: string;
+  } | null>(null);
 
   // Call Log & Number Blocker State
   const [callLogData, setCallLogData] = useState<DataCallLogMsg | null>(null);
@@ -275,6 +303,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           setScreenTimeLoading(true);
           void ctrl.requestScreenTime();
           window.setTimeout(() => setScreenTimeLoading(false), 8000);
+          window.setTimeout(() => {
+            setInsightsLoading(true);
+            void ctrl.requestInsights();
+            window.setTimeout(() => setInsightsLoading(false), 12000);
+          }, 1200);
         } else {
           setViewerTab('media');
           setMediaSubTab('live');
@@ -434,6 +467,12 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             recording_stop: res.error || 'Enregistrement sauvegardé.',
             recording_delete: res.error || 'Enregistrement supprimé.',
             system_control: res.error || 'Paramètre système mis à jour.',
+            social_reply: res.error || 'Réponse envoyée directement.',
+            social_keywords: res.error || 'Mots-clés d’alerte mis à jour.',
+            social_clear: res.error || 'Archive réseaux effacée.',
+            timeline_config: res.error || 'Réglages de captures enregistrés.',
+            timeline_delete: res.error || 'Capture supprimée.',
+            timeline_clear: res.error || 'Toutes les captures ont été effacées.',
           };
           setControlFeedback({ ok: true, text: labels[res.action] || 'Règle enregistrée.' });
         } else {
@@ -497,6 +536,28 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       onSystemStatusData: (data) => {
         setSystemStatusLoading(false);
         setSystemStatus(data);
+      },
+      onSocialThreadsData: (data) => {
+        setSocialThreadsLoading(false);
+        setSocialThreadsData(data);
+      },
+      onSocialMessagesData: (data) => {
+        setSocialMessagesLoading(false);
+        setSocialMessagesData(data);
+      },
+      onInsightsData: (data) => {
+        setInsightsLoading(false);
+        setInsightsData(data);
+      },
+      onTimelineData: (data) => {
+        setTimelineLoading(false);
+        setTimelineData(data);
+      },
+      onTimelineImageData: (info) => {
+        setTimelineLightbox((prev) => {
+          if (!prev || prev.item.id !== info.captureId) return prev;
+          return { ...prev, loading: false, base64: info.base64, error: info.error };
+        });
       },
       onStreamError: (msg) => setStreamNotice(msg),
       onTalkieStateChange: (active) => {
@@ -566,6 +627,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setRecordingsData(null);
     setActiveRecordingMedia(null);
     setSystemStatus(null);
+    setSocialThreadsData(null);
+    setSocialMessagesData(null);
+    setInsightsData(null);
+    setTimelineData(null);
+    setTimelineLightbox(null);
     setContacts([]);
     setGalleryItems([]);
     setQuarantineItems([]);
@@ -1348,13 +1414,20 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             setControlFeedback(null);
             await controllerRef.current?.flashRemoteImage(base64Jpeg, durationSec, caption);
           }}
+          insightsData={insightsData}
+          insightsLoading={insightsLoading}
+          onRefreshInsights={async () => {
+            setInsightsLoading(true);
+            await controllerRef.current?.requestInsights();
+            window.setTimeout(() => setInsightsLoading(false), 12000);
+          }}
         />
       )}
 
-      {/* ==================== TAB 2: MESSAGES (SMS & JOURNAL D'APPELS / BLOCAGE) ==================== */}
+      {/* ==================== TAB 2: MESSAGES (SMS, RÉSEAUX SOCIAUX & APPELS) ==================== */}
       {viewerTab === 'messages' && (
         <div className="space-y-3.5">
-          <div className="grid grid-cols-2 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
+          <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
             <button
               type="button"
               onClick={() => {
@@ -1363,14 +1436,33 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   void handleFetchSmsThreads();
                 }
               }}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
                 messagesSubTab === 'sms'
                   ? 'bg-white text-zinc-950'
                   : 'text-zinc-400 hover:text-white'
               }`}
             >
-              <MessageSquare className="h-3.5 w-3.5" />
-              <span>Messages SMS</span>
+              <MessageSquare className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">SMS</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMessagesSubTab('social');
+                if (!socialThreadsData && !socialThreadsLoading) {
+                  setSocialThreadsLoading(true);
+                  void controllerRef.current?.performSocialAction({ action: 'list_threads' });
+                  window.setTimeout(() => setSocialThreadsLoading(false), 10000);
+                }
+              }}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+                messagesSubTab === 'social'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Send className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Réseaux</span>
             </button>
             <button
               type="button"
@@ -1382,14 +1474,14 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   window.setTimeout(() => setCallLogLoading(false), 10000);
                 }
               }}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
                 messagesSubTab === 'calls'
                   ? 'bg-white text-zinc-950'
                   : 'text-zinc-400 hover:text-white'
               }`}
             >
-              <Phone className="h-3.5 w-3.5" />
-              <span>Appels & Blocage</span>
+              <Phone className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Appels</span>
             </button>
           </div>
 
@@ -1415,6 +1507,45 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 setContactsLoading(true);
                 await controllerRef.current?.requestContacts(q);
                 window.setTimeout(() => setContactsLoading(false), 8000);
+              }}
+            />
+          ) : messagesSubTab === 'social' ? (
+            <SocialMessagesTab
+              threadsData={socialThreadsData}
+              messagesData={socialMessagesData}
+              loadingThreads={socialThreadsLoading}
+              loadingMessages={socialMessagesLoading}
+              onRefreshThreads={async (appFilter = '') => {
+                setSocialThreadsLoading(true);
+                await controllerRef.current?.performSocialAction({
+                  action: 'list_threads',
+                  appFilter,
+                });
+                window.setTimeout(() => setSocialThreadsLoading(false), 10000);
+              }}
+              onOpenThread={async (thread: SocialThreadItem) => {
+                setSocialMessagesLoading(true);
+                await controllerRef.current?.performSocialAction({
+                  action: 'get_messages',
+                  threadKey: thread.threadKey,
+                });
+                window.setTimeout(() => setSocialMessagesLoading(false), 10000);
+              }}
+              onReplyThread={async (threadKey: string, body: string) => {
+                await controllerRef.current?.performSocialAction({
+                  action: 'reply',
+                  threadKey,
+                  body,
+                });
+              }}
+              onSaveKeywords={async (keywords: string[]) => {
+                await controllerRef.current?.performSocialAction({
+                  action: 'set_keywords',
+                  keywords,
+                });
+              }}
+              onClearArchive={async () => {
+                await controllerRef.current?.performSocialAction({ action: 'clear' });
               }}
             />
           ) : (
@@ -1463,10 +1594,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       )}
 
-      {/* ==================== TAB 3: MÉDIAS (PHOTOS + DIRECT + ENREGISTREMENTS DIFFÉRÉS) ==================== */}
+      {/* ==================== TAB 3: MÉDIAS (PHOTOS + DIRECT + DIFFÉRÉ + CAPTURES AUTO) ==================== */}
       {viewerTab === 'media' && (
         <div className="space-y-3.5">
-          <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
+          <div className="grid grid-cols-4 gap-1 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto sm:gap-1.5">
             <button
               type="button"
               onClick={() => {
@@ -1475,7 +1606,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   void handleFetchGallery(0, '');
                 }
               }}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-medium transition sm:gap-1.5 sm:px-4 sm:py-1.5 ${
                 mediaSubTab === 'photos'
                   ? 'bg-white text-zinc-950'
                   : 'text-zinc-400 hover:text-white'
@@ -1487,7 +1618,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             <button
               type="button"
               onClick={() => setMediaSubTab('live')}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-medium transition sm:gap-1.5 sm:px-4 sm:py-1.5 ${
                 mediaSubTab === 'live'
                   ? 'bg-white text-zinc-950'
                   : 'text-zinc-400 hover:text-white'
@@ -1506,7 +1637,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   window.setTimeout(() => setRecordingsLoading(false), 10000);
                 }
               }}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-medium transition sm:gap-1.5 sm:px-4 sm:py-1.5 ${
                 mediaSubTab === 'recordings'
                   ? 'bg-white text-zinc-950'
                   : 'text-zinc-400 hover:text-white'
@@ -1521,7 +1652,69 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               />
               <span className="truncate">Différé</span>
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMediaSubTab('timeline');
+                if (!timelineData && !timelineLoading) {
+                  setTimelineLoading(true);
+                  void controllerRef.current?.performTimelineAction({ action: 'list', page: 0 });
+                  window.setTimeout(() => setTimelineLoading(false), 10000);
+                }
+              }}
+              className={`inline-flex items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-medium transition sm:gap-1.5 sm:px-4 sm:py-1.5 ${
+                mediaSubTab === 'timeline'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Camera
+                className={`h-3.5 w-3.5 shrink-0 ${
+                  telemetry?.timelineRunning || timelineData?.running
+                    ? 'text-emerald-400'
+                    : ''
+                }`}
+              />
+              <span className="truncate">Captures</span>
+            </button>
           </div>
+
+          {mediaSubTab === 'timeline' && (
+            <TimelineTab
+              data={timelineData}
+              availableApps={screenTime?.apps ?? []}
+              loading={timelineLoading}
+              lightbox={timelineLightbox}
+              onRefresh={async (page = 0) => {
+                setTimelineLoading(true);
+                await controllerRef.current?.performTimelineAction({ action: 'list', page });
+                window.setTimeout(() => setTimelineLoading(false), 10000);
+              }}
+              onConfigure={async (opts) => {
+                await controllerRef.current?.performTimelineAction({
+                  action: 'configure',
+                  ...opts,
+                });
+              }}
+              onOpenCapture={async (item) => {
+                setTimelineLightbox({ item, loading: true });
+                await controllerRef.current?.performTimelineAction({
+                  action: 'get_image',
+                  captureId: item.id,
+                });
+              }}
+              onDeleteCapture={async (captureId) => {
+                await controllerRef.current?.performTimelineAction({
+                  action: 'delete',
+                  captureId,
+                });
+              }}
+              onClearAll={async () => {
+                await controllerRef.current?.performTimelineAction({ action: 'clear' });
+              }}
+              onCloseLightbox={() => setTimelineLightbox(null)}
+            />
+          )}
 
           {mediaSubTab === 'recordings' && (
             <RecordingsTab

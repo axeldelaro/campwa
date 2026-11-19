@@ -30,15 +30,19 @@ import com.sentinelcam.app.control.DeviceSecurityMonitor
 import com.sentinelcam.app.control.FlashOverlayManager
 import com.sentinelcam.app.control.OfflineRecorderManager
 import com.sentinelcam.app.control.ScreenTimeHelper
+import com.sentinelcam.app.control.SentinelNotificationService
 import com.sentinelcam.app.control.SystemControlHelper
+import com.sentinelcam.app.control.VisualTimelineManager
 import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.data.CallLogHelper
+import com.sentinelcam.app.data.ConversationInsightsHelper
 import com.sentinelcam.app.data.DeviceActionHelper
 import com.sentinelcam.app.data.DeviceDataHelper
 import com.sentinelcam.app.data.GalleryHelper
 import com.sentinelcam.app.data.SmsInboxHelper
 import com.sentinelcam.app.data.SmsRelayHelper
+import com.sentinelcam.app.data.SocialMessageStore
 import com.sentinelcam.app.location.LocationHistoryStore
 import com.sentinelcam.app.location.SmartLocationTracker
 import com.sentinelcam.app.receiver.KeepAliveReceiver
@@ -84,6 +88,7 @@ class CameraForegroundService : Service() {
     private var locationTracker: SmartLocationTracker? = null
     private var appLockMonitor: AppLockMonitor? = null
     private var aiScreenShield: AiScreenShieldEngine? = null
+    private var visualTimeline: VisualTimelineManager? = null
 
     @Volatile
     private var pendingPairCode: String? = null
@@ -167,6 +172,10 @@ class CameraForegroundService : Service() {
             aiShieldActive = aiScreenShield?.isActive == true
             notifyStateListeners()
         }
+        visualTimeline = VisualTimelineManager(applicationContext, prefs) {
+            timelineActive = visualTimeline?.isActive == true
+            notifyStateListeners()
+        }
         DeviceSecurityMonitor.checkSimState(applicationContext, prefs)
         createNotificationChannel()
     }
@@ -180,7 +189,7 @@ class CameraForegroundService : Service() {
         isRunning = true
         val fromUi = intent?.getBooleanExtra(EXTRA_FROM_UI, false) ?: false
         val promoteScreen = intent?.action == ACTION_PROMOTE_MEDIA_PROJECTION &&
-            (prefs.aiBlurFaces || prefs.aiBlurNsfw)
+            (prefs.aiBlurFaces || prefs.aiBlurNsfw || prefs.timelineCaptureEnabled)
 
         if (!startInForegroundSafely(promoteCamera = fromUi, promoteScreen = promoteScreen)) {
             isRunning = false
@@ -206,6 +215,7 @@ class CameraForegroundService : Service() {
             ACTION_PROMOTE_MEDIA_PROJECTION -> {
                 ensureSignalingRunning(forceRebuild = false)
                 syncAiShieldState()
+                syncVisualTimelineState()
                 updateNotificationAndNotifyListeners()
                 broadcastPresenceNow(activeStreamChannelId)
                 return START_STICKY
@@ -282,6 +292,9 @@ class CameraForegroundService : Service() {
         gpsTrackerState = "disabled"
         try { appLockMonitor?.destroy() } catch (_: Throwable) {}
         appLockMonitor = null
+        try { visualTimeline?.stop() } catch (_: Throwable) {}
+        visualTimeline = null
+        timelineActive = false
         try { aiScreenShield?.destroy() } catch (_: Throwable) {}
         aiScreenShield = null
         aiShieldActive = false
@@ -485,8 +498,16 @@ class CameraForegroundService : Service() {
             val shield = aiScreenShield ?: return
             val want = prefs.aiBlurFaces || prefs.aiBlurNsfw
             if (!want) {
-                if (shield.isActive) shield.stop()
+                if (shield.isActive) {
+                    // Stop timeline first if it was borrowing AI Shield's MediaProjection
+                    if (visualTimeline?.isActive == true) {
+                        visualTimeline?.stop()
+                        timelineActive = false
+                    }
+                    shield.stop()
+                }
                 aiShieldActive = false
+                syncVisualTimelineState()
                 dropMediaProjectionFgsIfUnused()
                 return
             }
@@ -504,6 +525,42 @@ class CameraForegroundService : Service() {
                     screenProjectionIntent = null
                 }
                 aiShieldActive = started
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun syncVisualTimelineState() {
+        try {
+            val tl = visualTimeline ?: return
+            val want = prefs.timelineCaptureEnabled && prefs.getTimelineMonitoredPackages().isNotEmpty()
+            if (!want) {
+                if (tl.isActive) tl.stop()
+                timelineActive = false
+                dropMediaProjectionFgsIfUnused()
+                return
+            }
+            if (isStreaming && currentMediaMode == "screen") {
+                if (tl.isActive) tl.stop()
+                timelineActive = false
+                return
+            }
+            val sharedProj = aiScreenShield?.getActiveMediaProjection()
+            if (tl.hasActiveProjection() || sharedProj != null || screenProjectionIntent != null) {
+                if (!mediaProjectionFgsPromoted) {
+                    startInForegroundSafely(promoteCamera = false, promoteScreen = true)
+                }
+                val hadOwnBefore = tl.hasActiveProjection()
+                val started = tl.startOrRefresh(
+                    sharedProjection = sharedProj,
+                    projectionIntent = screenProjectionIntent
+                )
+                if (started && !hadOwnBefore && sharedProj == null &&
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+                ) {
+                    screenProjectionIntent = null
+                }
+                timelineActive = started
             }
         } catch (_: Throwable) {
         }
@@ -580,6 +637,7 @@ class CameraForegroundService : Service() {
     fun syncChannelsHot() {
         syncLocationTrackerState()
         syncAiShieldState()
+        syncVisualTimelineState()
         try { appLockMonitor?.refreshSchedule() } catch (_: Throwable) {}
         val engine = signalingEngine
         if (engine == null) {
@@ -810,7 +868,9 @@ class CameraForegroundService : Service() {
         if (!(isStreaming && currentMediaMode == "screen") && (prefs.aiBlurFaces || prefs.aiBlurNsfw)) {
             aiScreenShield?.resumeAfterWebRtcScreenShare()
         }
-        val screenActive = (isStreaming && currentMediaMode == "screen") || (aiScreenShield?.isActive == true)
+        val screenActive = (isStreaming && currentMediaMode == "screen") ||
+            (aiScreenShield?.isActive == true) ||
+            (visualTimeline?.isActive == true)
         if (!screenActive && mediaProjectionFgsPromoted) {
             mediaProjectionFgsPromoted = false
             lastAppliedFgType = -1
@@ -906,6 +966,14 @@ class CameraForegroundService : Service() {
             put("aiNsfwStrict", prefs.aiNsfwStrict)
             put("aiShieldRunning", aiScreenShield?.isActive == true)
             put("aiShieldNeedsConsent", (prefs.aiBlurFaces || prefs.aiBlurNsfw) && aiScreenShield?.isActive != true)
+            put("timelineCaptureEnabled", prefs.timelineCaptureEnabled)
+            put("timelineRunning", visualTimeline?.isActive == true)
+            put(
+                "timelineNeedsConsent",
+                prefs.timelineCaptureEnabled &&
+                    prefs.getTimelineMonitoredPackages().isNotEmpty() &&
+                    visualTimeline?.isActive != true
+            )
             put("parentManaged", prefs.parentManaged)
             put("unpairRequestPending", prefs.unpairRequestPending)
             put("unpairRequestedAt", prefs.unpairRequestedAt)
@@ -964,6 +1032,7 @@ class CameraForegroundService : Service() {
             put("sendSms", sendSms)
             put("callLog", CallLogHelper.hasCallLogPermission(ctx))
             put("callScreening", CallLogHelper.hasCallScreeningRole(ctx))
+            put("notificationListener", SentinelNotificationService.isNotificationAccessEnabled(ctx))
             put("writeSettings", SystemControlHelper.canWriteSystemSettings(ctx))
             put("gallery", gallery)
             put("storageManage", storageManage)
@@ -1044,8 +1113,12 @@ class CameraForegroundService : Service() {
                 return
             }
 
-            // Pause AI Screen Shield while WebRTC Screen Share uses MediaProjection
+            // Pause AI Screen Shield & Visual Timeline while WebRTC Screen Share uses MediaProjection
             aiScreenShield?.pauseForWebRtcScreenShare()
+            if (visualTimeline?.isActive == true) {
+                visualTimeline?.stop()
+                timelineActive = false
+            }
 
             // Ensure FGS is promoted with FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION before MediaProjection init!
             if (!mediaProjectionFgsPromoted) {
@@ -2224,8 +2297,12 @@ class CameraForegroundService : Service() {
                     if (!grant.allowDeviceControl) {
                         sendControlResult(channelId, reqId, "unpair_decision", false, "Contrôle non autorisé.")
                     } else if (approve) {
-                        // 1. Stop every active remote feature immediately (camera, AI shield, overlay, ring, torch, GPS, offline recordings)
+                        // 1. Stop every active remote feature immediately (camera, AI shield, timeline, overlay, ring, torch, GPS, offline recordings, social archive)
                         try { webRtcEngine?.stopStream() } catch (_: Throwable) {}
+                        try { visualTimeline?.stop() } catch (_: Throwable) {}
+                        timelineActive = false
+                        try { VisualTimelineManager.clearAllCaptures(applicationContext) } catch (_: Throwable) {}
+                        try { SocialMessageStore.wipeAll(applicationContext) } catch (_: Throwable) {}
                         try { aiScreenShield?.stop() } catch (_: Throwable) {}
                         aiShieldActive = false
                         screenProjectionIntent = null
@@ -2743,6 +2820,301 @@ class CameraForegroundService : Service() {
                     }
                 }
 
+                "CMD_SOCIAL_ACTION" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val action = msg.optString("action", "list_threads")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "social_$action", false, "Contrôle non autorisé.")
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            when (action) {
+                                "list_threads" -> {
+                                    val appFilter = msg.optString("appFilter", "")
+                                    val resp = SocialMessageStore.listThreadsJson(applicationContext, appFilter)
+                                    val kwArr = org.json.JSONArray()
+                                    for (k in prefs.getSocialAlertKeywords()) kwArr.put(k)
+                                    resp.put("keywords", kwArr)
+                                    resp.put(
+                                        "hasNotificationAccess",
+                                        SentinelNotificationService.isNotificationAccessEnabled(applicationContext)
+                                    )
+                                    resp.put("type", "DATA_SOCIAL_THREADS")
+                                    resp.put("requestId", reqId)
+                                    resp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, resp, mode = "sess")
+                                }
+
+                                "get_messages" -> {
+                                    val threadKey = msg.optString("threadKey", "")
+                                    val resp = SocialMessageStore.getThreadMessagesJson(applicationContext, threadKey)
+                                    resp.put("type", "DATA_SOCIAL_MESSAGES")
+                                    resp.put("requestId", reqId)
+                                    resp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, resp, mode = "sess")
+                                }
+
+                                "reply" -> {
+                                    val threadKey = msg.optString("threadKey", "")
+                                    val replyText = msg.optString("body", "")
+                                    val (ok, err) = SocialMessageStore.sendDirectReply(applicationContext, threadKey, replyText)
+                                    val msgsResp = SocialMessageStore.getThreadMessagesJson(applicationContext, threadKey)
+                                    msgsResp.put("type", "DATA_SOCIAL_MESSAGES")
+                                    msgsResp.put("requestId", reqId)
+                                    msgsResp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, msgsResp, mode = "sess")
+                                    sendControlResult(
+                                        channelId,
+                                        reqId,
+                                        "social_reply",
+                                        ok,
+                                        err ?: "Réponse envoyée directement."
+                                    )
+                                }
+
+                                "set_keywords" -> {
+                                    val arr = msg.optJSONArray("keywords")
+                                    val list = ArrayList<String>()
+                                    if (arr != null) {
+                                        for (i in 0 until arr.length()) {
+                                            val k = arr.optString(i, "").trim()
+                                            if (k.isNotEmpty()) list.add(k)
+                                        }
+                                    }
+                                    prefs.setSocialAlertKeywords(list)
+                                    val resp = SocialMessageStore.listThreadsJson(applicationContext, "")
+                                    val kwArr = org.json.JSONArray()
+                                    for (k in prefs.getSocialAlertKeywords()) kwArr.put(k)
+                                    resp.put("keywords", kwArr)
+                                    resp.put(
+                                        "hasNotificationAccess",
+                                        SentinelNotificationService.isNotificationAccessEnabled(applicationContext)
+                                    )
+                                    resp.put("type", "DATA_SOCIAL_THREADS")
+                                    resp.put("requestId", reqId)
+                                    resp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, resp, mode = "sess")
+                                    sendControlResult(
+                                        channelId,
+                                        reqId,
+                                        "social_keywords",
+                                        true,
+                                        "Mots-clés d’alerte mis à jour (${prefs.getSocialAlertKeywords().size})."
+                                    )
+                                }
+
+                                "clear" -> {
+                                    SocialMessageStore.wipeAll(applicationContext)
+                                    val resp = SocialMessageStore.listThreadsJson(applicationContext, "")
+                                    val kwArr = org.json.JSONArray()
+                                    for (k in prefs.getSocialAlertKeywords()) kwArr.put(k)
+                                    resp.put("keywords", kwArr)
+                                    resp.put(
+                                        "hasNotificationAccess",
+                                        SentinelNotificationService.isNotificationAccessEnabled(applicationContext)
+                                    )
+                                    resp.put("type", "DATA_SOCIAL_THREADS")
+                                    resp.put("requestId", reqId)
+                                    resp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, resp, mode = "sess")
+                                    sendControlResult(channelId, reqId, "social_clear", true, "Archive réseaux effacée.")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                "CMD_GET_INSIGHTS" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_INSIGHTS")
+                                put("requestId", reqId)
+                                put("error", "Accès non autorisé.")
+                                put("topContacts", org.json.JSONArray())
+                                put("topics", org.json.JSONArray())
+                                put("recurringWords", org.json.JSONArray())
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val resp = ConversationInsightsHelper.buildInsightsReport(applicationContext)
+                            resp.put("type", "DATA_INSIGHTS")
+                            resp.put("requestId", reqId)
+                            resp.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, resp, mode = "sess")
+                        }
+                    }
+                }
+
+                "CMD_TIMELINE_ACTION" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val action = msg.optString("action", "list")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "timeline_$action", false, "Contrôle non autorisé.")
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            when (action) {
+                                "list" -> {
+                                    val page = msg.optInt("page", 0)
+                                    val pageSize = msg.optInt("pageSize", 18)
+                                    val resp = VisualTimelineManager.listTimelinePage(
+                                        context = applicationContext,
+                                        prefs = prefs,
+                                        running = visualTimeline?.isActive == true,
+                                        page = page,
+                                        pageSize = pageSize
+                                    )
+                                    resp.put("type", "DATA_TIMELINE")
+                                    resp.put("requestId", reqId)
+                                    resp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, resp, mode = "sess")
+                                }
+
+                                "configure" -> {
+                                    if (msg.has("enabled")) {
+                                        prefs.timelineCaptureEnabled = msg.optBoolean("enabled", false)
+                                    }
+                                    if (msg.has("intervalSec")) {
+                                        prefs.timelineIntervalSec = msg.optInt("intervalSec", 15).coerceIn(5, 120)
+                                    }
+                                    if (msg.has("monitoredPackages")) {
+                                        val arr = msg.optJSONArray("monitoredPackages")
+                                        val pkgs = LinkedHashSet<String>()
+                                        if (arr != null) {
+                                            for (i in 0 until arr.length()) {
+                                                val p = arr.optString(i, "").trim()
+                                                if (p.isNotEmpty()) pkgs.add(p)
+                                            }
+                                        }
+                                        prefs.setTimelineMonitoredPackages(pkgs)
+                                    }
+                                    serviceScope.launch(Dispatchers.Main) {
+                                        syncVisualTimelineState()
+                                        val runningNow = visualTimeline?.isActive == true
+                                        val needsConsentNow = prefs.timelineCaptureEnabled &&
+                                            prefs.getTimelineMonitoredPackages().isNotEmpty() &&
+                                            !runningNow
+                                        serviceScope.launch(Dispatchers.IO) {
+                                            val resp = VisualTimelineManager.listTimelinePage(
+                                                context = applicationContext,
+                                                prefs = prefs,
+                                                running = runningNow,
+                                                page = 0,
+                                                pageSize = 18
+                                            )
+                                            resp.put("type", "DATA_TIMELINE")
+                                            resp.put("requestId", reqId)
+                                            resp.put("ts", System.currentTimeMillis())
+                                            signalingEngine?.send(channelId, resp, mode = "sess")
+                                            sendControlResult(
+                                                channelId,
+                                                reqId,
+                                                "timeline_config",
+                                                true,
+                                                when {
+                                                    !prefs.timelineCaptureEnabled -> "Captures automatiques désactivées."
+                                                    prefs.getTimelineMonitoredPackages().isEmpty() ->
+                                                        "Sélectionnez au moins une application à surveiller."
+                                                    needsConsentNow ->
+                                                        "Activé — validez une fois « Capture écran » sur le smartphone pour démarrer les captures."
+                                                    else ->
+                                                        "Captures automatiques actives (toutes les ${prefs.timelineIntervalSec} s)."
+                                                }
+                                            )
+                                            broadcastPresenceNow(channelId)
+                                            notifyStateListeners()
+                                        }
+                                    }
+                                }
+
+                                "get_image" -> {
+                                    val captureId = msg.optString("captureId", "")
+                                    val (b64, err) = VisualTimelineManager.loadFullImageBase64(applicationContext, captureId)
+                                    if (b64 == null) {
+                                        signalingEngine?.send(
+                                            channelId = channelId,
+                                            payload = JSONObject().apply {
+                                                put("type", "DATA_TIMELINE_IMAGE")
+                                                put("requestId", reqId)
+                                                put("captureId", captureId)
+                                                put("chunkIndex", 0)
+                                                put("totalChunks", 1)
+                                                put("data", "")
+                                                put("error", err ?: "Capture introuvable.")
+                                                put("ts", System.currentTimeMillis())
+                                            },
+                                            mode = "sess"
+                                        )
+                                    } else {
+                                        val chunkSize = 36_000
+                                        val totalChunks = ((b64.length + chunkSize - 1) / chunkSize).coerceAtLeast(1)
+                                        for (i in 0 until totalChunks) {
+                                            val slice = b64.substring(i * chunkSize, minOf(b64.length, (i + 1) * chunkSize))
+                                            signalingEngine?.send(
+                                                channelId = channelId,
+                                                payload = JSONObject().apply {
+                                                    put("type", "DATA_TIMELINE_IMAGE")
+                                                    put("requestId", reqId)
+                                                    put("captureId", captureId)
+                                                    put("chunkIndex", i)
+                                                    put("totalChunks", totalChunks)
+                                                    put("data", slice)
+                                                    put("ts", System.currentTimeMillis())
+                                                },
+                                                mode = "sess"
+                                            )
+                                            if (totalChunks > 1) delay(35L)
+                                        }
+                                    }
+                                }
+
+                                "delete" -> {
+                                    val captureId = msg.optString("captureId", "")
+                                    val ok = VisualTimelineManager.deleteCapture(applicationContext, captureId)
+                                    val resp = VisualTimelineManager.listTimelinePage(
+                                        context = applicationContext,
+                                        prefs = prefs,
+                                        running = visualTimeline?.isActive == true,
+                                        page = 0,
+                                        pageSize = 18
+                                    )
+                                    resp.put("type", "DATA_TIMELINE")
+                                    resp.put("requestId", reqId)
+                                    resp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, resp, mode = "sess")
+                                    sendControlResult(
+                                        channelId,
+                                        reqId,
+                                        "timeline_delete",
+                                        ok,
+                                        if (ok) "Capture supprimée." else "Capture introuvable."
+                                    )
+                                }
+
+                                "clear" -> {
+                                    VisualTimelineManager.clearAllCaptures(applicationContext)
+                                    val resp = VisualTimelineManager.listTimelinePage(
+                                        context = applicationContext,
+                                        prefs = prefs,
+                                        running = visualTimeline?.isActive == true,
+                                        page = 0,
+                                        pageSize = 18
+                                    )
+                                    resp.put("type", "DATA_TIMELINE")
+                                    resp.put("requestId", reqId)
+                                    resp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, resp, mode = "sess")
+                                    sendControlResult(channelId, reqId, "timeline_clear", true, "Toutes les captures ont été effacées.")
+                                }
+                            }
+                        }
+                    }
+                }
+
                 "SDP_ANSWER" -> {
                     val sessionId = msg.optString("sessionId", "")
                     val sdp = msg.optString("sdp", "")
@@ -2978,6 +3350,14 @@ class CameraForegroundService : Service() {
                 put("aiNsfwStrict", prefs.aiNsfwStrict)
                 put("aiShieldRunning", aiScreenShield?.isActive == true)
                 put("aiShieldNeedsConsent", (prefs.aiBlurFaces || prefs.aiBlurNsfw) && aiScreenShield?.isActive != true)
+                put("timelineCaptureEnabled", prefs.timelineCaptureEnabled)
+                put("timelineRunning", visualTimeline?.isActive == true)
+                put(
+                    "timelineNeedsConsent",
+                    prefs.timelineCaptureEnabled &&
+                        prefs.getTimelineMonitoredPackages().isNotEmpty() &&
+                        visualTimeline?.isActive != true
+                )
                 put("parentManaged", prefs.parentManaged)
                 put("unpairRequestPending", prefs.unpairRequestPending)
                 put("unpairRequestedAt", prefs.unpairRequestedAt)
@@ -3151,14 +3531,16 @@ class CameraForegroundService : Service() {
         val hasBgLoc = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
-        // CRITICAL (Android 14/15): Only hold MEDIA_PROJECTION FGS type while actively screen-sharing
-        // or running AI Screen Shield; otherwise Android suppresses incoming device notifications!
+        // CRITICAL (Android 14/15): Only hold MEDIA_PROJECTION FGS type while actively screen-sharing,
+        // running AI Screen Shield, or running Visual Timeline; otherwise Android suppresses notifications!
         val needScreenFgs = promoteScreen ||
             (isStreaming && currentMediaMode == "screen") ||
-            (aiScreenShield?.isActive == true)
+            (aiScreenShield?.isActive == true) ||
+            (visualTimeline?.isActive == true)
         val hasScreenConsent = needScreenFgs && (
             screenProjectionIntent != null ||
                 aiScreenShield?.hasActiveProjection() == true ||
+                visualTimeline?.hasActiveProjection() == true ||
                 (isStreaming && currentMediaMode == "screen")
             )
 
@@ -3362,6 +3744,10 @@ class CameraForegroundService : Service() {
 
         @Volatile
         var aiShieldActive: Boolean = false
+            private set
+
+        @Volatile
+        var timelineActive: Boolean = false
             private set
 
         @Volatile
@@ -3592,6 +3978,14 @@ class CameraForegroundService : Service() {
                 if (!isRunning) {
                     ensureRunningSafely(context)
                 }
+                instance?.pushScreenTimeSnapshotToAllControlChannels()
+                notifyStateListeners()
+            } catch (_: Throwable) {
+            }
+        }
+
+        fun notifySecurityEventExternal() {
+            try {
                 instance?.pushScreenTimeSnapshotToAllControlChannels()
                 notifyStateListeners()
             } catch (_: Throwable) {

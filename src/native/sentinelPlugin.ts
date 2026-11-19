@@ -17,6 +17,7 @@ export interface SentinelNativePluginContract {
   requestSmsPermission(): Promise<NativePortalState>;
   requestCallLogPermission(): Promise<NativePortalState>;
   requestCallScreeningRole(): Promise<NativePortalState>;
+  requestNotificationListenerPermission(): Promise<NativePortalState>;
   requestWriteSettingsPermission(): Promise<NativePortalState>;
   openAppPermissionsSettings(): Promise<NativePortalState>;
   requestGalleryPermission(): Promise<NativePortalState>;

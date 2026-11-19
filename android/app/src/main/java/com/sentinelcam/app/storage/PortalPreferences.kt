@@ -899,6 +899,74 @@ class PortalPreferences(context: Context) {
         prefs.edit().putString(key, arr.toString()).commit()
     }
 
+    /* ==================== V24 SOCIAL KEYWORDS & VISUAL TIMELINE CAPTURE ==================== */
+
+    fun getSocialAlertKeywords(): List<String> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_SOCIAL_KEYWORDS, null) ?: return DEFAULT_SOCIAL_KEYWORDS
+            return try {
+                val arr = JSONArray(raw)
+                val out = ArrayList<String>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val s = arr.optString(i, "").trim()
+                    if (s.length >= 2) out.add(s)
+                }
+                out
+            } catch (_: Throwable) {
+                DEFAULT_SOCIAL_KEYWORDS
+            }
+        }
+    }
+
+    fun setSocialAlertKeywords(keywords: Collection<String>) {
+        synchronized(LOCK) {
+            val arr = JSONArray()
+            for (k in keywords.map { it.trim().take(40) }.filter { it.length >= 2 }.distinct().take(40)) {
+                arr.put(k)
+            }
+            prefs.edit().putString(KEY_SOCIAL_KEYWORDS, arr.toString()).commit()
+        }
+    }
+
+    var timelineCaptureEnabled: Boolean
+        get() = prefs.getBoolean(KEY_TIMELINE_ENABLED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_TIMELINE_ENABLED, value).commit()
+        }
+
+    var timelineIntervalSec: Int
+        get() = prefs.getInt(KEY_TIMELINE_INTERVAL_SEC, 15).coerceIn(5, 120)
+        set(value) {
+            prefs.edit().putInt(KEY_TIMELINE_INTERVAL_SEC, value.coerceIn(5, 120)).commit()
+        }
+
+    fun getTimelineMonitoredPackages(): Set<String> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_TIMELINE_PKGS, null) ?: return emptySet()
+            return try {
+                val arr = JSONArray(raw)
+                val out = LinkedHashSet<String>()
+                for (i in 0 until arr.length()) {
+                    val p = arr.optString(i, "").trim()
+                    if (p.isNotEmpty()) out.add(p)
+                }
+                out
+            } catch (_: Throwable) {
+                emptySet()
+            }
+        }
+    }
+
+    fun setTimelineMonitoredPackages(pkgs: Collection<String>) {
+        synchronized(LOCK) {
+            val arr = JSONArray()
+            for (p in pkgs.map { it.trim() }.filter { it.isNotEmpty() }.distinct().take(40)) {
+                arr.put(p)
+            }
+            prefs.edit().putString(KEY_TIMELINE_PKGS, arr.toString()).commit()
+        }
+    }
+
     /* ==================== PARENTAL / ADMIN CODE-PROTECTED BACKGROUND MODE ==================== */
 
     var adminProtectionEnabled: Boolean
@@ -1080,6 +1148,9 @@ class PortalPreferences(context: Context) {
                 .remove(KEY_ALLOWED_CALL_NUMBERS)
                 .putBoolean(KEY_BLOCK_UNKNOWN_CALLS, false)
                 .putBoolean(KEY_CALL_WHITELIST_ONLY, false)
+                .remove(KEY_SOCIAL_KEYWORDS)
+                .putBoolean(KEY_TIMELINE_ENABLED, false)
+                .remove(KEY_TIMELINE_PKGS)
                 .putBoolean(KEY_AI_BLUR_FACES, false)
                 .putBoolean(KEY_AI_BLUR_NSFW, false)
                 .putBoolean(KEY_AI_NSFW_STRICT, false)
@@ -1367,6 +1438,19 @@ class PortalPreferences(context: Context) {
         private const val KEY_ALLOWED_CALL_NUMBERS = "allowed_call_numbers_v23"
         private const val KEY_BLOCK_UNKNOWN_CALLS = "block_unknown_calls_v23"
         private const val KEY_CALL_WHITELIST_ONLY = "call_whitelist_only_v23"
+        private const val KEY_SOCIAL_KEYWORDS = "social_keywords_v24"
+        private const val KEY_TIMELINE_ENABLED = "timeline_enabled_v24"
+        private const val KEY_TIMELINE_INTERVAL_SEC = "timeline_interval_sec_v24"
+        private const val KEY_TIMELINE_PKGS = "timeline_pkgs_v24"
+
+        private val DEFAULT_SOCIAL_KEYWORDS = listOf(
+            "harcèlement",
+            "chantage",
+            "nude",
+            "drogue",
+            "fugue",
+            "dis rien à tes parents"
+        )
 
         private val DEFAULT_SCHOOL_PACKAGES = setOf(
             "com.android.calculator2",

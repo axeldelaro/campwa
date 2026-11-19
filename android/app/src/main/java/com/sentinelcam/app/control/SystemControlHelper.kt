@@ -272,19 +272,57 @@ object SystemControlHelper {
         if (packageName.isBlank() || packageName == context.packageName) {
             return Pair(false, "Application invalide.")
         }
-        return try {
-            // Grant temporary Settings/Installer grace so Anti-Bypass allows Parent-initiated uninstall
-            prefs.settingsUnlockUntilMs = maxOf(
-                prefs.settingsUnlockUntilMs,
-                System.currentTimeMillis() + 60_000L
-            )
-            val intent = Intent(Intent.ACTION_DELETE, Uri.parse("package:$packageName")).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val appCtx = context.applicationContext
+        // Verify package is installed and not a non-removable core system app
+        try {
+            val ai = appCtx.packageManager.getApplicationInfo(packageName, 0)
+            val isSys = (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+            val isUpdatedSys = (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+            if (isSys && !isUpdatedSys) {
+                return Pair(false, "Application système Android non désinstallable (utilisez plutôt le blocage).")
             }
-            context.startActivity(intent)
-            Pair(true, null)
-        } catch (t: Throwable) {
-            Pair(false, "Désinstallation impossible : ${t.message}")
+        } catch (_: Throwable) {
+            return Pair(false, "Application introuvable sur le téléphone.")
         }
+
+        // Grant generous 90s Settings/PackageInstaller grace so Anti-Bypass never blocks uninstall dialog
+        prefs.settingsUnlockUntilMs = maxOf(
+            prefs.settingsUnlockUntilMs,
+            System.currentTimeMillis() + 90_000L
+        )
+
+        // Wake screen briefly if off so uninstall prompt is visible
+        try {
+            val pm = appCtx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (!pm.isInteractive) {
+                @Suppress("DEPRECATION")
+                val wl = pm.newWakeLock(
+                    android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                    "SentinelCam::UninstallWake"
+                )
+                wl.setReferenceCounted(false)
+                wl.acquire(2_000L)
+            }
+        } catch (_: Throwable) {
+        }
+
+        val intents = listOf(
+            Intent(Intent.ACTION_DELETE, Uri.parse("package:$packageName")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            },
+            @Suppress("DEPRECATION")
+            Intent(Intent.ACTION_UNINSTALL_PACKAGE, Uri.parse("package:$packageName")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        )
+
+        for (intent in intents) {
+            try {
+                appCtx.startActivity(intent)
+                return Pair(true, "Fenêtre de désinstallation ouverte sur le téléphone.")
+            } catch (_: Throwable) {
+            }
+        }
+        return Pair(false, "Impossible d’ouvrir la désinstallation (vérifiez l’autorisation Superposition).")
     }
 }

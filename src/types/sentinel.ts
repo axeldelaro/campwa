@@ -185,6 +185,7 @@ export interface DevicePermissionsHealth {
   sendSms: boolean;
   callLog?: boolean;
   callScreening?: boolean;
+  notificationListener?: boolean;
   writeSettings?: boolean;
   gallery: boolean;
   storageManage: boolean;
@@ -244,6 +245,9 @@ export interface DeviceTelemetry {
   aiNsfwStrict?: boolean;
   aiShieldRunning?: boolean;
   aiShieldNeedsConsent?: boolean;
+  timelineCaptureEnabled?: boolean;
+  timelineRunning?: boolean;
+  timelineNeedsConsent?: boolean;
   parentManaged?: boolean;
   unpairRequestPending?: boolean;
   unpairRequestedAt?: number;
@@ -356,6 +360,9 @@ export interface HelloAckMsg {
   aiNsfwStrict?: boolean;
   aiShieldRunning?: boolean;
   aiShieldNeedsConsent?: boolean;
+  timelineCaptureEnabled?: boolean;
+  timelineRunning?: boolean;
+  timelineNeedsConsent?: boolean;
   parentManaged?: boolean;
   unpairRequestPending?: boolean;
   unpairRequestedAt?: number;
@@ -426,6 +433,9 @@ export interface PortalStatusMsg {
   aiNsfwStrict?: boolean;
   aiShieldRunning?: boolean;
   aiShieldNeedsConsent?: boolean;
+  timelineCaptureEnabled?: boolean;
+  timelineRunning?: boolean;
+  timelineNeedsConsent?: boolean;
   parentManaged?: boolean;
   unpairRequestPending?: boolean;
   unpairRequestedAt?: number;
@@ -658,7 +668,7 @@ export interface GeofenceZoneItem {
 export interface SecurityEventEntry {
   id: string;
   timestamp: number;
-  kind: 'intruder' | 'sim' | 'geofence' | 'battery' | 'bypass' | 'request' | 'admin';
+  kind: 'intruder' | 'sim' | 'geofence' | 'battery' | 'bypass' | 'request' | 'admin' | 'speed' | 'keyword';
   title: string;
   detail: string;
   photoBase64?: string;
@@ -716,7 +726,17 @@ export interface DataControlResultMsg {
     | 'recording_start'
     | 'recording_stop'
     | 'recording_delete'
-    | 'system_control';
+    | 'system_control'
+    | 'social_reply'
+    | 'social_keywords'
+    | 'social_clear'
+    | 'social_list_threads'
+    | 'social_get_messages'
+    | 'timeline_config'
+    | 'timeline_delete'
+    | 'timeline_clear'
+    | 'timeline_list'
+    | 'timeline_get_image';
   success: boolean;
   error?: string;
   ts: number;
@@ -1232,6 +1252,164 @@ export interface DataSystemStatusMsg {
   ts: number;
 }
 
+export interface SocialThreadItem {
+  threadKey: string;
+  packageName: string;
+  appLabel: string;
+  sender: string;
+  snippet: string;
+  lastDate: number;
+  lastDirection: 'in' | 'out';
+  messageCount: number;
+  canReply: boolean;
+}
+
+export interface SocialMessageItem {
+  id: string;
+  sender: string;
+  body: string;
+  timestamp: number;
+  direction: 'in' | 'out';
+}
+
+export interface CmdSocialActionMsg {
+  type: 'CMD_SOCIAL_ACTION';
+  requestId: string;
+  action: 'list_threads' | 'get_messages' | 'reply' | 'set_keywords' | 'clear';
+  appFilter?: string;
+  threadKey?: string;
+  body?: string;
+  keywords?: string[];
+  ts: number;
+}
+
+export interface DataSocialThreadsMsg {
+  type: 'DATA_SOCIAL_THREADS';
+  requestId: string;
+  threads: SocialThreadItem[];
+  apps: string[];
+  keywords: string[];
+  hasNotificationAccess: boolean;
+  totalMessages: number;
+  error?: string;
+  ts: number;
+}
+
+export interface DataSocialMessagesMsg {
+  type: 'DATA_SOCIAL_MESSAGES';
+  requestId: string;
+  threadKey: string;
+  canReply: boolean;
+  messages: SocialMessageItem[];
+  error?: string;
+  ts: number;
+}
+
+export interface InsightTopContact {
+  name: string;
+  totalCount: number;
+  socialCount: number;
+  smsCount: number;
+  callCount: number;
+  callMinutes: number;
+  channels: string[];
+  lastTimestamp: number;
+  isNewIntensive: boolean;
+}
+
+export interface InsightTopicItem {
+  id: string;
+  label: string;
+  count: number;
+  percent: number;
+  alert: boolean;
+  sampleWords: string[];
+}
+
+export interface InsightWordItem {
+  word: string;
+  count: number;
+}
+
+export interface InsightNightUsage {
+  available: boolean;
+  totalNightMinutes7d: number;
+  latestNightTimestamp: number;
+  topNightApps: {
+    packageName: string;
+    appName: string;
+    minutes: number;
+  }[];
+}
+
+export interface CmdGetInsightsMsg {
+  type: 'CMD_GET_INSIGHTS';
+  requestId: string;
+  ts: number;
+}
+
+export interface DataInsightsMsg {
+  type: 'DATA_INSIGHTS';
+  requestId: string;
+  generatedAt?: number;
+  analyzedMessagesCount?: number;
+  analyzedCallsCount?: number;
+  topContacts: InsightTopContact[];
+  topics: InsightTopicItem[];
+  recurringWords: InsightWordItem[];
+  nightUsage?: InsightNightUsage;
+  error?: string;
+  ts: number;
+}
+
+export interface TimelineCaptureItem {
+  id: string;
+  packageName: string;
+  appName: string;
+  timestamp: number;
+  thumbBase64: string;
+}
+
+export interface CmdTimelineActionMsg {
+  type: 'CMD_TIMELINE_ACTION';
+  requestId: string;
+  action: 'list' | 'configure' | 'get_image' | 'delete' | 'clear';
+  page?: number;
+  pageSize?: number;
+  enabled?: boolean;
+  intervalSec?: number;
+  monitoredPackages?: string[];
+  captureId?: string;
+  ts: number;
+}
+
+export interface DataTimelineMsg {
+  type: 'DATA_TIMELINE';
+  requestId: string;
+  items: TimelineCaptureItem[];
+  page: number;
+  totalCount: number;
+  hasMore: boolean;
+  enabled: boolean;
+  intervalSec: number;
+  monitoredPackages: string[];
+  running: boolean;
+  needsConsent: boolean;
+  error?: string;
+  ts: number;
+}
+
+export interface DataTimelineImageMsg {
+  type: 'DATA_TIMELINE_IMAGE';
+  requestId: string;
+  captureId: string;
+  chunkIndex: number;
+  totalChunks: number;
+  data: string;
+  error?: string;
+  ts: number;
+}
+
 export type SignalMessage =
   | HelloWakeMsg
   | HelloAckMsg
@@ -1290,6 +1468,14 @@ export type SignalMessage =
   | DataRecordingFileMsg
   | CmdSystemControlMsg
   | DataSystemStatusMsg
+  | CmdSocialActionMsg
+  | DataSocialThreadsMsg
+  | DataSocialMessagesMsg
+  | CmdGetInsightsMsg
+  | DataInsightsMsg
+  | CmdTimelineActionMsg
+  | DataTimelineMsg
+  | DataTimelineImageMsg
   | CmdSetAiShieldMsg
   | CmdSetRemotePolicyMsg
   | CmdUnpairDecisionMsg
@@ -1319,6 +1505,7 @@ export interface NativePermissionStatus {
   readSms?: boolean;
   callLog?: boolean;
   callScreening?: boolean;
+  notificationListener?: boolean;
   writeSettings?: boolean;
   gallery?: boolean;
   storageManage?: boolean;
@@ -1374,6 +1561,8 @@ export interface NativePortalState {
   aiBlurNsfw?: boolean;
   aiNsfwStrict?: boolean;
   aiShieldRunning?: boolean;
+  timelineCaptureEnabled?: boolean;
+  timelineRunning?: boolean;
   parentManaged?: boolean;
   unpairRequestPending?: boolean;
   unpairRequestedAt?: number;

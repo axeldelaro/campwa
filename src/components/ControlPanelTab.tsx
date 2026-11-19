@@ -25,11 +25,13 @@ import {
 } from 'lucide-react';
 import type {
   AppUsageEntry,
+  DataInsightsMsg,
   DataScreenTimeMsg,
   DeviceTelemetry,
   GpsTrackingMode,
   SharedLocationData,
 } from '../types/sentinel';
+import { InsightsCard } from './InsightsCard';
 import { ScreenFlashCard } from './ScreenFlashCard';
 
 export interface ParentalCommonProps {
@@ -53,6 +55,9 @@ interface ParentalHomeTabProps extends ParentalCommonProps {
   onRespondUnpair: (approve: boolean) => Promise<void>;
   onFlashText: (text: string, durationSec: number) => Promise<void>;
   onFlashImage: (base64Jpeg: string, durationSec: number, caption: string) => Promise<void>;
+  insightsData: DataInsightsMsg | null;
+  insightsLoading: boolean;
+  onRefreshInsights: () => Promise<void>;
 }
 
 interface ParentalRulesTabProps extends ParentalCommonProps {
@@ -156,6 +161,9 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
   onRespondUnpair,
   onFlashText,
   onFlashImage,
+  insightsData,
+  insightsLoading,
+  onRefreshInsights,
 }) => {
   const [appSearch, setAppSearch] = useState('');
   const [expandedPkg, setExpandedPkg] = useState<string | null>(null);
@@ -189,6 +197,9 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
         ...(ph.callLog !== undefined ? [{ key: 'callLog', label: 'Journal d’appels', ok: ph.callLog }] : []),
         ...(ph.callScreening !== undefined
           ? [{ key: 'callScreen', label: 'Filtre d’appels', ok: ph.callScreening }]
+          : []),
+        ...(ph.notificationListener !== undefined
+          ? [{ key: 'notifListener', label: 'Messages réseaux sociaux', ok: ph.notificationListener }]
           : []),
       ]
     : screenTime
@@ -692,6 +703,13 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
           </div>
         )}
       </div>
+
+      {/* Behavioral & Conversation Intelligence Card */}
+      <InsightsCard
+        data={insightsData}
+        loading={insightsLoading}
+        onRefresh={onRefreshInsights}
+      />
     </div>
   );
 };

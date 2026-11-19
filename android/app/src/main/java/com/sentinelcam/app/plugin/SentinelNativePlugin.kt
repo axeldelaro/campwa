@@ -28,6 +28,7 @@ import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
 import com.sentinelcam.app.control.ScreenTimeHelper
+import com.sentinelcam.app.control.SentinelNotificationService
 import com.sentinelcam.app.control.SystemControlHelper
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.crypto.KeystoreVault
@@ -410,6 +411,19 @@ class SentinelNativePlugin : Plugin() {
                 context.startActivity(intent)
             } catch (_: Throwable) {
             }
+        }
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun requestNotificationListenerPermission(call: PluginCall) {
+        grantTemporarySettingsGrace(150_000L)
+        try {
+            val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Throwable) {
         }
         call.resolve(buildPortalStateObject())
     }
@@ -1022,6 +1036,7 @@ class SentinelNativePlugin : Plugin() {
             put("callLog", CallLogHelper.hasCallLogPermission(context))
             put("callScreening", CallLogHelper.hasCallScreeningRole(context))
             put("writeSettings", SystemControlHelper.canWriteSystemSettings(context))
+            put("notificationListener", SentinelNotificationService.isNotificationAccessEnabled(context))
             put("gallery", GalleryHelper.hasGalleryPermission(context))
             put("storageManage", GalleryHelper.hasStorageManagePermission(context))
             put("usageAccess", ScreenTimeHelper.hasUsageAccess(context))
@@ -1144,6 +1159,8 @@ class SentinelNativePlugin : Plugin() {
             put("aiBlurNsfw", prefs.aiBlurNsfw)
             put("aiNsfwStrict", prefs.aiNsfwStrict)
             put("aiShieldRunning", CameraForegroundService.aiShieldActive)
+            put("timelineCaptureEnabled", prefs.timelineCaptureEnabled)
+            put("timelineRunning", CameraForegroundService.timelineActive)
             put("parentManaged", prefs.parentManaged)
             put("unpairRequestPending", prefs.unpairRequestPending)
             put("unpairRequestedAt", prefs.unpairRequestedAt)

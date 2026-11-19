@@ -130,18 +130,18 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v23.0.${{ github.run_number }}
-          name: "SentinelCam v23.0.${{ github.run_number }} (Journal & Blocage d’Appels • Enregistrement Différé Hors-Ligne • Centre Système • Zones > 130 km/h sur Carte)"
+          tag_name: v24.0.${{ github.run_number }}
+          name: "SentinelCam v24.0.${{ github.run_number }} (Messages Réseaux Sociaux + Réponse Directe • Analyse des Conversations & Sujets • Captures Auto par App • Correctif Désinstallation)"
           body: |
-            ### SentinelCam v23.0 (`v23.0.${{ github.run_number }}`)
+            ### SentinelCam v24.0 (`v24.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Journal d’appels complet & Blocage de numéros à distance** : consultez tous les appels (entrants, sortants, manqués, bloqués), bloquez n’importe quel numéro en 1 clic, bloquez les numéros masqués ou activez le mode « Contacts & liste blanche uniquement » (révoqué automatiquement si l’appareil est délié).
-            - **Enregistrement différé hors-ligne (Audio ambiant & Vidéo caméra)** : lancez un enregistrement (1 à 30 min) qui continue même si le site est fermé ou hors connexion, stocké dans un coffre chiffré invisible par l’enfant, lisible et téléchargeable à distance depuis *Médias → Enregistrements*.
-            - **Centre de commande matériel & système** : réglez en direct les volumes (Média, Sonnerie, Alarme), le mode sonnerie (Normal / Vibreur / Silencieux), la luminosité, et consultez l’inventaire complet des applis installées (détection des applis *Hors Play Store* / masquées, ouverture ou désinstallation à distance).
-            - **Carte GPS avec zones > 130 km/h de haute précision** : surlignage rouge exact des portions de trajet dépassant 130 km/h, badges de vitesse de pointe sur la carte, bandeau récapitulatif cliquable pour zoomer sur chaque zone, et alerte automatique dans le journal.
-            - **Inclut toute la fiabilité v20–v22** : révocation totale des droits parentaux à la dissociation, assistant anti-veille constructeur, contrôle santé des autorisations, caméra anti-coupure et notifications 100 % préservées.
+            - **Messages Réseaux Sociaux & Réponse Directe (WhatsApp, Instagram, Snapchat, Discord, Messenger, TikTok, Telegram, Signal)** : archivage discret sur le téléphone même si l’enfant supprime ses messages, réponse directe depuis l’Espace Parent et alertes automatiques sur vos mots-clés sensibles — sans jamais masquer les notifications de l’enfant.
+            - **Analyse locale des conversations & habitudes** : découvrez en un coup d’œil avec qui l’enfant échange le plus (SMS + appels + réseaux réunis), les nouveaux contacts intensifs, la synthèse des sujets récurrents et mots fréquents, ainsi que l’activité nocturne (22h–06h).
+            - **Captures d’écran automatiques par application** : choisissez précisément les applications à surveiller et la fréquence (toutes les 5 à 60 s) avec déduplication intelligente, galerie dédiée, zoom plein écran et effacement total à la dissociation.
+            - **Correctif désinstallation à distance** : ajout de la permission officielle Android `REQUEST_DELETE_PACKAGES` + ouverture directe de la boîte de désinstallation même avec la protection Paramètres active.
+            - **Inclut toute la fiabilité v20–v23** : journal & blocage d’appels, enregistrement différé hors-ligne, centre matériel/système, carte GPS zones > 130 km/h, et révocation totale des droits parentaux si l’appareil est délié.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

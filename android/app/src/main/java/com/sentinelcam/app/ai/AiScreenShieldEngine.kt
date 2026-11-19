@@ -128,6 +128,8 @@ class AiScreenShieldEngine(
 
     fun hasActiveProjection(): Boolean = mediaProjection != null
 
+    fun getActiveMediaProjection(): MediaProjection? = mediaProjection
+
     fun startOrRefresh(projectionIntent: Intent?): Boolean {
         val wantShield = prefs.aiBlurFaces || prefs.aiBlurNsfw
         if (!wantShield) {
