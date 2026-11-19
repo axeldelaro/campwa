@@ -18,8 +18,8 @@ class StopPortalReceiver : BroadcastReceiver() {
             ACTION_USER_STOP_PORTAL -> {
                 try {
                     val prefs = PortalPreferences(context)
-                    if (prefs.adminProtectionEnabled && prefs.hasAdminPin()) {
-                        // Parental/Admin Lock active: open app to request Admin PIN instead of stopping silently
+                    if (prefs.parentManaged || (prefs.adminProtectionEnabled && prefs.hasAdminPin())) {
+                        // Parent-managed / Admin Lock active: child cannot stop the service from notification
                         val open = Intent(context.applicationContext, MainActivity::class.java).apply {
                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                         }
@@ -35,6 +35,8 @@ class StopPortalReceiver : BroadcastReceiver() {
 
             ACTION_USER_SLEEP_CAMERA -> {
                 try {
+                    val prefs = PortalPreferences(context)
+                    if (prefs.parentManaged) return
                     CameraForegroundService.sleepCameraFromNotification(context)
                 } catch (_: Throwable) {
                 }

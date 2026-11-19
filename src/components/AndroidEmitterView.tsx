@@ -4,8 +4,7 @@ import {
   BookUser,
   Camera,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
+  Clock,
   Image as ImageIcon,
   Lock,
   MapPin,
@@ -26,48 +25,25 @@ interface AndroidEmitterViewProps {
 }
 
 /**
- * Pure, Tamper-Proof Child Device App (v16).
- *
- * - ZERO feature toggles accessible to the child: all rules, limits, AI pixelation,
- *   GPS, gallery, and permissions are controlled 100% remotely from the Parent Website.
- * - Step 1: Enter the 6-char code generated on the Parent Website to bind permanently.
- * - Step 2: Grant required Android OS permissions once via the clean setup checklist.
- * - Once paired, displays a calm read-only "Appareil protégé" screen.
- *   Local maintenance (unpair / change PIN) is strictly locked behind the Parent Admin PIN.
+ * Pure, Tamper-Proof Child Device App (v17):
+ * - Device Admin (anti-uninstall & screen lock) is requested right at installation
+ *   and locked ON by default upon pairing.
+ * - ZERO feature toggles accessible on the child device.
+ * - Child CANNOT unlink locally: unpairing strictly requires explicit Parent approval
+ *   from the Parent Website (CMD_UNPAIR_DECISION).
  */
 export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNativeAndroid }) => {
   const [portal, setPortal] = useState<NativePortalState | null>(null);
   const [busy, setBusy] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  // Parent-generated 6-char pairing code input
   const [pairCode, setPairCode] = useState('');
   const [pairMessage, setPairMessage] = useState<string | null>(null);
-
-  // Local Parent Admin section (strictly behind Admin PIN)
-  const [adminDrawerOpen, setAdminDrawerOpen] = useState(false);
-  const [adminPinInput, setAdminPinInput] = useState('');
-  const [adminUnlocked, setAdminUnlocked] = useState(false);
-  const [verifiedAdminPin, setVerifiedAdminPin] = useState('');
-  const [newAdminPin, setNewAdminPin] = useState('');
-  const [adminFeedback, setAdminFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [confirmUnpairAsk, setConfirmUnpairAsk] = useState(false);
 
   useEffect(() => {
     const t = window.setInterval(() => setNowMs(Date.now()), 5000);
     return () => window.clearInterval(t);
-  }, []);
-
-  // Auto-relock local parent session when app goes to background
-  useEffect(() => {
-    const onVis = () => {
-      if (document.hidden) {
-        setAdminUnlocked(false);
-        setVerifiedAdminPin('');
-        setAdminDrawerOpen(false);
-      }
-    };
-    document.addEventListener('visibilitychange', onVis);
-    return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
 
   useEffect(() => {
@@ -145,6 +121,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     }
   };
 
+  const handleRequestDeviceAdmin = async () => {
+    await runAction(() => SentinelNative.requestDeviceAdmin());
+  };
+
   const handlePair = async (e: React.FormEvent) => {
     e.preventDefault();
     const clean = normalizePairingCode(pairCode);
@@ -152,7 +132,12 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       setPairMessage('Saisissez les 6 caractères affichés sur le site Parent.');
       return;
     }
-    setPairMessage('Connexion sécurisée à l’Espace Parent…');
+    if (!portal.deviceAdminActive) {
+      setPairMessage('Activez d’abord les droits administrateur Android (étape 1).');
+      await handleRequestDeviceAdmin();
+      return;
+    }
+    setPairMessage('Association chiffrée avec l’Espace Parent…');
     setBusy(true);
     try {
       const next = await SentinelNative.pairWithParentCode({ code: clean });
@@ -165,78 +150,15 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     }
   };
 
-  const handleUnlockAdmin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAdminFeedback(null);
-    setBusy(true);
-    try {
-      const res = await SentinelNative.verifyAdminPin({ pin: adminPinInput.trim() });
-      if (res.valid) {
-        setVerifiedAdminPin(adminPinInput.trim());
-        setAdminUnlocked(true);
-        setAdminPinInput('');
-      } else {
-        setAdminFeedback({ ok: false, text: 'Code administrateur incorrect.' });
-      }
-    } catch {
-      setAdminFeedback({ ok: false, text: 'Vérification impossible.' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleActivateDeviceAdmin = async () => {
-    const pin = verifiedAdminPin || newAdminPin.trim();
-    if (pin.length < 4) {
-      setAdminFeedback({ ok: false, text: 'Définissez d’abord un code administrateur depuis le site Parent.' });
-      return;
-    }
-    await runAction(() => SentinelNative.enableAdminProtection({ pin }));
-  };
-
-  const handleUpdatePinLocal = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const p = newAdminPin.trim();
-    if (p.length < 4 || p.length > 12) {
-      setAdminFeedback({ ok: false, text: '4 à 12 caractères requis.' });
-      return;
-    }
-    setBusy(true);
-    setAdminFeedback(null);
-    try {
-      const next = await SentinelNative.updateAdminPin({ currentPin: verifiedAdminPin, newPin: p });
-      setPortal(next);
-      setVerifiedAdminPin(p);
-      setNewAdminPin('');
-      setAdminFeedback({ ok: true, text: 'Code administrateur mis à jour.' });
-    } catch (err) {
-      setAdminFeedback({ ok: false, text: err instanceof Error ? err.message : 'Modification refusée.' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleUnpair = async () => {
-    setBusy(true);
-    setAdminFeedback(null);
-    try {
-      const next = await SentinelNative.unpairFromParent({ pin: verifiedAdminPin });
-      setPortal(next);
-      setAdminUnlocked(false);
-      setVerifiedAdminPin('');
-      setAdminDrawerOpen(false);
-    } catch (err) {
-      setAdminFeedback({ ok: false, text: err instanceof Error ? err.message : 'Action refusée.' });
-    } finally {
-      setBusy(false);
-    }
+  const handleRequestParentUnpair = async () => {
+    setConfirmUnpairAsk(false);
+    await runAction(() => SentinelNative.requestParentUnpair());
   };
 
   const p = portal.permissions;
   const aiNeedsScreenCapture = Boolean((portal.aiBlurFaces || portal.aiBlurNsfw) && !portal.aiShieldRunning);
-  const needsDeviceAdmin = Boolean(portal.hasAdminPin && !portal.deviceAdminActive);
+  const needsDeviceAdmin = !portal.deviceAdminActive;
 
-  // Android OS permissions that still need a one-time OS prompt tap
   const missingOsSteps: Array<{
     key: string;
     label: string;
@@ -248,7 +170,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   if (aiNeedsScreenCapture) {
     missingOsSteps.push({
       key: 'ai-screen',
-      label: 'Activer la capture pour le Filtre IA',
+      label: 'Capture écran pour le Filtre IA',
       highlight: true,
       icon: Sparkles,
       action: () => runAction(() => SentinelNative.requestScreenSharePermission()),
@@ -265,7 +187,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   if (!p.overlay) {
     missingOsSteps.push({
       key: 'overlay',
-      label: 'Affichage écran de blocage & Filtre IA',
+      label: 'Écran de blocage & Filtre IA',
       icon: ShieldCheck,
       action: () => runAction(() => SentinelNative.requestOverlayPermission()),
     });
@@ -273,7 +195,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   if (!p.batteryOptimizationIgnored) {
     missingOsSteps.push({
       key: 'battery',
-      label: 'Arrière-plan illimité (anti-veille)',
+      label: 'Arrière-plan illimité',
       icon: BatteryCharging,
       action: () => runAction(async () => { await SentinelNative.requestBatteryExemption(); }),
     });
@@ -296,7 +218,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   if (!p.gallery) {
     missingOsSteps.push({
       key: 'gallery',
-      label: 'Galerie photos (hors dossiers masqués)',
+      label: 'Galerie photos publique',
       icon: ImageIcon,
       action: () => runAction(() => SentinelNative.requestGalleryPermission()),
     });
@@ -324,29 +246,70 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   if (!p.sms) {
     missingOsSteps.push({
       key: 'sms',
-      label: 'Envoi SMS (carte SIM)',
+      label: 'Envoi SMS',
       icon: MessageSquare,
       action: () => runAction(() => SentinelNative.requestSmsPermission()),
     });
   }
 
-  /* ==================== MODE A: NOT YET PAIRED TO PARENT ==================== */
+  /* ==================== MODE A: INSTALLATION & ASSOCIATION ==================== */
   if (!portal.parentManaged) {
     return (
       <div className="mx-auto max-w-md space-y-4 px-4 py-6">
-        <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-6">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/15 ring-1 ring-emerald-500/30">
-            <ShieldCheck className="h-6 w-6 text-emerald-400" />
+        {/* Step 1: Mandatory Android Device Admin at Install */}
+        <div
+          className={`rounded-2xl border p-4 ${
+            portal.deviceAdminActive
+              ? 'border-emerald-500/25 bg-emerald-500/[0.06]'
+              : 'border-amber-500/40 bg-amber-500/[0.08]'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
+                  portal.deviceAdminActive ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
+                }`}
+              >
+                {portal.deviceAdminActive ? (
+                  <CheckCircle2 className="h-5 w-5" />
+                ) : (
+                  <ShieldAlert className="h-5 w-5" />
+                )}
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-white">
+                  1. Droits administrateur Android
+                </div>
+                <div className="text-[11px] text-zinc-400">
+                  {portal.deviceAdminActive
+                    ? 'Verrouillage anti-désinstallation actif'
+                    : 'Requis pour verrouiller la désinstallation par défaut'}
+                </div>
+              </div>
+            </div>
+            {!portal.deviceAdminActive && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void handleRequestDeviceAdmin()}
+                className="shrink-0 rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-40"
+              >
+                Activer
+              </button>
+            )}
           </div>
-          <h1 className="mt-4 text-center text-lg font-semibold text-white">
-            Associer au Parent
-          </h1>
-          <p className="mt-1 text-center text-xs text-zinc-400">
-            Générez un code à 6 caractères sur le site Parent puis saisissez-le ici. Toutes les
-            règles seront ensuite pilotées à distance.
+        </div>
+
+        {/* Step 2: Bind to Parent Website */}
+        <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-5">
+          <div className="text-xs font-semibold text-white">2. Associer à l’Espace Parent</div>
+          <p className="mt-1 text-[11px] text-zinc-400">
+            Saisissez le code à 6 caractères affiché sur le site Parent. Toutes les protections seront
+            verrouillées par défaut.
           </p>
 
-          <form onSubmit={(e) => void handlePair(e)} className="mt-5 space-y-3">
+          <form onSubmit={(e) => void handlePair(e)} className="mt-4 space-y-3">
             <input
               type="text"
               inputMode="text"
@@ -355,8 +318,8 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               maxLength={6}
               value={pairCode}
               onChange={(e) => setPairCode(normalizePairingCode(e.target.value))}
-              placeholder="CODE PARENT (6 CAR.)"
-              className="w-full rounded-xl border border-white/10 bg-zinc-950 py-3.5 text-center font-mono text-lg font-semibold uppercase tracking-[0.28em] text-white placeholder-zinc-600 focus:border-emerald-400 focus:outline-none"
+              placeholder="CODE PARENT"
+              className="w-full rounded-xl border border-white/10 bg-zinc-950 py-3 text-center font-mono text-lg font-semibold uppercase tracking-[0.28em] text-white placeholder-zinc-600 focus:border-emerald-400 focus:outline-none"
             />
             <button
               type="submit"
@@ -377,22 +340,19 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           {(pairMessage || portal.pairStatus === 'timeout') && (
             <div className="mt-3 text-center text-xs text-emerald-300">
               {portal.pairStatus === 'timeout'
-                ? 'Temps écoulé — vérifiez le code affiché sur le site Parent et réessayez.'
+                ? 'Temps écoulé — vérifiez le code affiché sur le site Parent.'
                 : pairMessage}
             </div>
           )}
         </div>
 
-        {/* One-Time Android OS Permissions Setup */}
+        {/* Step 3: One-Time Android OS Permissions */}
         {missingOsSteps.length > 0 && (
           <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-4">
             <div className="text-xs font-semibold text-white">
-              Autorisations Android ({missingOsSteps.length} restantes)
+              3. Autorisations système ({missingOsSteps.length})
             </div>
-            <p className="mt-0.5 text-[11px] text-zinc-400">
-              À valider une seule fois sur l’appareil avant de le confier.
-            </p>
-            <div className="mt-3 space-y-1.5">
+            <div className="mt-2.5 space-y-1.5">
               {missingOsSteps.map((step) => {
                 const Icon = step.icon;
                 return (
@@ -418,10 +378,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     );
   }
 
-  /* ==================== MODE B: PARENT-MANAGED READ-ONLY PROTECTED DEVICE ==================== */
+  /* ==================== MODE B: PARENT-MANAGED PROTECTED DEVICE ==================== */
   return (
     <div className="mx-auto max-w-md space-y-4 px-4 py-6">
-      {/* Main Read-Only Protection Status Card (ZERO Child Toggles) */}
+      {/* Main Read-Only Status Card */}
       <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-5">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
@@ -430,7 +390,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             </div>
             <div>
               <h1 className="text-sm font-semibold text-white">Appareil protégé</h1>
-              <p className="text-[11px] text-zinc-400">Géré à distance par le Parent</p>
+              <p className="text-[11px] text-zinc-400">Piloté à distance par le Parent</p>
             </div>
           </div>
           <span
@@ -445,8 +405,18 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           </span>
         </div>
 
-        {/* Read-Only Active Protections Badges */}
+        {/* Active Protections Read-Only Summary */}
         <div className="mt-4 flex flex-wrap gap-1.5 text-[11px]">
+          {portal.deviceAdminActive && (
+            <span className="rounded-lg bg-emerald-500/15 px-2.5 py-1 text-emerald-300">
+              Admin verrouillé
+            </span>
+          )}
+          {portal.blockSettingsAndStore && (
+            <span className="rounded-lg bg-white/[0.06] px-2.5 py-1 text-zinc-200">
+              Paramètres bloqués
+            </span>
+          )}
           {portal.aiShieldRunning && (
             <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/15 px-2.5 py-1 text-emerald-300">
               <Sparkles className="h-3 w-3" />
@@ -455,11 +425,6 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           )}
           {portal.curfewEnabled && (
             <span className="rounded-lg bg-white/[0.06] px-2.5 py-1 text-zinc-200">Couvre-feu</span>
-          )}
-          {portal.blockSettingsAndStore && (
-            <span className="rounded-lg bg-white/[0.06] px-2.5 py-1 text-zinc-200">
-              Paramètres protégés
-            </span>
           )}
           {(portal.schoolModeUntilMs ?? 0) > nowMs && (
             <span className="rounded-lg bg-emerald-500/15 px-2.5 py-1 text-emerald-200">Mode École</span>
@@ -472,44 +437,36 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               {portal.activeAppLocksCount} appli(s) verrouillée(s)
             </span>
           )}
-          {!portal.aiShieldRunning &&
-            !portal.curfewEnabled &&
-            !portal.blockSettingsAndStore &&
-            (portal.activeAppLocksCount ?? 0) === 0 && (
-              <span className="text-xs text-zinc-500">
-                Protection continue active en arrière-plan.
-              </span>
-            )}
         </div>
 
         {missingOsSteps.length === 0 && !needsDeviceAdmin && (
           <div className="mt-4 flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.07] px-3 py-2 text-xs text-emerald-300">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
-            <span>Toutes les autorisations système sont configurées.</span>
+            <span>Toutes les autorisations sont actives.</span>
           </div>
         )}
       </div>
 
-      {/* Missing OS Permissions Prompt (One-Tap System Grants Only — No Off Switches!) */}
+      {/* Missing OS Permissions (One-Tap Grants Only — Never Any Off Switch) */}
       {(missingOsSteps.length > 0 || needsDeviceAdmin) && (
         <div className="rounded-2xl border border-amber-500/25 bg-zinc-900/75 p-4">
           <div className="flex items-center gap-2 text-xs font-semibold text-amber-200">
             <ShieldAlert className="h-4 w-4 text-amber-400" />
-            <span>Autorisations Android à valider</span>
+            <span>Autorisations à finaliser</span>
           </div>
           <div className="mt-2.5 space-y-1.5">
             {needsDeviceAdmin && (
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void handleActivateDeviceAdmin()}
-                className="flex w-full items-center justify-between gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2.5 text-left text-xs text-amber-100"
+                onClick={() => void handleRequestDeviceAdmin()}
+                className="flex w-full items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-left text-xs text-amber-100"
               >
                 <span className="inline-flex items-center gap-2">
                   <Lock className="h-3.5 w-3.5 text-amber-300" />
-                  <span>Protection Administrateur Android</span>
+                  <span>Activer les droits administrateur</span>
                 </span>
-                <span className="font-semibold">Activer →</span>
+                <span className="shrink-0 font-semibold">Activer</span>
               </button>
             )}
             {missingOsSteps.map((step) => {
@@ -538,93 +495,52 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         </div>
       )}
 
-      {/* Discreet Local Parent Admin Area (Strictly Locked Behind Admin PIN) */}
-      <div className="rounded-2xl border border-white/[0.07] bg-zinc-900/60 p-4">
-        <button
-          type="button"
-          onClick={() => setAdminDrawerOpen((v) => !v)}
-          className="flex w-full items-center justify-between text-xs font-medium text-zinc-400 hover:text-white"
-        >
-          <span className="inline-flex items-center gap-2">
-            <Lock className="h-3.5 w-3.5" />
-            <span>Administration Parent (sur cet appareil)</span>
-          </span>
-          {adminDrawerOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-        </button>
-
-        {adminDrawerOpen && (
-          <div className="mt-3 space-y-3 border-t border-white/[0.06] pt-3">
-            {adminFeedback && (
-              <div
-                className={`rounded-xl border px-3 py-2 text-xs ${
-                  adminFeedback.ok
-                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
-                    : 'border-rose-500/30 bg-rose-500/10 text-rose-200'
-                }`}
+      {/* Parent-Authorized Unpair Request ONLY (Child Cannot Unpair Locally) */}
+      <div className="rounded-2xl border border-white/[0.07] bg-zinc-900/50 p-4">
+        {portal.unpairRequestPending ? (
+          <div className="flex items-start gap-2.5 text-xs text-amber-200">
+            <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <div>
+              <div className="font-medium">Demande envoyée au Parent</div>
+              <p className="mt-0.5 text-[11px] text-zinc-400">
+                La dissociation de cet appareil attend l’autorisation du Parent depuis le site Web.
+              </p>
+            </div>
+          </div>
+        ) : confirmUnpairAsk ? (
+          <div className="space-y-2.5 text-xs">
+            <p className="text-zinc-300">
+              Envoyer une demande au Parent pour délier cet appareil ? Le Parent devra l’autoriser
+              depuis son espace.
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void handleRequestParentUnpair()}
+                className="flex-1 rounded-xl bg-white py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
               >
-                {adminFeedback.text}
-              </div>
-            )}
-
-            {portal.hasAdminPin && !adminUnlocked ? (
-              <form onSubmit={(e) => void handleUnlockAdmin(e)} className="flex gap-2">
-                <input
-                  type="password"
-                  value={adminPinInput}
-                  onChange={(e) => setAdminPinInput(e.target.value)}
-                  placeholder="Code administrateur"
-                  className="min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
-                />
-                <button
-                  type="submit"
-                  disabled={busy || !adminPinInput.trim()}
-                  className="shrink-0 rounded-xl bg-white px-4 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-35"
-                >
-                  Ouvrir
-                </button>
-              </form>
-            ) : (
-              <div className="space-y-3">
-                {portal.hasAdminPin && (
-                  <form onSubmit={(e) => void handleUpdatePinLocal(e)} className="flex gap-2">
-                    <input
-                      type="password"
-                      maxLength={12}
-                      value={newAdminPin}
-                      onChange={(e) => setNewAdminPin(e.target.value)}
-                      placeholder="Nouveau code admin (4–12 car.)"
-                      className="min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500"
-                    />
-                    <button
-                      type="submit"
-                      disabled={busy || newAdminPin.trim().length < 4}
-                      className="shrink-0 rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-35"
-                    >
-                      Changer
-                    </button>
-                  </form>
-                )}
-
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs">
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void runAction(() => SentinelNative.requestScreenSharePermission())}
-                    className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-1.5 text-zinc-300 hover:text-white"
-                  >
-                    Valider capture écran
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void handleUnpair()}
-                    className="rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-1.5 text-rose-200 hover:bg-rose-500/20"
-                  >
-                    Délier l’appareil
-                  </button>
-                </div>
-              </div>
-            )}
+                Envoyer la demande
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmUnpairAsk(false)}
+                className="rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-400 hover:text-white"
+              >
+                Annuler
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="text-zinc-500">Dissocier l’appareil</span>
+            <button
+              type="button"
+              onClick={() => setConfirmUnpairAsk(true)}
+              className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-1.5 text-[11px] font-medium text-zinc-300 hover:text-white"
+            >
+              Demander au parent
+            </button>
           </div>
         )}
       </div>

@@ -293,6 +293,10 @@ class SentinelNativePlugin : Plugin() {
 
     @PluginMethod
     fun revokeScreenSharePermission(call: PluginCall) {
+        if (prefs.parentManaged) {
+            call.reject("Géré à distance par le Parent.")
+            return
+        }
         prefs.globalAllowScreenShare = false
         CameraForegroundService.revokeScreenShareConsent()
         call.resolve(buildPortalStateObject())
@@ -300,6 +304,10 @@ class SentinelNativePlugin : Plugin() {
 
     @PluginMethod
     fun setGlobalShareSettings(call: PluginCall) {
+        if (prefs.parentManaged) {
+            call.reject("Géré à distance par le Parent.")
+            return
+        }
         if (call.data.has("allowScreenShare")) {
             val v = call.getBoolean("allowScreenShare", false) ?: false
             prefs.globalAllowScreenShare = v
@@ -386,27 +394,57 @@ class SentinelNativePlugin : Plugin() {
     }
 
     @PluginMethod
-    fun unpairFromParent(call: PluginCall) {
-        val pin = call.getString("pin") ?: ""
-        if (prefs.adminProtectionEnabled && prefs.hasAdminPin() && !prefs.verifyAdminPin(pin)) {
-            call.reject("Code administrateur incorrect.")
+    fun requestDeviceAdmin(call: PluginCall) {
+        try {
+            prefs.adminProtectionEnabled = true
+            prefs.userManuallyStopped = false
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val comp = SentinelDeviceAdminReceiver.getComponentName(context)
+            if (!dpm.isAdminActive(comp)) {
+                val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                    putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, comp)
+                    putExtra(
+                        DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                        "Verrouille la protection parentale contre la désinstallation ou l’arrêt sans autorisation du Parent."
+                    )
+                }
+                startActivityForResult(call, intent, "deviceAdminCallback")
+            } else {
+                call.resolve(buildPortalStateObject())
+            }
+        } catch (t: Throwable) {
+            call.reject(t.message ?: "Impossible d’ouvrir les droits administrateur.")
+        }
+    }
+
+    @PluginMethod
+    fun requestParentUnpair(call: PluginCall) {
+        if (!prefs.parentManaged) {
+            call.resolve(buildPortalStateObject())
             return
         }
-        prefs.parentManaged = false
-        prefs.parentFamilyKey = ""
-        prefs.aiBlurFaces = false
-        prefs.aiBlurNsfw = false
-        prefs.clearAllAppLocks()
-        prefs.lostModeEnabled = false
-        prefs.blockSettingsAndStore = false
-        prefs.curfewEnabled = false
-        prefs.appendLog("security", "Appareil délié de l’Espace Parent par code administrateur.")
-        CameraForegroundService.syncAccessChannels(context)
+        prefs.unpairRequestPending = true
+        prefs.unpairRequestedAt = System.currentTimeMillis()
+        prefs.appendSecurityEvent(
+            "admin",
+            "Demande de dissociation",
+            "L’appareil demande l’autorisation du Parent pour être délié."
+        )
+        CameraForegroundService.notifyUnpairRequestChanged(context)
         call.resolve(buildPortalStateObject())
     }
 
     @PluginMethod
+    fun unpairFromParent(call: PluginCall) {
+        call.reject("L’autorisation du Parent depuis le site Web est obligatoire pour délier cet appareil.")
+    }
+
+    @PluginMethod
     fun setAiShieldSettings(call: PluginCall) {
+        if (prefs.parentManaged) {
+            call.reject("Géré à distance par le Parent.")
+            return
+        }
         if (call.data.has("blurFaces")) {
             prefs.aiBlurFaces = call.getBoolean("blurFaces", false) ?: false
         }
@@ -485,6 +523,10 @@ class SentinelNativePlugin : Plugin() {
 
     @PluginMethod
     fun stopPortalService(call: PluginCall) {
+        if (prefs.parentManaged) {
+            call.reject("Impossible d’arrêter le service sur un appareil géré par le Parent.")
+            return
+        }
         if (prefs.adminProtectionEnabled && prefs.hasAdminPin()) {
             val pin = call.getString("adminPin") ?: ""
             if (!prefs.verifyAdminPin(pin)) {
@@ -543,6 +585,10 @@ class SentinelNativePlugin : Plugin() {
 
     @PluginMethod
     fun disableAdminProtection(call: PluginCall) {
+        if (prefs.parentManaged) {
+            call.reject("Autorisation du Parent requise depuis le site Web.")
+            return
+        }
         val pin = call.getString("pin") ?: ""
         if (prefs.hasAdminPin() && !prefs.verifyAdminPin(pin)) {
             call.reject("Code administrateur incorrect.")
@@ -859,6 +905,8 @@ class SentinelNativePlugin : Plugin() {
             put("aiNsfwStrict", prefs.aiNsfwStrict)
             put("aiShieldRunning", CameraForegroundService.aiShieldActive)
             put("parentManaged", prefs.parentManaged)
+            put("unpairRequestPending", prefs.unpairRequestPending)
+            put("unpairRequestedAt", prefs.unpairRequestedAt)
             put("pairStatus", CameraForegroundService.pairStatus)
             put(
                 "deviceAdminActive",

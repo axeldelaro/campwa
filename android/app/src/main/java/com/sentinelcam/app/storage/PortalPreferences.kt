@@ -208,6 +208,18 @@ class PortalPreferences(context: Context) {
             prefs.edit().putBoolean(KEY_PARENT_MANAGED, value).commit()
         }
 
+    var unpairRequestPending: Boolean
+        get() = prefs.getBoolean(KEY_UNPAIR_REQUEST_PENDING, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_UNPAIR_REQUEST_PENDING, value).commit()
+        }
+
+    var unpairRequestedAt: Long
+        get() = prefs.getLong(KEY_UNPAIR_REQUESTED_AT, 0L)
+        set(value) {
+            prefs.edit().putLong(KEY_UNPAIR_REQUESTED_AT, value).commit()
+        }
+
     var parentFamilyKey: String
         get() = KeystoreVault.decrypt(prefs.getString(KEY_PARENT_FAMILY_KEY, null)) ?: ""
         set(value) {
@@ -1157,6 +1169,8 @@ class PortalPreferences(context: Context) {
         private const val KEY_AI_NSFW_STRICT = "ai_nsfw_strict_v15"
         private const val KEY_PARENT_MANAGED = "parent_managed_v15"
         private const val KEY_PARENT_FAMILY_KEY = "parent_family_key_v15"
+        private const val KEY_UNPAIR_REQUEST_PENDING = "unpair_request_pending_v17"
+        private const val KEY_UNPAIR_REQUESTED_AT = "unpair_requested_at_v17"
         private const val KEY_SCREEN_PAUSED_UNTIL = "screen_paused_until_ms"
         private const val KEY_APP_LOCK_RULES = "app_lock_rules_v11"
         private const val KEY_CURFEW_ENABLED = "curfew_enabled_v13"

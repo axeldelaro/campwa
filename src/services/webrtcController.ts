@@ -829,6 +829,19 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async respondUnpairRequest(approve: boolean): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_UNPAIR_DECISION',
+        requestId: randomHex(8),
+        approve,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -1047,6 +1060,8 @@ export class SentinelWebRtcController {
       aiShieldRunning: msg.aiShieldRunning,
       aiShieldNeedsConsent: msg.aiShieldNeedsConsent,
       parentManaged: msg.parentManaged,
+      unpairRequestPending: msg.unpairRequestPending,
+      unpairRequestedAt: msg.unpairRequestedAt,
       pfsEnabled: Boolean(ecdhSharedSecret) || Boolean(msg.pfsEnabled),
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,
@@ -1126,6 +1141,8 @@ export class SentinelWebRtcController {
       aiShieldRunning: msg.aiShieldRunning,
       aiShieldNeedsConsent: msg.aiShieldNeedsConsent,
       parentManaged: msg.parentManaged,
+      unpairRequestPending: msg.unpairRequestPending,
+      unpairRequestedAt: msg.unpairRequestedAt,
       pfsEnabled: msg.pfsEnabled,
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,

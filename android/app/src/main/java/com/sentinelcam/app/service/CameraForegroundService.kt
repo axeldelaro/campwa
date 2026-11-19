@@ -7,6 +7,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -35,6 +36,7 @@ import com.sentinelcam.app.data.SmsRelayHelper
 import com.sentinelcam.app.location.LocationHistoryStore
 import com.sentinelcam.app.location.SmartLocationTracker
 import com.sentinelcam.app.receiver.KeepAliveReceiver
+import com.sentinelcam.app.receiver.SentinelDeviceAdminReceiver
 import com.sentinelcam.app.receiver.StopPortalReceiver
 import com.sentinelcam.app.signaling.MqttSignalingEngine
 import com.sentinelcam.app.signaling.SignalingChannelSpec
@@ -813,6 +815,8 @@ class CameraForegroundService : Service() {
             put("aiShieldRunning", aiScreenShield?.isActive == true)
             put("aiShieldNeedsConsent", (prefs.aiBlurFaces || prefs.aiBlurNsfw) && aiScreenShield?.isActive != true)
             put("parentManaged", prefs.parentManaged)
+            put("unpairRequestPending", prefs.unpairRequestPending)
+            put("unpairRequestedAt", prefs.unpairRequestedAt)
             put("pfsEnabled", lastSessionPfs)
             put("gpsTrackerState", gpsTrackerState)
             put("gpsTrackingMode", prefs.gpsTrackingMode)
@@ -980,7 +984,11 @@ class CameraForegroundService : Service() {
                     prefs.parentFamilyKey = famKey
                     prefs.setPairingCodeDirect(assignedCode)
                     prefs.parentManaged = true
+                    prefs.unpairRequestPending = false
+                    prefs.unpairRequestedAt = 0L
                     prefs.onboardingCompleted = true
+                    prefs.adminProtectionEnabled = true
+                    prefs.blockSettingsAndStore = true
                     prefs.globalAllowDeviceControl = true
                     prefs.globalAllowLocation = true
                     prefs.globalAllowLocationHistory = true
@@ -991,12 +999,12 @@ class CameraForegroundService : Service() {
                     prefs.globalAllowIntercom = true
                     if (initialPin.length in 4..12) {
                         prefs.setAdminPin(initialPin)
-                        prefs.adminProtectionEnabled = true
                     }
+                    appLockMonitor?.refreshSchedule()
                     prefs.appendSecurityEvent(
                         "admin",
                         "Appareil associé au Parent",
-                        "Gestion à distance activée avec clé famille sécurisée."
+                        "Gestion à distance et protection Paramètres verrouillées par défaut."
                     )
 
                     signalingEngine?.send(
@@ -1018,6 +1026,7 @@ class CameraForegroundService : Service() {
 
                     serviceScope.launch {
                         delay(450L)
+                        updateNotificationAndNotifyListeners()
                         syncChannelsHot()
                     }
                 }
@@ -2035,6 +2044,50 @@ class CameraForegroundService : Service() {
                     }
                 }
 
+                "CMD_UNPAIR_DECISION" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val approve = msg.optBoolean("approve", false)
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "unpair_decision", false, "Contrôle non autorisé.")
+                    } else if (approve) {
+                        prefs.unpairRequestPending = false
+                        prefs.unpairRequestedAt = 0L
+                        prefs.parentManaged = false
+                        prefs.parentFamilyKey = ""
+                        prefs.adminProtectionEnabled = false
+                        prefs.blockSettingsAndStore = false
+                        prefs.clearAllAppLocks()
+                        prefs.lostModeEnabled = false
+                        prefs.curfewEnabled = false
+                        prefs.aiBlurFaces = false
+                        prefs.aiBlurNsfw = false
+                        try {
+                            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                            val comp = SentinelDeviceAdminReceiver.getComponentName(applicationContext)
+                            if (dpm.isAdminActive(comp)) {
+                                dpm.removeActiveAdmin(comp)
+                            }
+                        } catch (_: Throwable) {
+                        }
+                        syncAiShieldState()
+                        appLockMonitor?.refreshSchedule()
+                        prefs.appendLog("security", "Appareil délié avec autorisation du Parent.")
+                        sendControlResult(channelId, reqId, "unpair_decision", true, "Appareil délié avec succès.")
+                        broadcastPresenceNow(channelId)
+                        notifyStateListeners()
+                        serviceScope.launch {
+                            delay(450L)
+                            updateNotificationAndNotifyListeners()
+                            syncChannelsHot()
+                        }
+                    } else {
+                        prefs.unpairRequestPending = false
+                        prefs.unpairRequestedAt = 0L
+                        prefs.appendLog("security", "Demande de dissociation refusée par le Parent.")
+                        pushScreenTimeAndResult(channelId, reqId, "unpair_decision")
+                    }
+                }
+
                 "SDP_ANSWER" -> {
                     val sessionId = msg.optString("sessionId", "")
                     val sdp = msg.optString("sdp", "")
@@ -2271,6 +2324,8 @@ class CameraForegroundService : Service() {
                 put("aiShieldRunning", aiScreenShield?.isActive == true)
                 put("aiShieldNeedsConsent", (prefs.aiBlurFaces || prefs.aiBlurNsfw) && aiScreenShield?.isActive != true)
                 put("parentManaged", prefs.parentManaged)
+                put("unpairRequestPending", prefs.unpairRequestPending)
+                put("unpairRequestedAt", prefs.unpairRequestedAt)
                 put("gpsTrackerState", gpsTrackerState)
                 put("gpsTrackingMode", prefs.gpsTrackingMode)
                 put("gpsPointsCount", gpsPointsCount)
@@ -2339,6 +2394,9 @@ class CameraForegroundService : Service() {
             else -> "Caméra"
         }
         val title = when {
+            prefs.parentManaged && intercomActive -> "Haut-parleur Parent actif"
+            prefs.parentManaged && isStreaming -> "$streamKind actif"
+            prefs.parentManaged -> "SentinelCam • Protection active"
             intercomActive && viewerLabel != null -> "Haut-parleur Talkie actif • $viewerLabel"
             intercomActive -> "Haut-parleur Talkie actif"
             isStreaming && viewerLabel != null -> "$streamKind en cours • $viewerLabel"
@@ -2347,6 +2405,7 @@ class CameraForegroundService : Service() {
         }
 
         val subtitle = when {
+            prefs.parentManaged -> "Appareil géré à distance par le Parent"
             intercomActive -> "Diffusion vocale en direct sur le haut-parleur"
             isStreaming && currentMediaMode == "screen" -> "Votre écran est partagé en direct"
             isStreaming && currentMediaMode == "intercom" -> "Canal haut-parleur Talkie ouvert"
@@ -2364,28 +2423,30 @@ class CameraForegroundService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(contentPi)
 
-        if (isStreaming) {
-            val sleepIntent = Intent(this, StopPortalReceiver::class.java).apply {
-                action = StopPortalReceiver.ACTION_USER_SLEEP_CAMERA
+        if (!prefs.parentManaged) {
+            if (isStreaming) {
+                val sleepIntent = Intent(this, StopPortalReceiver::class.java).apply {
+                    action = StopPortalReceiver.ACTION_USER_SLEEP_CAMERA
+                }
+                val sleepPi = PendingIntent.getBroadcast(
+                    this,
+                    102,
+                    sleepIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                builder.addAction(
+                    android.R.drawable.ic_media_pause,
+                    "Couper le flux",
+                    sleepPi
+                )
             }
-            val sleepPi = PendingIntent.getBroadcast(
-                this,
-                102,
-                sleepIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+
             builder.addAction(
-                android.R.drawable.ic_media_pause,
-                "Couper le flux",
-                sleepPi
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Couper le portail",
+                stopPi
             )
         }
-
-        builder.addAction(
-            android.R.drawable.ic_menu_close_clear_cancel,
-            "Couper le portail",
-            stopPi
-        )
 
         return builder.build()
     }
@@ -2830,6 +2891,17 @@ class CameraForegroundService : Service() {
         fun sleepCameraFromNotification(@Suppress("UNUSED_PARAMETER") context: Context) {
             try {
                 instance?.sleepCameraInternal()
+            } catch (_: Throwable) {
+            }
+        }
+
+        fun notifyUnpairRequestChanged(context: Context) {
+            try {
+                if (!isRunning) {
+                    ensureRunningSafely(context)
+                }
+                instance?.pushScreenTimeSnapshotToAllControlChannels()
+                notifyStateListeners()
             } catch (_: Throwable) {
             }
         }

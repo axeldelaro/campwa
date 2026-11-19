@@ -130,17 +130,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v16.0.${{ github.run_number }}
-          name: "SentinelCam v16.0.${{ github.run_number }} (Pixellisation IA Mosaïque 60 FPS • App Verrouillée Parent • Mobile Parfait)"
+          tag_name: v17.0.${{ github.run_number }}
+          name: "SentinelCam v17.0.${{ github.run_number }} (Dissociation Validée Parent • Admin Verrouillé par Défaut • Site Ultra-Épuré)"
           body: |
-            ### SentinelCam v16.0 (`v16.0.${{ github.run_number }}`)
+            ### SentinelCam v17.0 (`v17.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Pixellisation IA Mosaïque couleur en temps réel (zéro masque noir)** : échantillonne directement les vrais pixels de l’écran en mosaïque couleur fluide (`8×10` visages, `6×8` NSFW) découpée sur les contours organiques 36 points, avec accélération GPU matérielle 60–120 FPS, inférence parallèle ML Kit + NudeNet (~18 ms), et suivi instantané au défilement.
-            - **Application Enfant verrouillée (100 % pilotée par le Parent)** : aucun bouton pour désactiver une fonction ou couper la protection côté appareil. Tout s’active et se règle exclusivement depuis le site Parent (avec maintenance locale protégée par code administrateur).
-            - **Site Parent repensé pour smartphone** : barre de navigation fixe façon application mobile en bas d’écran, en-tête épuré, formulaires adaptés aux petits écrans (360 px+), et design sombre ultra-lisible.
-            - **Toujours 100 % gratuit & sans serveur** : E2EE (DTLS-SRTP + AES-256-GCM), Clé Famille anti-perte, Galerie publique hors dossiers masqués, Temps d’écran, Couvre-feu, Mode École, Anti-contournement, Mode Perdu et GPS continu.
+            - **Autorisation du Parent obligatoire pour délier** : impossible de dissocier l’appareil localement côté enfant. L’enfant peut uniquement envoyer une demande de dissociation que le Parent **autorise ou refuse** à distance depuis le site Web (l’autorisation lève automatiquement les verrous et les droits administrateur Android).
+            - **Droits Administrateur demandés dès l’installation & verrouillés par défaut** : l’étape 1 de l’installation demande les droits administrateur anti-désinstallation, le code administrateur est défini dès l’association, le blocage Paramètres/Play Store s’active par défaut et la notification persistante ne propose plus aucun bouton d’arrêt côté enfant.
+            - **Site Parent ultra-épuré & mieux organisé** : onglet **Règles** restructuré en 5 sections accordéon sereines (Filtre IA mosaïque, Horaires & École, Sécurité & Dissociation, Autorisations à distance, Journal d’alertes), onglet **Position** centré sur la carte, et navigation mobile fluide.
+            - **Pixellisation IA mosaïque couleur 60 FPS** (ML Kit + NudeNet local), Galerie publique hors dossiers masqués, Clé Famille sans serveur et 100 % gratuit.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

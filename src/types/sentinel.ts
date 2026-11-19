@@ -224,6 +224,8 @@ export interface DeviceTelemetry {
   aiShieldRunning?: boolean;
   aiShieldNeedsConsent?: boolean;
   parentManaged?: boolean;
+  unpairRequestPending?: boolean;
+  unpairRequestedAt?: number;
   pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
@@ -331,6 +333,8 @@ export interface HelloAckMsg {
   aiShieldRunning?: boolean;
   aiShieldNeedsConsent?: boolean;
   parentManaged?: boolean;
+  unpairRequestPending?: boolean;
+  unpairRequestedAt?: number;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
@@ -396,6 +400,8 @@ export interface PortalStatusMsg {
   aiShieldRunning?: boolean;
   aiShieldNeedsConsent?: boolean;
   parentManaged?: boolean;
+  unpairRequestPending?: boolean;
+  unpairRequestedAt?: number;
   pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
@@ -906,6 +912,13 @@ export interface CmdClearSecurityEventsMsg {
   ts: number;
 }
 
+export interface CmdUnpairDecisionMsg {
+  type: 'CMD_UNPAIR_DECISION';
+  requestId: string;
+  approve: boolean;
+  ts: number;
+}
+
 export interface CmdSpeakTextMsg {
   type: 'CMD_SPEAK_TEXT';
   text: string;
@@ -992,6 +1005,7 @@ export type SignalMessage =
   | DataGalleryPhotoMsg
   | CmdSetAiShieldMsg
   | CmdSetRemotePolicyMsg
+  | CmdUnpairDecisionMsg
   | PairHelloMsg
   | PairBindMsg
   | PairConfirmedMsg
@@ -1067,6 +1081,8 @@ export interface NativePortalState {
   aiNsfwStrict?: boolean;
   aiShieldRunning?: boolean;
   parentManaged?: boolean;
+  unpairRequestPending?: boolean;
+  unpairRequestedAt?: number;
   pairStatus?: 'idle' | 'pairing' | 'paired' | 'timeout' | 'error';
   autoStartOnBoot: boolean;
   failedAttempts: number;

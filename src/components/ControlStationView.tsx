@@ -9,6 +9,8 @@ import {
   Camera,
   CameraOff,
   Check,
+  ChevronDown,
+  ChevronUp,
   Circle,
   Clock,
   Copy,
@@ -17,7 +19,6 @@ import {
   ExternalLink,
   Flashlight,
   FlipHorizontal,
-  Gauge,
   HardDrive,
   Image as ImageIcon,
   KeyRound,
@@ -35,7 +36,6 @@ import {
   Plus,
   Power,
   RefreshCw,
-  Route,
   Search,
   Send,
   ShieldAlert,
@@ -175,6 +175,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
   const [deviceInfo, setDeviceInfo] = useState<SharedDeviceInfoData | null>(null);
   const [deviceInfoLoading, setDeviceInfoLoading] = useState(false);
+  const [historyListOpen, setHistoryListOpen] = useState(false);
+  const [sysInfoOpen, setSysInfoOpen] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // SMS Composer
@@ -382,6 +384,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             clear_events: 'Journal de sécurité effacé.',
             ai_shield: res.error || 'Filtre IA mis à jour.',
             remote_policy: 'Politique de l’appareil mise à jour.',
+            unpair_decision: res.error || 'Décision de dissociation appliquée.',
           };
           setControlFeedback({ ok: true, text: labels[res.action] || 'Règle mise à jour.' });
         } else {
@@ -903,6 +906,21 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     await controllerRef.current?.setRemoteAdminPin(pin, true);
   };
 
+  const handleRespondUnpair = async (approve: boolean) => {
+    setControlFeedback(null);
+    await controllerRef.current?.respondUnpairRequest(approve);
+    if (approve) {
+      const codeToRemove = fullCode;
+      window.setTimeout(() => {
+        if (codeToRemove.length === 6) {
+          removePairedDevice(codeToRemove);
+          setSavedDevices(listPairedDevices());
+        }
+        handleDisconnect();
+      }, 650);
+    }
+  };
+
   useEffect(() => {
     if (!isSessionOpen) return;
     const onKeyDown = (ev: KeyboardEvent) => {
@@ -1134,13 +1152,14 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 maxLength={12}
                 value={pairingAdminPin}
                 onChange={(e) => setPairingAdminPin(e.target.value)}
-                placeholder="Code administrateur (optionnel, 4–12 car.)"
+                placeholder="Code administrateur requis (4–12 car.)"
                 className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
               />
               <button
                 type="button"
+                disabled={pairingAdminPin.trim().length < 4}
                 onClick={() => void handleStartParentPairing()}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200"
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:opacity-35"
               >
                 <Plus className="h-4 w-4" />
                 <span>Associer un nouvel appareil</span>
@@ -1406,105 +1425,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       </div>
 
-      {/* Compact Talkie-Walkie Bar (shown on Direct > Caméra & Écran or while talking) */}
-      {((viewerTab === 'live' && liveSubTab === 'media') || talkieActive) && (
-      <div
-        className={`space-y-2.5 rounded-2xl border px-3.5 py-3 transition sm:flex sm:flex-wrap sm:items-center sm:justify-between sm:gap-3 sm:space-y-0 sm:px-4 ${
-          talkieActive
-            ? 'border-emerald-500/50 bg-emerald-500/10'
-            : 'border-white/[0.07] bg-zinc-900/70'
-        }`}
-      >
-        <div className="flex items-center gap-2.5">
-          <Volume2
-            className={`h-4 w-4 shrink-0 ${talkieActive ? 'text-emerald-400 animate-pulse' : 'text-zinc-400'}`}
-          />
-          <span className="text-xs font-medium text-white">Haut-parleur</span>
-          {talkieActive ? (
-            <div className="flex items-center gap-2">
-              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-zinc-950 sm:w-40">
-                <div
-                  className="h-full rounded-full bg-emerald-400 transition-all duration-75"
-                  style={{ width: `${Math.max(8, talkieLevel)}%` }}
-                />
-              </div>
-              <span className="text-[11px] text-emerald-300">En cours</span>
-            </div>
-          ) : (
-            !canUseIntercom && <span className="text-[11px] text-zinc-500">Désactivé</span>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            disabled={!canUseIntercom}
-            onPointerDown={handleTalkiePressStart}
-            onPointerUp={handleTalkiePressEnd}
-            onPointerLeave={handleTalkiePressEnd}
-            onPointerCancel={handleTalkiePressEnd}
-            className={`inline-flex flex-1 select-none touch-none items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-35 sm:flex-none ${
-              talkieActive && !talkieLocked
-                ? 'bg-rose-500 text-white'
-                : 'bg-white text-zinc-950 hover:bg-zinc-200'
-            }`}
-          >
-            <Mic className="h-3.5 w-3.5" />
-            <span>{talkieActive && !talkieLocked ? 'Parlez…' : 'Maintenir pour parler'}</span>
-          </button>
-
-          <button
-            type="button"
-            disabled={!canUseIntercom}
-            onClick={handleToggleTalkieLock}
-            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
-              talkieLocked
-                ? 'border-rose-500/50 bg-rose-500/15 text-rose-200'
-                : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
-            }`}
-          >
-            <span>{talkieLocked ? 'Couper' : 'Mains libres'}</span>
-          </button>
-
-          <button
-            type="button"
-            disabled={!canUseIntercom}
-            onClick={() => setTtsOpen((v) => !v)}
-            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
-              ttsOpen
-                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
-                : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
-            }`}
-            title="Faire lire un message écrit sur le haut-parleur"
-          >
-            <MessageSquare className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Texte vocal</span>
-          </button>
-        </div>
-
-        {ttsOpen && canUseIntercom && (
-          <form onSubmit={(e) => void handleSendTts(e)} className="mt-2 flex w-full gap-2 border-t border-white/[0.06] pt-2.5">
-            <input
-              type="text"
-              maxLength={240}
-              value={ttsText}
-              onChange={(e) => setTtsText(e.target.value)}
-              placeholder="Message à lire à voix haute sur l’appareil…"
-              className="min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
-            />
-            <button
-              type="submit"
-              disabled={!ttsText.trim()}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-35"
-            >
-              <Send className="h-3.5 w-3.5" />
-              <span>Lire</span>
-            </button>
-          </form>
-        )}
-      </div>
-      )}
-
       {/* Desktop Top 4-Tab Bar */}
       <div className="hidden grid-cols-4 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1.5 sm:grid">
         <button
@@ -1519,17 +1439,23 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         >
           <LayoutDashboard className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">Accueil</span>
-          {((telemetry?.pendingRequestsCount ?? 0) > 0 || (telemetry?.activeAppLocksCount ?? 0) > 0) && (
+          {(telemetry?.unpairRequestPending ||
+            (telemetry?.pendingRequestsCount ?? 0) > 0 ||
+            (telemetry?.activeAppLocksCount ?? 0) > 0) && (
             <span
               className={`rounded px-1 py-0.5 font-mono text-[10px] ${
-                viewerTab === 'home'
+                telemetry?.unpairRequestPending
+                  ? 'bg-rose-500 text-white'
+                  : viewerTab === 'home'
                   ? 'bg-zinc-900 text-white'
                   : (telemetry?.pendingRequestsCount ?? 0) > 0
                   ? 'bg-emerald-500/25 text-emerald-300'
                   : 'bg-rose-500/20 text-rose-300'
               }`}
             >
-              {(telemetry?.pendingRequestsCount ?? 0) > 0
+              {telemetry?.unpairRequestPending
+                ? '!'
+                : (telemetry?.pendingRequestsCount ?? 0) > 0
                 ? `+${telemetry?.pendingRequestsCount}`
                 : telemetry?.activeAppLocksCount}
             </span>
@@ -1600,9 +1526,19 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           >
             <div className="relative">
               <LayoutDashboard className={`h-5 w-5 ${viewerTab === 'home' ? 'text-emerald-400' : ''}`} />
-              {((telemetry?.pendingRequestsCount ?? 0) > 0 || (telemetry?.activeAppLocksCount ?? 0) > 0) && (
-                <span className="absolute -right-2 -top-1 rounded-full bg-emerald-500 px-1 font-mono text-[9px] font-bold text-zinc-950">
-                  {(telemetry?.pendingRequestsCount ?? 0) > 0
+              {(telemetry?.unpairRequestPending ||
+                (telemetry?.pendingRequestsCount ?? 0) > 0 ||
+                (telemetry?.activeAppLocksCount ?? 0) > 0) && (
+                <span
+                  className={`absolute -right-2 -top-1 rounded-full px-1 font-mono text-[9px] font-bold ${
+                    telemetry?.unpairRequestPending
+                      ? 'bg-rose-500 text-white'
+                      : 'bg-emerald-500 text-zinc-950'
+                  }`}
+                >
+                  {telemetry?.unpairRequestPending
+                    ? '!'
+                    : (telemetry?.pendingRequestsCount ?? 0) > 0
                     ? `+${telemetry?.pendingRequestsCount}`
                     : telemetry?.activeAppLocksCount}
                 </span>
@@ -1689,7 +1625,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               grantMinutes,
             });
           }}
-          onOpenRulesTab={() => handleOpenHomeOrRulesTab('rules')}
+          onRespondUnpair={handleRespondUnpair}
         />
       )}
 
@@ -1732,6 +1668,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             setControlFeedback(null);
             await controllerRef.current?.setRemotePolicy(opts);
           }}
+          onRespondUnpair={handleRespondUnpair}
         />
       )}
 
@@ -2089,6 +2026,103 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             </div>
           </div>
 
+          {/* Compact Talkie-Walkie Bar (Inside Direct > Caméra) */}
+          <div
+            className={`space-y-2.5 rounded-2xl border px-3.5 py-3 transition sm:flex sm:flex-wrap sm:items-center sm:justify-between sm:gap-3 sm:space-y-0 sm:px-4 ${
+              talkieActive
+                ? 'border-emerald-500/50 bg-emerald-500/10'
+                : 'border-white/[0.07] bg-zinc-900/65'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Volume2
+                className={`h-4 w-4 shrink-0 ${talkieActive ? 'text-emerald-400 animate-pulse' : 'text-zinc-400'}`}
+              />
+              <span className="text-xs font-medium text-white">Haut-parleur</span>
+              {talkieActive ? (
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 w-24 overflow-hidden rounded-full bg-zinc-950 sm:w-36">
+                    <div
+                      className="h-full rounded-full bg-emerald-400 transition-all duration-75"
+                      style={{ width: `${Math.max(8, talkieLevel)}%` }}
+                    />
+                  </div>
+                  <span className="text-[11px] text-emerald-300">En cours</span>
+                </div>
+              ) : (
+                !canUseIntercom && <span className="text-[11px] text-zinc-500">Désactivé</span>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={!canUseIntercom}
+                onPointerDown={handleTalkiePressStart}
+                onPointerUp={handleTalkiePressEnd}
+                onPointerLeave={handleTalkiePressEnd}
+                onPointerCancel={handleTalkiePressEnd}
+                className={`inline-flex flex-1 select-none touch-none items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition disabled:opacity-35 sm:flex-none ${
+                  talkieActive && !talkieLocked
+                    ? 'bg-rose-500 text-white'
+                    : 'bg-white text-zinc-950 hover:bg-zinc-200'
+                }`}
+              >
+                <Mic className="h-3.5 w-3.5" />
+                <span>{talkieActive && !talkieLocked ? 'Parlez…' : 'Maintenir pour parler'}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!canUseIntercom}
+                onClick={handleToggleTalkieLock}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition disabled:opacity-35 ${
+                  talkieLocked
+                    ? 'border-rose-500/50 bg-rose-500/15 text-rose-200'
+                    : 'border-white/10 bg-zinc-950 text-zinc-300 hover:text-white'
+                }`}
+              >
+                <span>{talkieLocked ? 'Couper' : 'Mains libres'}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!canUseIntercom}
+                onClick={() => setTtsOpen((v) => !v)}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition disabled:opacity-35 ${
+                  ttsOpen
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                    : 'border-white/10 bg-zinc-950 text-zinc-300 hover:text-white'
+                }`}
+                title="Faire lire un message écrit sur le haut-parleur"
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Texte vocal</span>
+              </button>
+            </div>
+
+            {ttsOpen && canUseIntercom && (
+              <form onSubmit={(e) => void handleSendTts(e)} className="mt-2 flex w-full gap-2 border-t border-white/[0.06] pt-2.5">
+                <input
+                  type="text"
+                  maxLength={240}
+                  value={ttsText}
+                  onChange={(e) => setTtsText(e.target.value)}
+                  placeholder="Message à lire à voix haute…"
+                  className="min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={!ttsText.trim()}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-35"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  <span>Lire</span>
+                </button>
+              </form>
+            )}
+          </div>
+
           {snapshots.length > 0 && (
             <div className="rounded-2xl border border-slate-800/90 bg-obsidian-900/90 p-4">
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">
@@ -2262,132 +2296,87 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       )}
 
-      {/* ==================== TAB 3: POSITION, SAFE ZONES & DEVICE INFO ==================== */}
+      {/* ==================== TAB 3: POSITION (CLEAN MAP-FIRST VIEW) ==================== */}
       {viewerTab === 'location' && (
-        <div className="space-y-4">
-          {/* GPS Continuous Offline History & Interactive Map Card */}
-          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-rose-500/35 bg-rose-500/15 text-rose-400">
-                  <Route className="h-5 w-5" />
-                </div>
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-sm font-semibold text-white">Localisation & Trajets</h2>
-                    {telemetry?.gpsTrackerState && telemetry.gpsTrackerState !== 'disabled' && (
-                      <span
-                        className={`rounded-md px-2 py-0.5 text-[10px] font-medium ${
-                          telemetry.gpsTrackerState === 'moving'
-                            ? 'bg-emerald-500/15 text-emerald-300'
-                            : telemetry.gpsTrackerState === 'stationary'
-                            ? 'bg-sky-500/15 text-sky-300'
-                            : 'bg-amber-500/15 text-amber-300'
-                        }`}
-                      >
-                        {telemetry.gpsTrackerState === 'moving'
-                          ? 'En mouvement'
-                          : telemetry.gpsTrackerState === 'stationary'
-                          ? 'À l’arrêt'
-                          : telemetry.gpsTrackerState === 'battery_saver'
-                          ? 'Éco batterie'
-                          : 'Autorisation requise'}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-zinc-400">Historique continu des déplacements</p>
-                </div>
+        <div className="space-y-3">
+          {/* Interactive Map Card */}
+          <div className="space-y-3 rounded-2xl border border-white/[0.07] bg-zinc-900/65 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <MapPin className="h-4 w-4 text-emerald-400" />
+                <h2 className="text-sm font-semibold text-white">Localisation</h2>
+                {telemetry?.gpsTrackerState && telemetry.gpsTrackerState !== 'disabled' && (
+                  <span className="rounded-md bg-white/[0.06] px-2 py-0.5 text-[10px] text-zinc-300">
+                    {telemetry.gpsTrackerState === 'moving'
+                      ? 'En mouvement'
+                      : telemetry.gpsTrackerState === 'stationary'
+                      ? 'À l’arrêt'
+                      : telemetry.gpsTrackerState === 'battery_saver'
+                      ? 'Éco'
+                      : 'Permission requise'}
+                  </span>
+                )}
               </div>
 
               {canViewLocation && (
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    disabled={locationLoading}
-                    onClick={() => void handleFetchLocation()}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-sky-500/35 bg-sky-500/15 px-3 py-1.5 text-xs font-bold text-sky-200 hover:bg-sky-500/25"
+                    disabled={locationLoading || historyLoading}
+                    onClick={() => {
+                      void handleFetchLocation();
+                      void handleFetchLocationHistory(historyRange);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:border-white/25"
                   >
-                    <Navigation className={`h-3.5 w-3.5 ${locationLoading ? 'animate-spin' : ''}`} />
-                    <span>Position actuelle</span>
+                    <RefreshCw
+                      className={`h-3.5 w-3.5 ${locationLoading || historyLoading ? 'animate-spin' : ''}`}
+                    />
+                    <span>Actualiser</span>
                   </button>
-                  <button
-                    type="button"
-                    disabled={historyLoading}
-                    onClick={() => void handleFetchLocationHistory(historyRange)}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/35 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/25"
-                  >
-                    <RefreshCw className={`h-3.5 w-3.5 ${historyLoading ? 'animate-spin' : ''}`} />
-                    <span>Sync trace</span>
-                  </button>
+                  {locationData && (
+                    <a
+                      href={`https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded-xl bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
+                    >
+                      <span>Maps</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
                 </div>
               )}
             </div>
 
             {!canViewLocation ? (
-              <p className="mt-4 rounded-xl border border-slate-800 bg-obsidian-950 p-4 text-xs text-slate-400">
-                Le propriétaire n’a pas autorisé le partage de la localisation GPS pour cet accès.
+              <p className="rounded-xl border border-white/[0.06] bg-zinc-950 p-4 text-xs text-zinc-400">
+                Activez « GPS & Trajets » dans l’onglet Règles → Autorisations à distance.
               </p>
             ) : (
-              <div className="mt-4 space-y-4">
-                {/* Range Selector + Export Buttons */}
-                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-                  <div className="grid grid-cols-4 gap-1 rounded-xl border border-white/[0.08] bg-zinc-950 p-1 sm:flex sm:items-center">
-                    {(
-                      [
-                        { id: 'today', label: 'Auj.' },
-                        { id: '24h', label: '24 h' },
-                        { id: '7d', label: '7 j' },
-                        { id: '30d', label: '30 j' },
-                      ] as const
-                    ).map((r) => (
-                      <button
-                        key={r.id}
-                        type="button"
-                        onClick={() => void handleFetchLocationHistory(r.id)}
-                        className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
-                          historyRange === r.id
-                            ? 'bg-white text-zinc-950'
-                            : 'text-zinc-400 hover:text-white'
-                        }`}
-                      >
-                        {r.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    {(historyBundle?.points.length ?? 0) > 0 && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={handleExportGpx}
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:text-white"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                          <span>GPX</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleExportCsv}
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:text-white"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                          <span>CSV</span>
-                        </button>
-                      </>
-                    )}
-                    {locationData && (
-                      <a
-                        href={`https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 rounded-xl bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
-                      >
-                        <span>Maps</span>
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    )}
-                  </div>
+              <>
+                <div className="grid grid-cols-4 gap-1 rounded-xl border border-white/[0.07] bg-zinc-950 p-1">
+                  {(
+                    [
+                      { id: 'today', label: 'Auj.' },
+                      { id: '24h', label: '24 h' },
+                      { id: '7d', label: '7 j' },
+                      { id: '30d', label: '30 j' },
+                    ] as const
+                  ).map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => void handleFetchLocationHistory(r.id)}
+                      className={`rounded-lg py-1.5 text-xs font-medium transition ${
+                        historyRange === r.id
+                          ? 'bg-white text-zinc-950'
+                          : 'text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      {r.label}
+                    </button>
+                  ))}
                 </div>
 
                 {locationError && (
@@ -2396,133 +2385,38 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   </div>
                 )}
 
-                {/* Trip KPI Stats */}
-                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-                  <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                      Distance
-                    </div>
-                    <div className="mt-1 font-mono text-lg font-extrabold text-emerald-300">
-                      {((historyBundle?.totalDistanceMeters ?? 0) / 1000).toFixed(2)} km
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                      Points tracés
-                    </div>
-                    <div className="mt-1 font-mono text-lg font-extrabold text-sky-300">
-                      {historyBundle?.rawPointCount ?? telemetry?.gpsPointsCount ?? 0}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                      Arrêts (&ge;2m)
-                    </div>
-                    <div className="mt-1 font-mono text-lg font-extrabold text-amber-300">
-                      {historyBundle?.stopsCount ?? 0}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-slate-800 bg-obsidian-950 p-3">
-                    <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                      <Gauge className="h-3 w-3" />
-                      <span>Vitesse max</span>
-                    </div>
-                    <div className="mt-1 font-mono text-lg font-extrabold text-cyan-300">
-                      {(historyBundle?.maxSpeedKmh ?? 0).toFixed(1)} km/h
-                    </div>
-                  </div>
-                </div>
-
-                {/* Interactive Leaflet OpenStreetMap Trail Map */}
                 <GpsTrailMap
                   points={historyBundle?.points ?? []}
                   liveLocation={locationData}
                   focusedPoint={focusedTrackPoint}
                 />
 
-                {/* Latest Live Position Summary Bar */}
-                {locationData && (
-                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-obsidian-950 px-3.5 py-2.5 text-xs">
-                    <div className="flex items-center gap-2 font-mono text-slate-200">
-                      <MapPin className="h-4 w-4 text-sky-400" />
-                      <span>
-                        {locationData.latitude.toFixed(6)}, {locationData.longitude.toFixed(6)}
-                      </span>
-                    </div>
-                    <div className="text-[11px] text-slate-400">
-                      Précision ±{locationData.accuracyMeters} m •{' '}
-                      {new Date(locationData.timestamp).toLocaleString('fr-FR')}
-                    </div>
+                {/* Minimal Single-Row Trip Summary */}
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.06] bg-zinc-950 px-3.5 py-2.5 text-xs text-zinc-400">
+                  <div className="flex flex-wrap items-center gap-3 font-mono">
+                    <span className="text-white">
+                      {((historyBundle?.totalDistanceMeters ?? 0) / 1000).toFixed(2)} km
+                    </span>
+                    <span>·</span>
+                    <span>{historyBundle?.stopsCount ?? 0} arrêt(s)</span>
+                    <span>·</span>
+                    <span>{(historyBundle?.maxSpeedKmh ?? 0).toFixed(0)} km/h max</span>
                   </div>
-                )}
-
-                {/* Chronological Stops & Key Points List */}
-                {(historyBundle?.points.length ?? 0) > 0 && (
-                  <div className="rounded-2xl border border-slate-800 bg-obsidian-950/90 p-3.5">
-                    <div className="mb-2 flex items-center justify-between">
-                      <span className="text-xs font-extrabold text-white">
-                        Journal chronologique (cliquez un point pour centrer la carte)
-                      </span>
-                      <span className="font-mono text-[10px] text-slate-500">
-                        {historyBundle?.points.length} affichés
-                      </span>
-                    </div>
-                    <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
-                      {[...(historyBundle?.points ?? [])]
-                        .reverse()
-                        .slice(0, 80)
-                        .map((pt, idx) => {
-                          const isStop = pt.dwellSeconds >= 120;
-                          return (
-                            <button
-                              key={`${pt.timestamp}-${idx}`}
-                              type="button"
-                              onClick={() => setFocusedTrackPoint(pt)}
-                              className="flex w-full items-center justify-between gap-2 rounded-xl border border-slate-800/80 bg-obsidian-900/70 px-3 py-2 text-left text-xs transition hover:border-emerald-500/40 hover:bg-obsidian-900"
-                            >
-                              <div className="flex items-center gap-2.5 min-w-0">
-                                <span
-                                  className={`h-2.5 w-2.5 shrink-0 rounded-full ${
-                                    isStop ? 'bg-amber-400' : 'bg-emerald-400'
-                                  }`}
-                                />
-                                <div className="min-w-0">
-                                  <div className="flex flex-wrap items-center gap-1.5">
-                                    <span className="font-mono font-bold text-white">
-                                      {new Date(pt.timestamp).toLocaleString('fr-FR', {
-                                        day: '2-digit',
-                                        month: '2-digit',
-                                        hour: '2-digit',
-                                        minute: '2-digit',
-                                      })}
-                                    </span>
-                                    {isStop && (
-                                      <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">
-                                        Arrêt {Math.round(pt.dwellSeconds / 60)} min
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="truncate font-mono text-[10px] text-slate-400">
-                                    {pt.latitude.toFixed(5)}, {pt.longitude.toFixed(5)} • ±
-                                    {pt.accuracyMeters}m
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="shrink-0 text-right font-mono text-[10px] text-slate-400">
-                                <div className="text-cyan-300">{pt.speedKmh.toFixed(1)} km/h</div>
-                                <div>Bat {pt.batteryLevel}%</div>
-                              </div>
-                            </button>
-                          );
-                        })}
-                    </div>
-                  </div>
-                )}
-              </div>
+                  {locationData && (
+                    <span className="text-[11px] text-zinc-500">
+                      ±{locationData.accuracyMeters} m ·{' '}
+                      {new Date(locationData.timestamp).toLocaleTimeString('fr-FR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  )}
+                </div>
+              </>
             )}
           </div>
 
-          {/* Geofencing Safe Zones (Right alongside GPS Map!) */}
+          {/* Collapsible Safe Zones (Geofencing) */}
           {canUseDeviceControl && (
             <GeofenceZonesCard
               screenTime={screenTime}
@@ -2537,82 +2431,170 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             />
           )}
 
-          {/* Device Info Card */}
-          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Cpu className="h-5 w-5 text-cyan-400" />
-                <h2 className="text-sm font-extrabold text-white">État & Système</h2>
-              </div>
-              {canViewDeviceInfo && (
-                <button
-                  type="button"
-                  disabled={deviceInfoLoading}
-                  onClick={() => void handleFetchDeviceInfo()}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/35 bg-cyan-500/15 px-3 py-1.5 text-xs font-bold text-cyan-200 hover:bg-cyan-500/25"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${deviceInfoLoading ? 'animate-spin' : ''}`} />
-                  <span>Actualiser</span>
-                </button>
-              )}
-            </div>
-
-            {!canViewDeviceInfo ? (
-              <p className="mt-4 rounded-xl border border-slate-800 bg-obsidian-950 p-4 text-xs text-slate-400">
-                Accès aux informations système désactivé par le propriétaire.
-              </p>
-            ) : deviceInfo ? (
-              <div className="mt-4 space-y-2.5 text-xs">
-                <div className="flex justify-between rounded-xl border border-slate-800 bg-obsidian-950 px-3.5 py-2.5">
-                  <span className="text-slate-400">Appareil</span>
-                  <span className="font-bold text-white">{deviceInfo.deviceName}</span>
-                </div>
-                <div className="flex justify-between rounded-xl border border-slate-800 bg-obsidian-950 px-3.5 py-2.5">
-                  <span className="text-slate-400">Système</span>
-                  <span className="font-mono text-cyan-300">
-                    Android {deviceInfo.androidVersion} (API {deviceInfo.sdkInt})
-                  </span>
-                </div>
-                <div className="flex justify-between rounded-xl border border-slate-800 bg-obsidian-950 px-3.5 py-2.5">
-                  <span className="text-slate-400">Batterie & Réseau</span>
-                  <span className="font-mono text-emerald-300">
-                    {deviceInfo.batteryLevel}% {deviceInfo.isCharging ? '(En charge)' : ''} •{' '}
-                    {deviceInfo.networkType}
-                  </span>
-                </div>
-                {deviceInfo.storageTotalMb > 0 && (
-                  <div className="rounded-xl border border-slate-800 bg-obsidian-950 px-3.5 py-3">
-                    <div className="flex items-center justify-between">
-                      <span className="inline-flex items-center gap-1.5 text-slate-400">
-                        <HardDrive className="h-3.5 w-3.5 text-emerald-400" />
-                        Stockage libre
-                      </span>
-                      <span className="font-mono text-white">
-                        {(deviceInfo.storageFreeMb / 1024).toFixed(1)} Go /{' '}
-                        {(deviceInfo.storageTotalMb / 1024).toFixed(1)} Go
-                      </span>
-                    </div>
-                    <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-800">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-400"
-                        style={{
-                          width: `${Math.min(
-                            100,
-                            Math.round(
-                              ((deviceInfo.storageTotalMb - deviceInfo.storageFreeMb) /
-                                deviceInfo.storageTotalMb) *
-                                100
-                            )
-                          )}%`,
-                        }}
-                      />
+          {/* Collapsible Chronological Trail & Export */}
+          {canViewLocation && (historyBundle?.points.length ?? 0) > 0 && (
+            <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-zinc-900/65">
+              <button
+                type="button"
+                onClick={() => setHistoryListOpen((v) => !v)}
+                className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-white/[0.02]"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Navigation className="h-4 w-4 text-zinc-400" />
+                  <div>
+                    <div className="text-sm font-medium text-white">Historique & Export</div>
+                    <div className="text-[11px] text-zinc-500">
+                      {historyBundle?.points.length} points enregistrés
                     </div>
                   </div>
+                </div>
+                {historyListOpen ? (
+                  <ChevronUp className="h-4 w-4 text-zinc-500" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-zinc-500" />
                 )}
+              </button>
+
+              {historyListOpen && (
+                <div className="space-y-3 border-t border-white/[0.06] p-4">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleExportGpx}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-300 hover:text-white"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      <span>Export GPX</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleExportCsv}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-300 hover:text-white"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      <span>Export CSV</span>
+                    </button>
+                  </div>
+
+                  <div className="max-h-52 space-y-1.5 overflow-y-auto pr-0.5">
+                    {[...(historyBundle?.points ?? [])]
+                      .reverse()
+                      .slice(0, 60)
+                      .map((pt, idx) => {
+                        const isStop = pt.dwellSeconds >= 120;
+                        return (
+                          <button
+                            key={`${pt.timestamp}-${idx}`}
+                            type="button"
+                            onClick={() => setFocusedTrackPoint(pt)}
+                            className="flex w-full items-center justify-between gap-2 rounded-xl border border-white/[0.05] bg-zinc-950/80 px-3 py-2 text-left text-xs hover:border-white/15"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className={`h-2 w-2 shrink-0 rounded-full ${
+                                    isStop ? 'bg-amber-400' : 'bg-emerald-400'
+                                  }`}
+                                />
+                                <span className="font-mono text-white">
+                                  {new Date(pt.timestamp).toLocaleString('fr-FR', {
+                                    day: '2-digit',
+                                    month: '2-digit',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </span>
+                                {isStop && (
+                                  <span className="text-[10px] text-amber-300">
+                                    Arrêt {Math.round(pt.dwellSeconds / 60)}m
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <span className="shrink-0 font-mono text-[11px] text-zinc-400">
+                              {pt.speedKmh.toFixed(0)} km/h · {pt.batteryLevel}%
+                            </span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Collapsible System Info */}
+          <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-zinc-900/65">
+            <button
+              type="button"
+              onClick={() => {
+                const next = !sysInfoOpen;
+                setSysInfoOpen(next);
+                if (next && !deviceInfo && canViewDeviceInfo) {
+                  void handleFetchDeviceInfo();
+                }
+              }}
+              className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-white/[0.02]"
+            >
+              <div className="flex items-center gap-2.5">
+                <Cpu className="h-4 w-4 text-zinc-400" />
+                <div>
+                  <div className="text-sm font-medium text-white">Informations système</div>
+                  <div className="text-[11px] text-zinc-500">
+                    {deviceInfo
+                      ? `Android ${deviceInfo.androidVersion} · ${(deviceInfo.storageFreeMb / 1024).toFixed(1)} Go libres`
+                      : 'Stockage, modèle et version Android'}
+                  </div>
+                </div>
               </div>
-            ) : (
-              <div className="py-10 text-center text-xs text-slate-500">
-                Cliquez sur « Actualiser » pour lire l’état du smartphone.
+              {sysInfoOpen ? (
+                <ChevronUp className="h-4 w-4 text-zinc-500" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-zinc-500" />
+              )}
+            </button>
+
+            {sysInfoOpen && (
+              <div className="space-y-2 border-t border-white/[0.06] p-4 text-xs">
+                {!canViewDeviceInfo ? (
+                  <p className="text-zinc-400">Désactivé dans Règles → Autorisations à distance.</p>
+                ) : deviceInfo ? (
+                  <>
+                    <div className="flex justify-between rounded-xl border border-white/[0.05] bg-zinc-950 px-3 py-2">
+                      <span className="text-zinc-400">Modèle</span>
+                      <span className="font-medium text-white">{deviceInfo.deviceName}</span>
+                    </div>
+                    <div className="flex justify-between rounded-xl border border-white/[0.05] bg-zinc-950 px-3 py-2">
+                      <span className="text-zinc-400">Système</span>
+                      <span className="font-mono text-zinc-200">
+                        Android {deviceInfo.androidVersion} (API {deviceInfo.sdkInt})
+                      </span>
+                    </div>
+                    {deviceInfo.storageTotalMb > 0 && (
+                      <div className="flex justify-between rounded-xl border border-white/[0.05] bg-zinc-950 px-3 py-2">
+                        <span className="inline-flex items-center gap-1.5 text-zinc-400">
+                          <HardDrive className="h-3.5 w-3.5" />
+                          Stockage libre
+                        </span>
+                        <span className="font-mono text-zinc-200">
+                          {(deviceInfo.storageFreeMb / 1024).toFixed(1)} /{' '}
+                          {(deviceInfo.storageTotalMb / 1024).toFixed(1)} Go
+                        </span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="flex items-center justify-between text-zinc-400">
+                    <span>{deviceInfoLoading ? 'Chargement…' : 'Indisponible'}</span>
+                    <button
+                      type="button"
+                      onClick={() => void handleFetchDeviceInfo()}
+                      className="text-emerald-400 hover:underline"
+                    >
+                      Actualiser
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

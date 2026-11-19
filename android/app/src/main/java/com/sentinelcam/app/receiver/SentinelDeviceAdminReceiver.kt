@@ -18,7 +18,9 @@ class SentinelDeviceAdminReceiver : DeviceAdminReceiver() {
         super.onEnabled(context, intent)
         try {
             val prefs = PortalPreferences(context)
+            prefs.adminProtectionEnabled = true
             prefs.appendLog("security", "Protection administrateur activée.")
+            CameraForegroundService.syncAccessChannels(context)
         } catch (_: Throwable) {
         }
     }
@@ -33,6 +35,13 @@ class SentinelDeviceAdminReceiver : DeviceAdminReceiver() {
             val prefs = PortalPreferences(context)
             prefs.adminProtectionEnabled = false
             prefs.appendLog("security", "Protection administrateur désactivée.")
+            if (prefs.parentManaged) {
+                prefs.appendSecurityEvent(
+                    "admin",
+                    "Droits administrateur retirés",
+                    "La protection anti-désinstallation a été désactivée sur l’appareil."
+                )
+            }
             CameraForegroundService.syncAccessChannels(context)
         } catch (_: Throwable) {
         }

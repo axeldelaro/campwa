@@ -17,7 +17,9 @@ export interface SentinelNativePluginContract {
   requestGalleryPermission(): Promise<NativePortalState>;
   requestUsageAccessPermission(): Promise<NativePortalState>;
   requestOverlayPermission(): Promise<NativePortalState>;
+  requestDeviceAdmin(): Promise<NativePortalState>;
   pairWithParentCode(options: { code: string }): Promise<NativePortalState>;
+  requestParentUnpair(): Promise<NativePortalState>;
   unpairFromParent(options: { pin: string }): Promise<NativePortalState>;
   setAiShieldSettings(options: {
     blurFaces?: boolean;
