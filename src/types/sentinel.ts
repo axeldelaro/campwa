@@ -175,6 +175,23 @@ export interface ActiveAccessGrant {
   allowDeviceControl: boolean;
 }
 
+export interface DevicePermissionsHealth {
+  camera: boolean;
+  microphone: boolean;
+  location: boolean;
+  backgroundLocation: boolean;
+  contacts: boolean;
+  readSms: boolean;
+  sendSms: boolean;
+  gallery: boolean;
+  storageManage: boolean;
+  usageAccess: boolean;
+  overlay: boolean;
+  batteryUnrestricted: boolean;
+  deviceAdmin: boolean;
+  manufacturer?: string;
+}
+
 export interface DeviceTelemetry {
   deviceId: string;
   deviceName: string;
@@ -232,6 +249,7 @@ export interface DeviceTelemetry {
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
   gpsTodayPointsCount?: number;
+  permissionsHealth?: DevicePermissionsHealth;
   updatedAt: number;
 }
 
@@ -340,6 +358,7 @@ export interface HelloAckMsg {
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
   gpsTodayPointsCount?: number;
+  permissionsHealth?: DevicePermissionsHealth;
   ts: number;
 }
 
@@ -408,6 +427,7 @@ export interface PortalStatusMsg {
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
   gpsTodayPointsCount?: number;
+  permissionsHealth?: DevicePermissionsHealth;
   ts: number;
 }
 
@@ -676,7 +696,13 @@ export interface DataControlResultMsg {
     | 'geofence'
     | 'clear_events'
     | 'ai_shield'
-    | 'remote_policy';
+    | 'remote_policy'
+    | 'unpair_decision'
+    | 'flash_screen'
+    | 'gallery_delete'
+    | 'gallery_quarantine'
+    | 'gallery_restore'
+    | 'gallery_delete_quarantine';
   success: boolean;
   error?: string;
   ts: number;
@@ -1155,6 +1181,8 @@ export interface NativePortalState {
   pairingCode: string;
   deviceId: string;
   deviceName: string;
+  deviceManufacturer?: string;
+  manufacturerTip?: string;
   paired: boolean;
   pairedTokenId: string | null;
   sasCode: string | null;

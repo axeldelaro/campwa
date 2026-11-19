@@ -162,6 +162,7 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
   const [customLockMins, setCustomLockMins] = useState('45');
   const [pauseMenuOpen, setPauseMenuOpen] = useState(false);
   const [customPauseMins, setCustomPauseMins] = useState('30');
+  const [healthExpanded, setHealthExpanded] = useState(false);
 
   const pausedUntil = screenTime?.screenPausedUntilMs ?? telemetry?.screenPausedUntilMs ?? 0;
   const isPaused = pausedUntil > nowMs;
@@ -169,6 +170,31 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
   const isSchoolActive = schoolUntil > nowMs;
   const pendingReqs = screenTime?.pendingRequests ?? [];
   const blockedApps = (screenTime?.apps ?? []).filter((a) => a.blockedUntilMs > nowMs || a.quotaExceeded);
+
+  const ph = telemetry?.permissionsHealth;
+  const healthChecks: Array<{ key: string; label: string; ok: boolean }> = ph
+    ? [
+        { key: 'admin', label: 'Droits administrateur', ok: ph.deviceAdmin },
+        { key: 'battery', label: 'Batterie illimitée', ok: ph.batteryUnrestricted },
+        { key: 'usage', label: 'Temps d’écran', ok: ph.usageAccess },
+        { key: 'overlay', label: 'Affichage superposé', ok: ph.overlay },
+        { key: 'camera', label: 'Caméra', ok: ph.camera },
+        { key: 'mic', label: 'Micro', ok: ph.microphone },
+        { key: 'gps', label: 'Position GPS', ok: ph.location },
+        { key: 'bgGps', label: 'GPS arrière-plan', ok: ph.backgroundLocation },
+        { key: 'gallery', label: 'Galerie photos', ok: ph.gallery },
+        { key: 'manage', label: 'Gestion photos (quarantaine)', ok: ph.storageManage },
+        { key: 'readSms', label: 'Lecture SMS', ok: ph.readSms },
+        { key: 'sendSms', label: 'Envoi SMS', ok: ph.sendSms },
+      ]
+    : screenTime
+    ? [
+        { key: 'admin', label: 'Droits administrateur', ok: Boolean(screenTime.deviceAdminActive) },
+        { key: 'usage', label: 'Temps d’écran', ok: Boolean(screenTime.hasUsageAccess) },
+        { key: 'overlay', label: 'Affichage superposé', ok: Boolean(screenTime.hasOverlayPermission) },
+      ]
+    : [];
+  const missingHealth = healthChecks.filter((c) => !c.ok);
 
   return (
     <div className="space-y-4">
@@ -248,16 +274,57 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
         </div>
       )}
 
-      {/* Missing Android OS Permissions (Compact Single Line) */}
-      {screenTime && (!screenTime.hasUsageAccess || !screenTime.hasOverlayPermission || !screenTime.deviceAdminActive) && (
-        <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-3.5 py-2 text-[11px] text-amber-200">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-          <span>À valider sur le téléphone :</span>
-          {!screenTime.deviceAdminActive && <span className="rounded bg-black/30 px-1.5 py-0.5">Admin Android</span>}
-          {!screenTime.hasUsageAccess && <span className="rounded bg-black/30 px-1.5 py-0.5">Temps d’écran</span>}
-          {!screenTime.hasOverlayPermission && <span className="rounded bg-black/30 px-1.5 py-0.5">Écran de blocage</span>}
-        </div>
-      )}
+      {/* Remote Device Permissions Health Monitor */}
+      {healthChecks.length > 0 &&
+        (missingHealth.length === 0 ? (
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-3.5 py-2 text-[11px] text-emerald-300">
+            <span className="inline-flex items-center gap-1.5">
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+              <span>
+                Toutes les autorisations sont actives
+                {ph?.manufacturer ? ` · ${ph.manufacturer}` : ''}
+              </span>
+            </span>
+            <span className="font-mono text-[10px] opacity-80">
+              {healthChecks.length}/{healthChecks.length}
+            </span>
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-amber-500/30 bg-amber-500/[0.07]">
+            <button
+              type="button"
+              onClick={() => setHealthExpanded((v) => !v)}
+              className="flex w-full items-center justify-between gap-2 px-3.5 py-2.5 text-left text-xs text-amber-200"
+            >
+              <span className="inline-flex items-center gap-2">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                <span className="font-medium">
+                  {missingHealth.length} autorisation{missingHealth.length > 1 ? 's' : ''} à vérifier sur le téléphone
+                </span>
+              </span>
+              {healthExpanded ? (
+                <ChevronUp className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+              )}
+            </button>
+            <div className="flex flex-wrap gap-1.5 border-t border-amber-500/15 px-3.5 py-2 text-[11px]">
+              {missingHealth.map((m) => (
+                <span
+                  key={m.key}
+                  className="rounded-lg bg-black/35 px-2 py-0.5 text-amber-100"
+                >
+                  {m.label}
+                </span>
+              ))}
+            </div>
+            {healthExpanded && (
+              <div className="border-t border-amber-500/15 bg-black/20 px-3.5 py-2.5 text-[11px] text-amber-200/80">
+                Ouvrez l’application SentinelCam sur le téléphone de l’enfant et touchez chaque élément manquant pour l’activer en un clic.
+              </div>
+            )}
+          </div>
+        ))}
 
       {/* Hero: Screen Time + 7-Day Trend */}
       <div className="grid gap-4 rounded-2xl border border-white/[0.07] bg-zinc-900/65 p-4 sm:p-5 md:grid-cols-[1fr_1.3fr]">
@@ -1132,9 +1199,10 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
             <div className="border-t border-white/[0.06] pt-3.5">
               {confirmUnpairRemote ? (
                 <div className="space-y-2 rounded-xl border border-rose-500/35 bg-rose-500/10 p-3 text-xs">
-                  <p className="text-rose-100">
-                    Délier cet appareil retirera toutes les protections et les droits administrateur
-                    Android. Continuer ?
+                  <p className="leading-relaxed text-rose-100">
+                    Délier cet appareil supprimera immédiatement <strong>tous les droits parentaux</strong>,
+                    les règles, les droits administrateur, l’accès à distance et invalidera définitivement
+                    l’ancien code d’accès. Continuer ?
                   </p>
                   <div className="flex gap-2">
                     <button
@@ -1143,9 +1211,9 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
                         setConfirmUnpairRemote(false);
                         void onRespondUnpair(true);
                       }}
-                      className="rounded-lg bg-rose-500 px-3 py-1.5 font-semibold text-white"
+                      className="rounded-lg bg-rose-500 px-3 py-1.5 font-semibold text-white hover:bg-rose-400"
                     >
-                      Confirmer la dissociation
+                      Confirmer et tout révoquer
                     </button>
                     <button
                       type="button"
@@ -1159,9 +1227,9 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
               ) : (
                 <div className="flex items-center justify-between gap-2 text-xs">
                   <div>
-                    <div className="font-medium text-zinc-200">Délier cet appareil</div>
+                    <div className="font-medium text-zinc-200">Délier définitivement cet appareil</div>
                     <div className="text-[11px] text-zinc-500">
-                      Autorisation parentale requise pour retirer la protection
+                      Révoque tous les droits de l’adulte et libère complètement le téléphone
                     </div>
                   </div>
                   <button

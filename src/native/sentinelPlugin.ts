@@ -10,6 +10,7 @@ export interface SentinelNativePluginContract {
   getPortalState(): Promise<NativePortalState>;
   requestAllPermissions(): Promise<NativePermissionStatus>;
   requestBatteryExemption(): Promise<{ batteryOptimizationIgnored: boolean }>;
+  openManufacturerBatterySettings(): Promise<NativePortalState>;
   requestContactsPermission(): Promise<NativePortalState>;
   requestLocationPermission(): Promise<NativePortalState>;
   requestBackgroundLocationPermission(): Promise<NativePortalState>;

@@ -130,22 +130,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v21.0.${{ github.run_number }}
-          name: "SentinelCam v21.0.${{ github.run_number }} (Contrôle Continu Sans Perte • Caméra Anti-Coupure & Auto-Réparation • Double Liaison Active)"
+          tag_name: v22.0.${{ github.run_number }}
+          name: "SentinelCam v22.0.${{ github.run_number }} (Révocation Totale à la Dissociation • Assistant Anti-Veille Constructeur • Contrôle Santé des Autorisations)"
           body: |
-            ### SentinelCam v21.0 (`v21.0.${{ github.run_number }}`)
+            ### SentinelCam v22.0 (`v22.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Contrôle permanent même si l’appli est fermée ou redémarrée** :
-              - Exclusion automatique du carrousel des applications récentes dès l’association au Parent (impossible de la balayer par erreur, toujours accessible par son icône).
-              - Relance automatique en **2 secondes** via alarme système anti-Doze + JobScheduler + redémarrage sur déverrouillage, chargeur et démarrage téléphone.
-              - Conservation des droits caméra/micro en arrière-plan sur Android 12–15 grâce aux exemptions système (Batterie illimitée, Superposition, Admin), garantissant que la caméra reste toujours allumable même sans rouvrir l’appli.
-            - **Caméra anti-coupure & auto-réparation silencieuse** :
-              - Double liaison simultanée active (basculement instantané 0 ms en cas de coupure réseau mobile).
-              - Régulation adaptative du débit vidéo pour ne jamais saturer la 4G/5G et éviter les décrochages.
-              - Détection automatique des flux figés côté Android (8,5 s) et côté Web (7 s) + 6 tentatives progressives de réouverture matérielle (si une autre appli utilise brièvement la caméra) + reconnexion automatique sans clic sur le site Parent.
-            - **Inclut tous les correctifs v20.0** : notifications 100 % préservées, superposition texte/image plein écran fiabilisée, historique complet des anciens SMS, et quarantaine/suppression photos.
+            - **Disparition totale et irréversible des droits de l’adulte lors de la dissociation** : dès que le Parent délie l’appareil, SentinelCam coupe immédiatement tout flux/filtre/GPS, retire les droits administrateur Android, efface toutes les règles/quotas/horaires/PIN/accès à distance, **invalide définitivement l’ancien code d’accès et la clé famille** par rotation cryptographique, annule toutes les tâches d’arrière-plan et arrête complètement le service.
+            - **Assistant anti-veille intelligent selon la marque** *(Samsung, Xiaomi/Redmi/POCO, Oppo/Realme/OnePlus, Huawei/Honor, Vivo, Android)* : détecte automatiquement le constructeur du téléphone et ouvre en 1 clic le réglage exact (*Batterie non restreinte / Démarrage automatique*).
+            - **Contrôle santé complet des autorisations à distance** : dans l’onglet *Accueil* du site Parent, visualisez en temps réel les 12 autorisations clés du téléphone (Admin, Batterie, Temps d’écran, Superposition, Caméra, Micro, GPS, Galerie, Gestion photos, SMS).
+            - **Service complet peaufiné** : continuité 24 h/24 anti-fermeture, caméra auto-réparatrice, double liaison active, notifications 100 % préservées, messagerie SMS complète, quarantaine/suppression photos et superposition d’écran.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

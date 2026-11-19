@@ -1208,6 +1208,7 @@ export class SentinelWebRtcController {
       gpsTrackingMode: msg.gpsTrackingMode,
       gpsPointsCount: msg.gpsPointsCount,
       gpsTodayPointsCount: msg.gpsTodayPointsCount,
+      permissionsHealth: msg.permissionsHealth,
       updatedAt: Date.now(),
     });
 
@@ -1289,6 +1290,7 @@ export class SentinelWebRtcController {
       gpsTrackingMode: msg.gpsTrackingMode,
       gpsPointsCount: msg.gpsPointsCount,
       gpsTodayPointsCount: msg.gpsTodayPointsCount,
+      permissionsHealth: msg.permissionsHealth,
       updatedAt: Date.now(),
     });
 

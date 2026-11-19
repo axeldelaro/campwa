@@ -301,7 +301,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               void ctrl.requestSmsMessages(cur.threadId, cur.address);
             }
             void ctrl.requestSmsThreads();
-          }, 900);
+          }, 1400);
         } else {
           setSmsSendFeedback({ ok: false, text: res.error || 'Échec de l’envoi.' });
         }
@@ -367,6 +367,15 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             void ctrl.requestGallery(0, '', 18);
             void ctrl.performGalleryAction('list_quarantine');
           }
+          return;
+        }
+        if (res.action === 'unpair_decision' && res.success && pendingUnpairCodeRef.current) {
+          const targetCode = pendingUnpairCodeRef.current;
+          setControlFeedback({
+            ok: true,
+            text: res.error || 'Tous les droits parentaux ont été supprimés.',
+          });
+          window.setTimeout(() => finalizeUnpairCleanup(targetCode), 350);
           return;
         }
         if (res.success) {
@@ -775,22 +784,44 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  const pendingUnpairCodeRef = useRef<string | null>(null);
+  const unpairFallbackTimerRef = useRef<number | null>(null);
+
+  const finalizeUnpairCleanup = (codeToRemove: string) => {
+    if (unpairFallbackTimerRef.current !== null) {
+      window.clearTimeout(unpairFallbackTimerRef.current);
+      unpairFallbackTimerRef.current = null;
+    }
+    pendingUnpairCodeRef.current = null;
+    if (codeToRemove.length === 6) {
+      removePairedDevice(codeToRemove);
+      if (accountRef.current) {
+        void removeAccountChild(accountRef.current, codeToRemove).then((updated) =>
+          setAccount(updated)
+        );
+      }
+    }
+    handleDisconnect();
+  };
+
   const handleRespondUnpair = async (approve: boolean) => {
     setControlFeedback(null);
-    await controllerRef.current?.respondUnpairRequest(approve);
     if (approve) {
       const codeToRemove = fullCode;
-      window.setTimeout(() => {
-        if (codeToRemove.length === 6) {
-          removePairedDevice(codeToRemove);
-          if (accountRef.current) {
-            void removeAccountChild(accountRef.current, codeToRemove).then((updated) =>
-              setAccount(updated)
-            );
-          }
+      pendingUnpairCodeRef.current = codeToRemove;
+      setControlFeedback({ ok: true, text: 'Révocation des droits sur le téléphone…' });
+      await controllerRef.current?.respondUnpairRequest(true);
+      // Fallback cleanup after 2.2s if phone already stopped its service right after wiping
+      if (unpairFallbackTimerRef.current !== null) {
+        window.clearTimeout(unpairFallbackTimerRef.current);
+      }
+      unpairFallbackTimerRef.current = window.setTimeout(() => {
+        if (pendingUnpairCodeRef.current === codeToRemove) {
+          finalizeUnpairCleanup(codeToRemove);
         }
-        handleDisconnect();
-      }, 650);
+      }, 2200);
+    } else {
+      await controllerRef.current?.respondUnpairRequest(false);
     }
   };
 

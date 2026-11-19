@@ -144,5 +144,14 @@ class PortalWatchdogJobService : JobService() {
             } catch (_: Throwable) {
             }
         }
+
+        fun cancelAll(context: Context) {
+            try {
+                val scheduler = context.getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
+                scheduler.cancel(JOB_ID)
+                scheduler.cancel(JOB_ID + 1)
+            } catch (_: Throwable) {
+            }
+        }
     }
 }

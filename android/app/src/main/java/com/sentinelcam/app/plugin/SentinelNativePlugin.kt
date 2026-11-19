@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -238,6 +239,99 @@ class SentinelNativePlugin : Plugin() {
         } catch (_: Throwable) {
         }
         call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun openManufacturerBatterySettings(call: PluginCall) {
+        grantTemporarySettingsGrace(150_000L)
+        val brand = "${Build.MANUFACTURER.orEmpty()} ${Build.BRAND.orEmpty()}".lowercase()
+        val candidates = ArrayList<Intent>()
+
+        when {
+            brand.contains("xiaomi") || brand.contains("redmi") || brand.contains("poco") -> {
+                candidates.add(Intent().setComponent(ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")))
+                candidates.add(Intent().setComponent(ComponentName("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsConfigActivity")))
+            }
+
+            brand.contains("samsung") -> {
+                candidates.add(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:${context.packageName}")
+                    )
+                )
+            }
+
+            brand.contains("oppo") || brand.contains("realme") || brand.contains("oneplus") -> {
+                candidates.add(Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity")))
+                candidates.add(Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity")))
+                candidates.add(Intent().setComponent(ComponentName("com.oplus.battery", "com.oplus.powermanager.fuelgaue.PowerUsageModelActivity")))
+            }
+
+            brand.contains("huawei") || brand.contains("honor") -> {
+                candidates.add(Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity")))
+                candidates.add(Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity")))
+            }
+
+            brand.contains("vivo") || brand.contains("iqoo") -> {
+                candidates.add(Intent().setComponent(ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity")))
+                candidates.add(Intent().setComponent(ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")))
+            }
+        }
+
+        // Universal Android fallback: App Details -> Batterie -> Non restreinte
+        candidates.add(
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:${context.packageName}")
+            )
+        )
+
+        var opened = false
+        for (intent in candidates) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (intent.resolveActivity(context.packageManager) != null) {
+                    context.startActivity(intent)
+                    opened = true
+                    break
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        if (!opened) {
+            try {
+                val fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(fallback)
+            } catch (_: Throwable) {
+            }
+        }
+        call.resolve(buildPortalStateObject())
+    }
+
+    private fun getFormattedManufacturer(): String {
+        val raw = Build.MANUFACTURER?.trim().orEmpty()
+        return if (raw.isEmpty()) "Android" else raw.replaceFirstChar { it.uppercase() }
+    }
+
+    private fun getManufacturerBatteryTip(): String {
+        val brand = "${Build.MANUFACTURER.orEmpty()} ${Build.BRAND.orEmpty()}".lowercase()
+        return when {
+            brand.contains("samsung") ->
+                "Ouvrez Batterie → choisissez « Non restreinte » pour empêcher la mise en veille la nuit."
+            brand.contains("xiaomi") || brand.contains("redmi") || brand.contains("poco") ->
+                "Activez « Démarrage automatique » et réglez l’économiseur sur « Aucune restriction »."
+            brand.contains("oppo") || brand.contains("realme") || brand.contains("oneplus") ->
+                "Activez « Autoriser le démarrage automatique » et « Activité en arrière-plan »."
+            brand.contains("huawei") || brand.contains("honor") ->
+                "Passez la gestion de lancement en mode manuel (tout activer en arrière-plan)."
+            brand.contains("vivo") || brand.contains("iqoo") ->
+                "Autorisez l’exécution en arrière-plan et la consommation élevée pour SentinelCam."
+            else ->
+                "Ouvrez Batterie → choisissez « Non restreinte » pour une protection continue 24h/24."
+        }
     }
 
     @PluginMethod
@@ -944,6 +1038,8 @@ class SentinelNativePlugin : Plugin() {
             put("pairingCode", prefs.pairingCode)
             put("deviceId", prefs.deviceId)
             put("deviceName", prefs.deviceName)
+            put("deviceManufacturer", getFormattedManufacturer())
+            put("manufacturerTip", getManufacturerBatteryTip())
             put("paired", prefs.hasAnyAuthorizedToken())
             put("pairedTokenId", prefs.pairedTokenId)
             put("sasCode", prefs.sasCode)

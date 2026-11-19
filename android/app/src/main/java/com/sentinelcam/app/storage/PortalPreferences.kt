@@ -936,6 +936,66 @@ class PortalPreferences(context: Context) {
         }
     }
 
+    /**
+     * Complete, atomic cryptographic & functional revocation of ALL Parent/Adult rights on Unpair.
+     * After this runs, ZERO rules, ZERO locks, ZERO quotas, ZERO remote permissions, ZERO admin PIN,
+     * ZERO family keys, and ZERO old pairing codes remain valid!
+     */
+    fun revokeAllParentRightsAndReset(): String {
+        synchronized(LOCK) {
+            val nextCode = CryptoProtocol.generateSecurePairingCode()
+            prefs.edit()
+                .putBoolean(KEY_PARENT_MANAGED, false)
+                .remove(KEY_PARENT_FAMILY_KEY)
+                .putBoolean(KEY_UNPAIR_REQUEST_PENDING, false)
+                .putLong(KEY_UNPAIR_REQUESTED_AT, 0L)
+                .putBoolean(KEY_ONBOARDING_COMPLETED, false)
+                .putBoolean(KEY_MANUALLY_STOPPED, true)
+                .putBoolean(KEY_ADMIN_PROTECTION, false)
+                .remove(KEY_ADMIN_PIN_SALT)
+                .remove(KEY_ADMIN_PIN_HASH)
+                .putBoolean(KEY_BLOCK_SETTINGS_STORE, false)
+                .putLong(KEY_SETTINGS_UNLOCK_UNTIL, 0L)
+                .remove(KEY_APP_LOCK_RULES)
+                .putLong(KEY_SCREEN_PAUSED_UNTIL, 0L)
+                .putLong(KEY_SCHOOL_MODE_UNTIL, 0L)
+                .remove(KEY_SCHOOL_ALLOWED_PKGS)
+                .remove(KEY_APP_QUOTAS)
+                .remove(KEY_APP_BONUS_TODAY)
+                .putBoolean(KEY_CURFEW_ENABLED, false)
+                .putLong(KEY_CURFEW_BYPASS_UNTIL, 0L)
+                .putBoolean(KEY_LOST_MODE_ENABLED, false)
+                .remove(KEY_LOST_MODE_MSG)
+                .remove(KEY_LOST_MODE_PHONE)
+                .remove(KEY_GEOFENCES)
+                .remove(KEY_TIME_REQUESTS)
+                .remove(KEY_SECURITY_EVENTS)
+                .putBoolean(KEY_AI_BLUR_FACES, false)
+                .putBoolean(KEY_AI_BLUR_NSFW, false)
+                .putBoolean(KEY_AI_NSFW_STRICT, false)
+                .putBoolean(KEY_GLOBAL_SCREEN, false)
+                .putBoolean(KEY_GLOBAL_CONTACTS, false)
+                .putBoolean(KEY_GLOBAL_LOCATION, false)
+                .putBoolean(KEY_GLOBAL_LOCATION_HISTORY, false)
+                .putBoolean(KEY_GLOBAL_DEVICE_INFO, false)
+                .putBoolean(KEY_GLOBAL_INTERCOM, false)
+                .putBoolean(KEY_GLOBAL_SMS_RELAY, false)
+                .putBoolean(KEY_GLOBAL_DEVICE_CONTROL, false)
+                .putBoolean(KEY_GLOBAL_GALLERY, false)
+                .remove(KEY_ACCESS_PROFILES)
+                .putString(KEY_PAIRING_CODE, KeystoreVault.encrypt(nextCode))
+                .putString(KEY_DEVICE_SALT, KeystoreVault.encrypt(CryptoProtocol.randomHex(32)))
+                .remove(KEY_PAIRED_TOKEN_ID)
+                .remove(KEY_PAIRED_KEY_HEX)
+                .remove(KEY_SAS_CODE)
+                .remove(KEY_SAS_SYMBOLS)
+                .putInt(KEY_FAILED_ATTEMPTS, 0)
+                .putLong(KEY_LOCKOUT_UNTIL, 0L)
+                .commit()
+            return nextCode
+        }
+    }
+
     /* ==================== ACCESS PROFILES (FRIENDS & TIMED PASSES) ==================== */
 
     fun getAccessProfiles(): List<AccessProfileRecord> {

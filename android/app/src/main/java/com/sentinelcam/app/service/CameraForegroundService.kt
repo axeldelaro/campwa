@@ -893,7 +893,59 @@ class CameraForegroundService : Service() {
             put("gpsTrackingMode", prefs.gpsTrackingMode)
             put("gpsPointsCount", gpsPointsCount)
             put("gpsTodayPointsCount", gpsTodayPointsCount)
+            put("permissionsHealth", buildPermissionsHealthJson())
             put("ts", System.currentTimeMillis())
+        }
+    }
+
+    private fun buildPermissionsHealthJson(): JSONObject {
+        val ctx = applicationContext
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val cam = ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        val mic = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        val loc = ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val bgLoc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            loc
+        }
+        val contacts = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) ==
+            PackageManager.PERMISSION_GRANTED
+        val readSms = SmsInboxHelper.hasReadSmsPermission(ctx)
+        val sendSms = SmsInboxHelper.hasSendSmsPermission(ctx)
+        val gallery = GalleryHelper.hasGalleryPermission(ctx)
+        val storageManage = GalleryHelper.hasStorageManagePermission(ctx)
+        val usageAccess = ScreenTimeHelper.hasUsageAccess(ctx)
+        val overlay = ScreenTimeHelper.hasOverlayPermission(ctx)
+        val batteryUnrestricted = try {
+            pm.isIgnoringBatteryOptimizations(ctx.packageName)
+        } catch (_: Throwable) {
+            false
+        }
+        val deviceAdmin = ScreenTimeHelper.isDeviceAdminActive(ctx)
+        val brand = (Build.MANUFACTURER ?: "Android").trim().replaceFirstChar { it.uppercase() }
+
+        return JSONObject().apply {
+            put("camera", cam)
+            put("microphone", mic)
+            put("location", loc)
+            put("backgroundLocation", bgLoc)
+            put("contacts", contacts)
+            put("readSms", readSms)
+            put("sendSms", sendSms)
+            put("gallery", gallery)
+            put("storageManage", storageManage)
+            put("usageAccess", usageAccess)
+            put("overlay", overlay)
+            put("batteryUnrestricted", batteryUnrestricted)
+            put("deviceAdmin", deviceAdmin)
+            put("manufacturer", brand)
         }
     }
 
@@ -1071,6 +1123,7 @@ class CameraForegroundService : Service() {
                     prefs.unpairRequestPending = false
                     prefs.unpairRequestedAt = 0L
                     prefs.onboardingCompleted = true
+                    prefs.userManuallyStopped = false
                     prefs.adminProtectionEnabled = true
                     prefs.blockSettingsAndStore = true
                     prefs.globalAllowDeviceControl = true
@@ -1083,6 +1136,11 @@ class CameraForegroundService : Service() {
                     prefs.globalAllowIntercom = true
                     if (initialPin.length in 4..12) {
                         prefs.setAdminPin(initialPin)
+                    }
+                    PortalWatchdogJobService.scheduleWatchdog(applicationContext)
+                    KeepAliveReceiver.scheduleNextPulse(applicationContext)
+                    serviceScope.launch(Dispatchers.Main) {
+                        startInForegroundSafely(promoteCamera = true, promoteScreen = false)
                     }
                     appLockMonitor?.refreshSchedule()
                     prefs.appendSecurityEvent(
@@ -2140,17 +2198,18 @@ class CameraForegroundService : Service() {
                     if (!grant.allowDeviceControl) {
                         sendControlResult(channelId, reqId, "unpair_decision", false, "Contrôle non autorisé.")
                     } else if (approve) {
-                        prefs.unpairRequestPending = false
-                        prefs.unpairRequestedAt = 0L
-                        prefs.parentManaged = false
-                        prefs.parentFamilyKey = ""
-                        prefs.adminProtectionEnabled = false
-                        prefs.blockSettingsAndStore = false
-                        prefs.clearAllAppLocks()
-                        prefs.lostModeEnabled = false
-                        prefs.curfewEnabled = false
-                        prefs.aiBlurFaces = false
-                        prefs.aiBlurNsfw = false
+                        // 1. Stop every active remote feature immediately (camera, AI shield, overlay, ring, torch, GPS)
+                        try { webRtcEngine?.stopStream() } catch (_: Throwable) {}
+                        try { aiScreenShield?.stop() } catch (_: Throwable) {}
+                        aiShieldActive = false
+                        screenProjectionIntent = null
+                        mediaProjectionFgsPromoted = false
+                        try { FlashOverlayManager.dismissNow() } catch (_: Throwable) {}
+                        try { DeviceActionHelper.releaseAll(applicationContext) } catch (_: Throwable) {}
+                        try { locationTracker?.configureAndSync(false, "eco") } catch (_: Throwable) {}
+                        try { locationStore?.clearAll() } catch (_: Throwable) {}
+
+                        // 2. Remove Android Device Admin so child regains 100% control of their phone
                         try {
                             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
                             val comp = SentinelDeviceAdminReceiver.getComponentName(applicationContext)
@@ -2159,16 +2218,29 @@ class CameraForegroundService : Service() {
                             }
                         } catch (_: Throwable) {
                         }
-                        syncAiShieldState()
-                        appLockMonitor?.refreshSchedule()
-                        prefs.appendLog("security", "Appareil délié avec autorisation du Parent.")
-                        sendControlResult(channelId, reqId, "unpair_decision", true, "Appareil délié avec succès.")
-                        broadcastPresenceNow(channelId)
-                        notifyStateListeners()
+
+                        // 3. Confirm to Parent BEFORE destroying the old cryptographic channel
+                        sendControlResult(
+                            channelId,
+                            reqId,
+                            "unpair_decision",
+                            true,
+                            "Appareil délié : tous les droits parentaux ont été définitivement supprimés."
+                        )
+
+                        // 4. Atomically wipe ALL adult rights, rules, quotas, admin PIN, profiles,
+                        //    family key & rotate pairing code so old Parent access can NEVER reconnect!
                         serviceScope.launch {
-                            delay(450L)
-                            updateNotificationAndNotifyListeners()
-                            syncChannelsHot()
+                            delay(480L)
+                            try {
+                                prefs.revokeAllParentRightsAndReset()
+                                appLockMonitor?.refreshSchedule()
+                                KeepAliveReceiver.cancelPulse(applicationContext)
+                                PortalWatchdogJobService.cancelAll(applicationContext)
+                                notifyStateListeners()
+                                stopPortal(applicationContext)
+                            } catch (_: Throwable) {
+                            }
                         }
                     } else {
                         prefs.unpairRequestPending = false
@@ -2639,6 +2711,7 @@ class CameraForegroundService : Service() {
                 put("gpsTrackingMode", prefs.gpsTrackingMode)
                 put("gpsPointsCount", gpsPointsCount)
                 put("gpsTodayPointsCount", gpsTodayPointsCount)
+                put("permissionsHealth", buildPermissionsHealthJson())
                 put("ts", now)
             },
             mode = "boot"
@@ -3301,7 +3374,12 @@ class CameraForegroundService : Service() {
             try {
                 val appCtx = context.applicationContext
                 KeepAliveReceiver.cancelPulse(appCtx)
-                PortalWatchdogJobService.scheduleWatchdog(appCtx)
+                val p = PortalPreferences(appCtx)
+                if (p.onboardingCompleted && !p.userManuallyStopped) {
+                    PortalWatchdogJobService.scheduleWatchdog(appCtx)
+                } else {
+                    PortalWatchdogJobService.cancelAll(appCtx)
+                }
 
                 isRunning = false
                 isStreaming = false
