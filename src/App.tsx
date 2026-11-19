@@ -19,10 +19,10 @@ export const App: React.FC = () => {
   const [brokers, setBrokers] = useState<BrokerHealth[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [sharedAccessCode, setSharedAccessCode] = useState<string | null>(null);
 
   useEffect(() => {
     if (!nativeAndroid) {
-      // Pre-warm TLS WebSocket pool immediately on page load for ~100ms connection speed
       warmUpSignalingPool();
 
       const params = new URLSearchParams(window.location.search);
@@ -31,8 +31,16 @@ export const App: React.FC = () => {
         const clean = normalizePairingCode(rawInvite);
         if (clean.length === 6) {
           setInviteCode(clean);
-          // Attempt automatic deep-link open on Android Chrome
           window.location.href = `sentinelcam://wake?code=${clean}`;
+        }
+      }
+
+      const rawCode = params.get('code');
+      if (rawCode) {
+        const clean = normalizePairingCode(rawCode);
+        if (clean.length === 6) {
+          setSharedAccessCode(clean);
+          setActiveTab('controller');
         }
       }
     }
@@ -58,7 +66,6 @@ export const App: React.FC = () => {
         apkDownloadUrl={APK_RELEASE_URL}
       />
 
-      {/* Smart Deep-Link Invitation Banner when ?invite=XXXXXX is opened on smartphone */}
       {!nativeAndroid && inviteCode && (
         <div className="mx-auto mt-6 max-w-md px-4">
           <div className="rounded-3xl border border-emerald-500/40 bg-emerald-500/10 p-6 text-center shadow-2xl">
@@ -92,13 +99,16 @@ export const App: React.FC = () => {
         {nativeAndroid || activeTab === 'emitter' ? (
           <AndroidEmitterView isNativeAndroid={nativeAndroid} />
         ) : (
-          <ControlStationView onBrokerHealthChange={handleBrokerHealth} />
+          <ControlStationView
+            onBrokerHealthChange={handleBrokerHealth}
+            initialCode={sharedAccessCode}
+          />
         )}
       </main>
 
       <footer className="border-t border-slate-900/90 py-5 text-center text-[11px] text-slate-500">
         <div className="mx-auto max-w-7xl px-4">
-          SentinelCam v3.0 • Connexion Instantanée 1-RTT • Mode Éco-Veille & Push Wake •{' '}
+          SentinelCam v4.0 • Pass Temporaires & Profils Amis • Éco-Veille 1-RTT •{' '}
           <a
             href="https://github.com/axeldelaro/campwa/releases/latest"
             target="_blank"

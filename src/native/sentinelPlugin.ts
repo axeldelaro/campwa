@@ -1,5 +1,9 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
-import type { NativePermissionStatus, NativePortalState } from '../types/sentinel';
+import type {
+  AccessProfileInput,
+  NativePermissionStatus,
+  NativePortalState,
+} from '../types/sentinel';
 
 export interface SentinelNativePluginContract {
   getPortalState(): Promise<NativePortalState>;
@@ -11,6 +15,10 @@ export interface SentinelNativePluginContract {
   regeneratePairingCode(): Promise<NativePortalState>;
   resetPairedController(): Promise<NativePortalState>;
   setAutoStartOnBoot(options: { enabled: boolean }): Promise<NativePortalState>;
+  upsertAccessProfile(options: AccessProfileInput): Promise<NativePortalState>;
+  toggleAccessProfile(options: { id: string; enabled: boolean }): Promise<NativePortalState>;
+  deleteAccessProfile(options: { id: string }): Promise<NativePortalState>;
+  kickActiveViewer(): Promise<NativePortalState>;
   addListener(
     eventName: 'portalStateChanged',
     listenerFunc: (state: NativePortalState) => void

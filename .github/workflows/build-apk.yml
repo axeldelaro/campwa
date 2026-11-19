@@ -122,17 +122,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.0.${{ github.run_number }}
-          name: "SentinelCam v3.0.${{ github.run_number }} (Instant 1-RTT, Éco-Veille & Push Wake)"
+          tag_name: v4.0.${{ github.run_number }}
+          name: "SentinelCam v4.0.${{ github.run_number }} (Codes Temporaires & Profils Amis)"
           body: |
-            ### 🛡️ SentinelCam v3.0 — Connexion Instantanée, Éco-Veille & Push d'Invitation (`v3.0.${{ github.run_number }}`)
+            ### 🛡️ SentinelCam v4.0 — Codes Fixes Temporaires & Profils Amis (`v4.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Connexion Quasi-Instantanée (1-RTT + Pool WSS pré-chauffé)** : Reconnexion immédiate dès la saisie du code.
-            - **Mode Éco-Veille (0% consommation caméra/CPU en attente)** : Capteur et WakeLocks totalement coupés tant qu'aucun flux n'est ouvert.
-            - **Push d'Invitation & Deep-Link (`sentinelcam://wake`)** : Réveil ou notification d'ouverture même si l'application a été fermée.
-            - **Arrêt Serveur Zéro-Crash** : Arrêt propre par `BroadcastReceiver` + `stopService` sans jamais provoquer d'exception système.
+            - **Codes Fixes Temporaires (Pass Invités)** : Choisissez votre propre code fixe à 6 caractères avec une durée précise (`15 min`, `1h`, `4h`, `24h`, `7j` ou date/heure personnalisée) et coupure automatique exacte à l'expiration.
+            - **Profils Amis Autorisés** : Ajoutez des proches nommés avec leur propre code personnel utilisable dès que votre serveur est allumé, suspension/révocation en 1 clic et permissions granulaires (micro / caméra arrière).
+            - **Partage par Lien Direct (`?code=XXXXXX`)** : Ouvrez le lien pour pré-remplir et connecter instantanément un ami ou un invité.
+            - **Contrôle Live Propriétaire** : Visualisez en direct qui regarde la caméra et coupez l'accès en 1 clic.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

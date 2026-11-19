@@ -4,6 +4,32 @@ export type CameraFacingMode = 'front' | 'back';
 
 export type StreamQualityPreset = 'sd' | 'hd';
 
+export type AccessProfileRole = 'owner' | 'friend' | 'guest';
+
+export interface AccessProfile {
+  id: string;
+  name: string;
+  role: 'friend' | 'guest';
+  code: string;
+  enabled: boolean;
+  createdAt: number;
+  expiresAt: number | null;
+  allowAudio: boolean;
+  allowSwitchCamera: boolean;
+  lastAccessAt: number | null;
+}
+
+export interface AccessProfileInput {
+  id?: string;
+  name: string;
+  role: 'friend' | 'guest';
+  code: string;
+  enabled: boolean;
+  expiresAt: number | null;
+  allowAudio: boolean;
+  allowSwitchCamera: boolean;
+}
+
 export interface EncryptedEnvelope {
   v: 1;
   id: string;
@@ -30,8 +56,18 @@ export interface PairedDeviceRecord {
   tokenId: string;
   sasCode: string;
   sasSymbols: string;
+  accessRole?: AccessProfileRole;
+  accessName?: string;
   pairedAt: number;
   lastConnectedAt: number;
+}
+
+export interface ActiveAccessGrant {
+  role: AccessProfileRole;
+  name: string;
+  expiresAt: number | null;
+  allowAudio: boolean;
+  allowSwitchCamera: boolean;
 }
 
 export interface DeviceTelemetry {
@@ -49,6 +85,11 @@ export interface DeviceTelemetry {
   cameraFacing: CameraFacingMode;
   micEnabled: boolean;
   uptimeSec: number;
+  accessRole?: AccessProfileRole;
+  accessName?: string;
+  accessExpiresAt?: number | null;
+  allowAudio?: boolean;
+  allowSwitchCamera?: boolean;
   updatedAt: number;
 }
 
@@ -80,7 +121,7 @@ export interface TurnServerSetting {
   credential?: string;
 }
 
-/* ==================== V3 1-RTT INSTANT E2EE PROTOCOL PAYLOADS ==================== */
+/* ==================== V4 1-RTT INSTANT E2EE PROTOCOL PAYLOADS ==================== */
 
 export interface HelloWakeMsg {
   type: 'HELLO_WAKE';
@@ -112,6 +153,11 @@ export interface HelloAckMsg {
   cameraFacing: CameraFacingMode;
   micEnabled: boolean;
   uptimeSec: number;
+  accessRole?: AccessProfileRole;
+  accessName?: string;
+  accessExpiresAt?: number | null;
+  allowAudio?: boolean;
+  allowSwitchCamera?: boolean;
   ts: number;
 }
 
@@ -138,12 +184,17 @@ export interface PortalStatusMsg {
   cameraFacing: CameraFacingMode;
   micEnabled: boolean;
   uptimeSec: number;
+  accessRole?: AccessProfileRole;
+  accessName?: string;
+  accessExpiresAt?: number | null;
+  allowAudio?: boolean;
+  allowSwitchCamera?: boolean;
   ts: number;
 }
 
 export interface AuthErrMsg {
   type: 'AUTH_ERR';
-  reason: 'LOCKED_OUT' | 'INVALID_PROOF';
+  reason: 'LOCKED_OUT' | 'INVALID_PROOF' | 'ACCESS_EXPIRED' | 'ACCESS_REVOKED';
   message: string;
   lockoutRemainingMs: number;
   failedAttempts: number;
@@ -206,7 +257,7 @@ export interface IceCandidateMsg {
 export interface StreamStateMsg {
   type: 'STREAM_STATE';
   sessionId: string;
-  state: 'starting' | 'streaming' | 'standby' | 'error';
+  state: 'starting' | 'streaming' | 'standby' | 'error' | 'expired' | 'revoked';
   cameraFacing: CameraFacingMode;
   micEnabled: boolean;
   error?: string;
@@ -265,4 +316,8 @@ export interface NativePortalState {
   lockoutRemainingMs: number;
   permissions: NativePermissionStatus;
   logs: NativeAuditEntry[];
+  accessProfiles: AccessProfile[];
+  activeViewerName: string | null;
+  activeViewerRole: AccessProfileRole | null;
+  activeViewerExpiresAt: number | null;
 }

@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,23 +32,26 @@ private object SharedOkHttpPool {
     val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(7, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(45, TimeUnit.SECONDS) // Eco-friendly 45s keepalive ping
+        .pingInterval(45, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 }
 
+data class SignalingChannelSpec(
+    val channelId: String,
+    val keys: BootstrapKeys
+)
+
 /**
- * Eco-Power MQTT 3.1.1 over WSS Engine + Instant ntfy.sh Push Wake Listener.
- * - Maintains a single ultra-lightweight Primary WSS socket (EMQX), failing over to HiveMQ ONLY if needed.
- * - Also listens on a zero-CPU SSE stream (`ntfy.sh`) for instant remote wake pushes.
- * - Never shuts down shared executors on stop -> 100% immune to shutdown crashes!
+ * Multi-Channel Single-Socket Eco-Power MQTT 3.1.1 WSS Signaling Engine.
+ * Multiplexes the Owner Master Code + all Friend Profiles + all Temporary Timed Codes
+ * over ONE single lightweight eco-standby TLS WebSocket (zero extra battery drain!).
  */
 class MqttSignalingEngine(
     context: Context,
-    private val topicId: String,
-    private val wakePushTopic: String,
-    private val bootstrapEncKey: ByteArray,
-    private val onMessageDecrypted: (payload: JSONObject, mode: String) -> Unit,
+    initialChannels: List<SignalingChannelSpec>,
+    private val primaryWakePushTopic: String,
+    private val onMessageDecrypted: (channelId: String, payload: JSONObject, mode: String) -> Unit,
     private val onConnectionStateChanged: (connected: Boolean, brokerLabel: String) -> Unit
 ) {
     private val appContext = context.applicationContext
@@ -55,17 +59,30 @@ class MqttSignalingEngine(
     private val senderId = "device-${CryptoProtocol.randomHex(6)}"
     private val packetIdGen = AtomicInteger(1)
 
-    private val sessionKeys = ConcurrentHashMap<String, ByteArray>()
+    private class ChannelRuntime(
+        val channelId: String,
+        val keys: BootstrapKeys
+    ) {
+        val inboundTopic = "sentinelcam/v1/${keys.topicId}/c2d"
+        val outboundTopic = "sentinelcam/v1/${keys.topicId}/d2c"
+        val presenceTopic = "sentinelcam/v1/${keys.topicId}/presence"
+        val sessionKeys = ConcurrentHashMap<String, ByteArray>()
+        @Volatile var latestSessionKey: ByteArray? = null
+    }
 
-    @Volatile
-    private var latestSessionKey: ByteArray? = null
+    private val channelsById = ConcurrentHashMap<String, ChannelRuntime>()
+    private val channelsByInboundTopic = ConcurrentHashMap<String, ChannelRuntime>()
 
     @Volatile
     private var destroyed = false
 
-    private val inboundTopic = "sentinelcam/v1/$topicId/c2d"
-    private val outboundTopic = "sentinelcam/v1/$topicId/d2c"
-    private val presenceTopic = "sentinelcam/v1/$topicId/presence"
+    init {
+        for (spec in initialChannels) {
+            val rt = ChannelRuntime(spec.channelId, spec.keys)
+            channelsById[spec.channelId] = rt
+            channelsByInboundTopic[rt.inboundTopic] = rt
+        }
+    }
 
     private inner class MqttWsConnection(val name: String, val url: String) {
         @Volatile var ws: WebSocket? = null
@@ -141,12 +158,63 @@ class MqttSignalingEngine(
         }
     }
 
-    fun registerSessionKey(id: String, keyBytes: ByteArray) {
-        latestSessionKey = keyBytes
-        sessionKeys[id] = keyBytes
-        if (sessionKeys.size > 12) {
-            val oldest = sessionKeys.keys().nextElement()
-            if (oldest != null && oldest != id) sessionKeys.remove(oldest)
+    /**
+     * Hot-updates subscribed Friend & Temporary Pass topics on the live socket with 0ms downtime.
+     */
+    fun syncChannels(newSpecs: List<SignalingChannelSpec>) {
+        if (destroyed) return
+        scope.launch {
+            val newIds = newSpecs.associateBy { it.channelId }
+
+            // Unsubscribe removed or changed channels
+            val removedTopics = mutableListOf<String>()
+            for ((id, oldRt) in channelsById.entries.toList()) {
+                val incoming = newIds[id]
+                if (incoming == null || incoming.keys.topicId != oldRt.keys.topicId) {
+                    channelsById.remove(id)
+                    channelsByInboundTopic.remove(oldRt.inboundTopic)
+                    removedTopics.add(oldRt.inboundTopic)
+                }
+            }
+
+            // Add & subscribe new channels
+            val addedTopics = mutableListOf<String>()
+            for (spec in newSpecs) {
+                if (!channelsById.containsKey(spec.channelId)) {
+                    val rt = ChannelRuntime(spec.channelId, spec.keys)
+                    channelsById[spec.channelId] = rt
+                    channelsByInboundTopic[rt.inboundTopic] = rt
+                    addedTopics.add(rt.inboundTopic)
+                }
+            }
+
+            for (node in listOf(primaryNode, failoverNode)) {
+                val sock = node.ws
+                if (node.mqttReady && sock != null) {
+                    for (t in removedTopics) {
+                        try {
+                            sock.send(buildMqttUnsubscribePacket(nextPacketId(), t).toByteString())
+                        } catch (_: Throwable) {
+                        }
+                    }
+                    for (t in addedTopics) {
+                        try {
+                            sock.send(buildMqttSubscribePacket(nextPacketId(), t, qos = 1).toByteString())
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun registerSessionKey(channelId: String, nonceId: String, keyBytes: ByteArray) {
+        val rt = channelsById[channelId] ?: return
+        rt.latestSessionKey = keyBytes
+        rt.sessionKeys[nonceId] = keyBytes
+        if (rt.sessionKeys.size > 12) {
+            val oldest = rt.sessionKeys.keys().nextElement()
+            if (oldest != null && oldest != nonceId) rt.sessionKeys.remove(oldest)
         }
     }
 
@@ -163,7 +231,6 @@ class MqttSignalingEngine(
 
         connectPushWakeStream()
 
-        // Eco-Standby Loop: checks every 6s locally (0 network bytes if socket healthy), sends 2-byte MQTT ping every 48s
         scope.launch {
             var tick = 0
             while (isActive && !destroyed) {
@@ -184,7 +251,7 @@ class MqttSignalingEngine(
         if (destroyed) return
         try {
             val req = Request.Builder()
-                .url("wss://ntfy.sh/$wakePushTopic/ws")
+                .url("wss://ntfy.sh/$primaryWakePushTopic/ws")
                 .build()
             pushWs = SharedOkHttpPool.client.newWebSocket(req, object : WebSocketListener() {
                 override fun onMessage(webSocket: WebSocket, text: String) {
@@ -212,7 +279,6 @@ class MqttSignalingEngine(
         if (destroyed) return
         val now = System.currentTimeMillis()
 
-        // Reset primary if silent > 95s
         if (primaryNode.mqttReady && primaryNode.lastActivityMs > 0L && (now - primaryNode.lastActivityMs) > 95_000L) {
             closeNodeQuietly(primaryNode)
         }
@@ -221,12 +287,10 @@ class MqttSignalingEngine(
             if (!primaryNode.connecting || (now - primaryNode.lastActivityMs) > 10_000L) {
                 connectNode(primaryNode)
             }
-            // Activate failover ONLY while primary is down (Eco-battery!)
             if (!failoverNode.mqttReady && (!failoverNode.connecting || (now - failoverNode.lastActivityMs) > 10_000L)) {
                 connectNode(failoverNode)
             }
         } else {
-            // Primary is healthy! Close backup if it was open to save radio battery
             if (failoverNode.ws != null) {
                 closeNodeQuietly(failoverNode)
             }
@@ -311,8 +375,11 @@ class MqttSignalingEngine(
                 if (body.size >= 2 && (body[1].toInt() and 0xFF) == 0) {
                     node.mqttReady = true
                     node.connecting = false
-                    val subPacket = buildMqttSubscribePacket(nextPacketId(), inboundTopic, qos = 1)
-                    webSocket.send(subPacket.toByteString())
+                    // Subscribe to ALL active channels (Master + Friends + Temporary Passes) on 1 socket!
+                    for (rt in channelsById.values) {
+                        val subPacket = buildMqttSubscribePacket(nextPacketId(), rt.inboundTopic, qos = 1)
+                        webSocket.send(subPacket.toByteString())
+                    }
                     emitHealth()
                 } else {
                     closeNodeQuietly(node)
@@ -326,6 +393,8 @@ class MqttSignalingEngine(
                 var idx = 2 + topicLen
                 if (idx > body.size) return
 
+                val topic = String(body, 2, topicLen, Charsets.UTF_8)
+
                 if (qos > 0) {
                     if (idx + 2 > body.size) return
                     val pktHi = body[idx]
@@ -338,7 +407,7 @@ class MqttSignalingEngine(
 
                 val payload = body.copyOfRange(idx, body.size)
                 scope.launch {
-                    handleEncryptedPayload(payload)
+                    handleEncryptedPayload(topic, payload)
                 }
             }
 
@@ -356,18 +425,23 @@ class MqttSignalingEngine(
         }
     }
 
-    fun send(payload: JSONObject, mode: String = "boot", toPresence: Boolean = false) {
+    fun send(
+        channelId: String,
+        payload: JSONObject,
+        mode: String = "boot",
+        toPresence: Boolean = false
+    ) {
         if (destroyed) return
-        val key = if (mode == "sess") latestSessionKey else bootstrapEncKey
+        val rt = channelsById[channelId] ?: return
+        val key = if (mode == "sess") rt.latestSessionKey else rt.keys.bootstrapEncKey
         if (key == null) return
 
         scope.launch {
             try {
                 val rawEnvelope = CryptoProtocol.encryptEnvelope(payload, key, mode, senderId)
-                val targetTopic = if (toPresence) presenceTopic else outboundTopic
+                val targetTopic = if (toPresence) rt.presenceTopic else rt.outboundTopic
                 val msgBytes = rawEnvelope.toByteArray(Charsets.UTF_8)
 
-                // When replying to a controller, publish on active socket(s) immediately
                 for (node in listOf(primaryNode, failoverNode)) {
                     val sock = node.ws
                     if (node.mqttReady && sock != null) {
@@ -383,8 +457,10 @@ class MqttSignalingEngine(
         }
     }
 
-    private fun handleEncryptedPayload(bytes: ByteArray) {
+    private fun handleEncryptedPayload(topic: String, bytes: ByteArray) {
         if (destroyed || bytes.isEmpty()) return
+        val rt = channelsByInboundTopic[topic] ?: return
+
         val envelope = try {
             JSONObject(String(bytes, Charsets.UTF_8))
         } catch (_: Throwable) {
@@ -397,22 +473,22 @@ class MqttSignalingEngine(
 
         val mode = envelope.optString("mode", "boot")
         if (mode == "boot") {
-            val plain = CryptoProtocol.decryptEnvelope(envelope, bootstrapEncKey) ?: return
-            if (!destroyed) onMessageDecrypted(plain, mode)
+            val plain = CryptoProtocol.decryptEnvelope(envelope, rt.keys.bootstrapEncKey) ?: return
+            if (!destroyed) onMessageDecrypted(rt.channelId, plain, mode)
         } else {
-            val primary = latestSessionKey
+            val primary = rt.latestSessionKey
             if (primary != null) {
                 val plain = CryptoProtocol.decryptEnvelope(envelope, primary)
                 if (plain != null) {
-                    if (!destroyed) onMessageDecrypted(plain, mode)
+                    if (!destroyed) onMessageDecrypted(rt.channelId, plain, mode)
                     return
                 }
             }
-            for (candidateKey in sessionKeys.values) {
+            for (candidateKey in rt.sessionKeys.values) {
                 val plain = CryptoProtocol.decryptEnvelope(envelope, candidateKey)
                 if (plain != null) {
-                    latestSessionKey = candidateKey
-                    if (!destroyed) onMessageDecrypted(plain, mode)
+                    rt.latestSessionKey = candidateKey
+                    if (!destroyed) onMessageDecrypted(rt.channelId, plain, mode)
                     return
                 }
             }
@@ -509,6 +585,20 @@ class MqttSignalingEngine(
         val bodyBytes = body.toByteArray()
         val packet = ByteArrayOutputStream(bodyBytes.size + 5)
         packet.write(0x82)
+        encodeRemainingLength(packet, bodyBytes.size)
+        packet.write(bodyBytes)
+        return packet.toByteArray()
+    }
+
+    private fun buildMqttUnsubscribePacket(packetId: Int, topic: String): ByteArray {
+        val body = ByteArrayOutputStream()
+        body.write((packetId ushr 8) and 0xFF)
+        body.write(packetId and 0xFF)
+        writeUtf8String(body, topic)
+
+        val bodyBytes = body.toByteArray()
+        val packet = ByteArrayOutputStream(bodyBytes.size + 5)
+        packet.write(0xA2) // UNSUBSCRIBE
         encodeRemainingLength(packet, bodyBytes.size)
         packet.write(bodyBytes)
         return packet.toByteArray()

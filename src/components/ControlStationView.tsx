@@ -8,6 +8,7 @@ import {
   Camera,
   CameraOff,
   Check,
+  Clock,
   Download,
   FlipHorizontal,
   Lock,
@@ -22,6 +23,7 @@ import {
   Smartphone,
   Trash2,
   Unplug,
+  UserCheck,
   Video,
   Volume2,
   VolumeX,
@@ -32,6 +34,7 @@ import { listPairedDevices, removePairedDevice } from '../services/deviceVault';
 import type { BrokerHealth } from '../services/signalingService';
 import { SentinelWebRtcController } from '../services/webrtcController';
 import type {
+  ActiveAccessGrant,
   AuthErrMsg,
   CameraFacingMode,
   DeviceTelemetry,
@@ -45,10 +48,26 @@ import { SecuritySasModal } from './SecuritySasModal';
 
 interface ControlStationViewProps {
   onBrokerHealthChange: (connected: boolean, brokers: BrokerHealth[]) => void;
+  initialCode?: string | null;
+}
+
+function formatCountdown(expiresAt: number | null, nowMs: number): string | null {
+  if (expiresAt === null) return null;
+  const diff = expiresAt - nowMs;
+  if (diff <= 0) return 'Expiré';
+  const totalSec = Math.floor(diff / 1000);
+  const d = Math.floor(totalSec / 86400);
+  const h = Math.floor((totalSec % 86400) / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (d > 0) return `${d}j ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${s.toString().padStart(2, '0')}s`;
 }
 
 export const ControlStationView: React.FC<ControlStationViewProps> = ({
   onBrokerHealthChange,
+  initialCode,
 }) => {
   const [codeChars, setCodeChars] = useState<string[]>(['', '', '', '', '', '']);
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
@@ -62,6 +81,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [authError, setAuthError] = useState<AuthErrMsg | null>(null);
   const [autoWakeOnConnect, setAutoWakeOnConnect] = useState(true);
   const [pushSentFeedback, setPushSentFeedback] = useState<string | null>(null);
+  const [accessGrant, setAccessGrant] = useState<ActiveAccessGrant | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const [sasInfo, setSasInfo] = useState<{
     deviceName: string;
@@ -80,6 +101,12 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const videoContainerRef = useRef<HTMLDivElement | null>(null);
   const controllerRef = useRef<SentinelWebRtcController | null>(null);
+  const autoConnectedInitialRef = useRef(false);
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
 
   useEffect(() => {
     const ctrl = new SentinelWebRtcController({
@@ -89,9 +116,19 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         setTelemetry(t);
         setCameraFacing(t.cameraFacing);
         setRemoteMicEnabled(t.micEnabled);
+        if (t.accessRole) {
+          setAccessGrant((prev) => ({
+            role: t.accessRole ?? prev?.role ?? 'owner',
+            name: t.accessName ?? prev?.name ?? 'Propriétaire',
+            expiresAt: t.accessExpiresAt !== undefined ? t.accessExpiresAt : (prev?.expiresAt ?? null),
+            allowAudio: t.allowAudio ?? prev?.allowAudio ?? true,
+            allowSwitchCamera: t.allowSwitchCamera ?? prev?.allowSwitchCamera ?? true,
+          }));
+        }
       },
       onAuthSuccess: (info) => {
         setAuthError(null);
+        setAccessGrant(info.accessGrant);
         setSasInfo({
           deviceName: info.deviceName,
           sasCode: info.sasCode,
@@ -101,6 +138,12 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       },
       onAuthError: (err) => {
         setAuthError(err);
+        if (err.reason === 'ACCESS_EXPIRED' || err.reason === 'ACCESS_REVOKED') {
+          setSasInfo(null);
+          setAccessGrant(null);
+          setTelemetry(null);
+          setStats(null);
+        }
       },
       onRemoteStream: (stream) => {
         if (videoRef.current) {
@@ -118,6 +161,17 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       ctrl.disconnect();
     };
   }, [onBrokerHealthChange]);
+
+  // Auto-fill and connect immediately if opened via shared Friend/Pass link (?code=XXXXXX)
+  useEffect(() => {
+    if (!initialCode || autoConnectedInitialRef.current) return;
+    const clean = normalizePairingCode(initialCode);
+    if (clean.length === 6) {
+      autoConnectedInitialRef.current = true;
+      setCodeChars(clean.split(''));
+      void controllerRef.current?.connectToPortal(clean, true);
+    }
+  }, [initialCode]);
 
   const fullCode = codeChars.join('');
 
@@ -151,7 +205,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         setPushSentFeedback('Push envoyé + Invitation partagée !');
         return;
       } catch {
-        // User cancelled share sheet; still copy link
+        // User cancelled share sheet
       }
     }
 
@@ -160,10 +214,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       setPushSentFeedback(
         pushed
           ? 'Push envoyé au téléphone + Lien d’invitation copié !'
-          : 'Lien d’ouverture directe copié dans le presse-papiers !'
+          : 'Lien d’ouverture directe copié !'
       );
     } catch {
-      setPushSentFeedback('Signal Push de réveil envoyé !');
+      setPushSentFeedback('Signal Push envoyé !');
     }
 
     window.setTimeout(() => setPushSentFeedback(null), 4000);
@@ -235,6 +289,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setTelemetry(null);
     setStats(null);
     setSasInfo(null);
+    setAccessGrant(null);
   };
 
   const handleForgetDevice = (code: string, e: React.MouseEvent) => {
@@ -244,7 +299,13 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   };
 
   const handleWakeCamera = async () => {
-    await controllerRef.current?.startCameraStream(cameraFacing, remoteMicEnabled, quality);
+    const allowedAudio = accessGrant ? accessGrant.allowAudio : true;
+    const allowedSwitch = accessGrant ? accessGrant.allowSwitchCamera : true;
+    await controllerRef.current?.startCameraStream(
+      allowedSwitch ? cameraFacing : 'front',
+      allowedAudio ? remoteMicEnabled : false,
+      quality
+    );
   };
 
   const handleSleepCamera = async () => {
@@ -252,6 +313,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   };
 
   const handleToggleFacing = async () => {
+    if (accessGrant && !accessGrant.allowSwitchCamera) return;
     const nextFacing: CameraFacingMode = cameraFacing === 'front' ? 'back' : 'front';
     setCameraFacing(nextFacing);
     setMirrorVideo(nextFacing === 'front');
@@ -261,6 +323,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   };
 
   const handleToggleRemoteMic = async () => {
+    if (accessGrant && !accessGrant.allowAudio) return;
     const next = !remoteMicEnabled;
     setRemoteMicEnabled(next);
     if (portalState === 'streaming') {
@@ -290,6 +353,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
   const isSessionOpen = Boolean(sasInfo) || portalState === 'standby' || portalState === 'streaming';
   const isStreaming = portalState === 'streaming';
+  const remainingLabel = accessGrant ? formatCountdown(accessGrant.expiresAt, nowMs) : null;
+  const canUseAudio = accessGrant ? accessGrant.allowAudio : true;
+  const canSwitchCam = accessGrant ? accessGrant.allowSwitchCamera : true;
 
   /* ==================== SCREEN 1: INSTANT 6-CHAR CODE ENTRY ==================== */
   if (!isSessionOpen) {
@@ -304,11 +370,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             Connexion Instantanée
           </h1>
           <p className="mt-1.5 text-center text-xs text-slate-400">
-            Saisissez le code à 6 caractères du smartphone : la liaison démarre à la milliseconde
-            où le code est complet.
+            Tapez un <strong>code principal</strong>, un <strong>code fixe temporaire</strong> ou
+            votre <strong>code profil ami</strong> (6 caractères) pour accéder à la caméra.
           </p>
 
-          {/* 6-character Code Slots */}
           <div className="mt-6 grid grid-cols-6 gap-2 sm:gap-2.5" onPaste={handlePaste}>
             {codeChars.map((ch, idx) => (
               <input
@@ -359,7 +424,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             )}
           </button>
 
-          {/* Push Invitation / Wake Action when phone app is closed */}
           {fullCode.length === 6 && (
             <div className="mt-3 space-y-2">
               <button
@@ -397,17 +461,22 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-rose-500/35 bg-rose-500/10 p-3.5 text-xs text-rose-200">
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
               <div>
-                <div className="font-bold">Connexion refusée</div>
+                <div className="font-bold">
+                  {authError.reason === 'ACCESS_EXPIRED'
+                    ? 'Pass temporaire expiré'
+                    : authError.reason === 'ACCESS_REVOKED'
+                    ? 'Accès suspendu ou révoqué'
+                    : 'Connexion refusée'}
+                </div>
                 <div className="mt-0.5 text-rose-300/90">{authError.message}</div>
               </div>
             </div>
           )}
 
-          {/* 1-Click Saved Smartphones */}
           {savedDevices.length > 0 && (
             <div className="mt-6 border-t border-slate-800/90 pt-5">
               <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Appareils mémorisés (Connexion en 1 clic)
+                Accès mémorisés (Connexion en 1 clic)
               </div>
               <div className="mt-2.5 space-y-2">
                 {savedDevices.map((dev) => (
@@ -421,11 +490,16 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                         {dev.pairingCode.slice(0, 2)}
                       </div>
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           <span className="text-sm font-bold text-white">{dev.deviceName}</span>
                           <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] font-bold text-emerald-300">
                             {dev.pairingCode}
                           </span>
+                          {dev.accessRole && dev.accessRole !== 'owner' && (
+                            <span className="rounded-full bg-cyan-500/15 px-2 py-0.5 text-[10px] font-bold text-cyan-300">
+                              {dev.accessRole === 'friend' ? 'Ami' : 'Pass'} : {dev.accessName}
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] text-slate-500">
                           Connexion instantanée • {dev.sasSymbols}
@@ -454,7 +528,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   return (
     <div className="mx-auto max-w-5xl space-y-4 px-4 py-5 sm:px-6">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 bg-obsidian-900/90 px-4 py-3 shadow-lg">
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           <div className="flex items-center gap-2">
             <span
               className={`h-2.5 w-2.5 rounded-full ${
@@ -472,6 +546,21 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               {fullCode}
             </span>
           </div>
+
+          {/* Access Role & Countdown Badge */}
+          {accessGrant && accessGrant.role !== 'owner' && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/35 bg-cyan-500/10 px-2.5 py-1 text-xs font-bold text-cyan-300">
+              {accessGrant.role === 'friend' ? (
+                <UserCheck className="h-3.5 w-3.5" />
+              ) : (
+                <Clock className="h-3.5 w-3.5" />
+              )}
+              <span>
+                {accessGrant.role === 'friend' ? 'Ami' : 'Pass'} : {accessGrant.name}
+                {remainingLabel ? ` • ${remainingLabel}` : ''}
+              </span>
+            </span>
+          )}
 
           {telemetry && (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-800 bg-obsidian-950 px-2.5 py-1 font-mono text-xs text-slate-200">
@@ -604,8 +693,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
           <button
             type="button"
+            disabled={!canSwitchCam}
             onClick={() => void handleToggleFacing()}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3.5 py-2.5 text-xs font-semibold text-slate-200 transition hover:border-slate-600 hover:text-white"
+            title={!canSwitchCam ? 'Changement de caméra restreint par ce pass' : undefined}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3.5 py-2.5 text-xs font-semibold text-slate-200 transition hover:border-slate-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             <RefreshCw className="h-3.5 w-3.5 text-cyan-400" />
             <span>{cameraFacing === 'front' ? 'Caméra Selfie' : 'Caméra Arrière'}</span>
@@ -613,14 +704,16 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
           <button
             type="button"
+            disabled={!canUseAudio}
             onClick={() => void handleToggleRemoteMic()}
-            className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-xs font-semibold transition ${
-              remoteMicEnabled
+            title={!canUseAudio ? 'Microphone non autorisé par ce pass' : undefined}
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              remoteMicEnabled && canUseAudio
                 ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
                 : 'border-slate-700 bg-obsidian-950 text-slate-300 hover:text-white'
             }`}
           >
-            {remoteMicEnabled ? (
+            {remoteMicEnabled && canUseAudio ? (
               <>
                 <Mic className="h-3.5 w-3.5 text-emerald-400" />
                 <span>Micro ON</span>
@@ -628,7 +721,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             ) : (
               <>
                 <MicOff className="h-3.5 w-3.5 text-slate-400" />
-                <span>Micro OFF</span>
+                <span>{canUseAudio ? 'Micro OFF' : 'Micro restreint'}</span>
               </>
             )}
           </button>

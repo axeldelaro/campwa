@@ -22,6 +22,7 @@ import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
 import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.storage.PortalPreferences
+import org.json.JSONObject
 
 @CapacitorPlugin(
     name = "SentinelNative",
@@ -131,7 +132,6 @@ class SentinelNativePlugin : Plugin() {
 
         CameraForegroundService.startFromUi(context)
 
-        // Prompt Doze exemption automatically if not yet exempted so background persistence never drops
         try {
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
             val pkg = context.packageName
@@ -181,6 +181,72 @@ class SentinelNativePlugin : Plugin() {
     fun setAutoStartOnBoot(call: PluginCall) {
         val enabled = call.getBoolean("enabled", true) ?: true
         prefs.autoStartOnBoot = enabled
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun upsertAccessProfile(call: PluginCall) {
+        try {
+            val id = call.getString("id")
+            val name = call.getString("name") ?: ""
+            val role = call.getString("role") ?: "guest"
+            val code = call.getString("code") ?: ""
+            val enabled = call.getBoolean("enabled", true) ?: true
+            val expiresAt: Long? = if (call.data.isNull("expiresAt")) {
+                null
+            } else {
+                call.data.optLong("expiresAt", -1L).takeIf { it > 0L }
+            }
+            val allowAudio = call.getBoolean("allowAudio", true) ?: true
+            val allowSwitchCamera = call.getBoolean("allowSwitchCamera", true) ?: true
+
+            prefs.upsertAccessProfile(
+                id = id,
+                name = name,
+                role = role,
+                rawCode = code,
+                enabled = enabled,
+                expiresAt = expiresAt,
+                allowAudio = allowAudio,
+                allowSwitchCamera = allowSwitchCamera
+            )
+            CameraForegroundService.syncAccessChannels(context)
+            call.resolve(buildPortalStateObject())
+        } catch (e: IllegalArgumentException) {
+            call.reject(e.message ?: "Paramètres invalides")
+        } catch (t: Throwable) {
+            call.reject(t.message ?: "Erreur enregistrement profil")
+        }
+    }
+
+    @PluginMethod
+    fun toggleAccessProfile(call: PluginCall) {
+        val id = call.getString("id")
+        val enabled = call.getBoolean("enabled", true) ?: true
+        if (id.isNullOrEmpty()) {
+            call.reject("Identifiant de profil manquant")
+            return
+        }
+        prefs.toggleAccessProfile(id, enabled)
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun deleteAccessProfile(call: PluginCall) {
+        val id = call.getString("id")
+        if (id.isNullOrEmpty()) {
+            call.reject("Identifiant de profil manquant")
+            return
+        }
+        prefs.deleteAccessProfile(id)
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun kickActiveViewer(call: PluginCall) {
+        CameraForegroundService.kickActiveViewer()
         call.resolve(buildPortalStateObject())
     }
 
@@ -250,6 +316,24 @@ class SentinelNativePlugin : Plugin() {
             )
         }
 
+        val profilesArray = JSArray()
+        for (p in prefs.getAccessProfiles()) {
+            profilesArray.put(
+                JSObject().apply {
+                    put("id", p.id)
+                    put("name", p.name)
+                    put("role", p.role)
+                    put("code", p.code)
+                    put("enabled", p.enabled)
+                    put("createdAt", p.createdAt)
+                    put("expiresAt", p.expiresAt ?: JSONObject.NULL)
+                    put("allowAudio", p.allowAudio)
+                    put("allowSwitchCamera", p.allowSwitchCamera)
+                    put("lastAccessAt", p.lastAccessAt ?: JSONObject.NULL)
+                }
+            )
+        }
+
         return JSObject().apply {
             put("onboardingCompleted", prefs.onboardingCompleted)
             put("serviceRunning", running)
@@ -272,6 +356,10 @@ class SentinelNativePlugin : Plugin() {
             put("lockoutRemainingMs", lockoutRem)
             put("permissions", buildPermissionStatusObject())
             put("logs", logsArray)
+            put("accessProfiles", profilesArray)
+            put("activeViewerName", CameraForegroundService.activeViewerName ?: JSONObject.NULL)
+            put("activeViewerRole", CameraForegroundService.activeViewerRole ?: JSONObject.NULL)
+            put("activeViewerExpiresAt", CameraForegroundService.activeViewerExpiresAt ?: JSONObject.NULL)
         }
     }
 }

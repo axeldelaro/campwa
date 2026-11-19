@@ -11,6 +11,7 @@ import {
   randomHex,
 } from '../crypto/cryptoEngine';
 import type {
+  ActiveAccessGrant,
   AuthErrMsg,
   CameraFacingMode,
   DerivedBootstrapKeys,
@@ -43,6 +44,7 @@ export interface ControllerCallbacks {
     deviceId: string;
     sasCode: string;
     sasSymbols: string;
+    accessGrant: ActiveAccessGrant;
   }) => void;
   onAuthError: (err: AuthErrMsg) => void;
   onRemoteStream: (stream: MediaStream | null) => void;
@@ -80,11 +82,6 @@ export class SentinelWebRtcController {
     this.callbacks = callbacks;
   }
 
-  /**
-   * 1-RTT Instant Connection:
-   * Subscribes on the pre-warmed WSS pool, waits for confirmed SUBACK (~35ms),
-   * and immediately sends HELLO_WAKE (optionally piggybacking camera startup in the same packet!).
-   */
   public async connectToPortal(rawCode: string, autoStartCamera = true): Promise<void> {
     this.disconnect();
 
@@ -103,7 +100,6 @@ export class SentinelWebRtcController {
     const keys = await deriveBootstrapKeys(code);
     this.bootstrapKeys = keys;
 
-    // Pre-allocate WebRTC PeerConnection immediately so 0ms is wasted when SDP_OFFER arrives!
     if (autoStartCamera) {
       this.activeSessionId = randomHex(10);
       this.pendingCandidates = [];
@@ -118,7 +114,6 @@ export class SentinelWebRtcController {
         void this.handleSignalMessage(msg, mode);
       },
       onSubscribedReady: () => {
-        // Guaranteed SUBACK confirmed! Send 1-RTT HELLO_WAKE immediately!
         void this.sendHelloWake();
       },
       onConnectionChange: (connected, brokers) => {
@@ -128,7 +123,6 @@ export class SentinelWebRtcController {
 
     this.signaling.start();
 
-    // Fast 1.8s retry until phone replies HELLO_ACK, plus lightweight keepalive once connected
     this.retryTimer = window.setInterval(() => {
       if (!this.signaling || !this.signaling.isSubscribedAndReady()) return;
 
@@ -182,10 +176,6 @@ export class SentinelWebRtcController {
     );
   }
 
-  /**
-   * Sends a serverless Push Wake Notification via ntfy.sh so even if the smartphone app
-   * is paused or closed in background, its push watchdog wakes/alerts the phone immediately.
-   */
   public async sendServerlessPushInvitation(rawCode?: string): Promise<boolean> {
     const code = normalizePairingCode(rawCode || this.pairingCode);
     if (code.length !== 6) return false;
@@ -269,6 +259,14 @@ export class SentinelWebRtcController {
       this.bootstrapKeys.bootstrapAuthRaw
     );
 
+    const accessGrant: ActiveAccessGrant = {
+      role: msg.accessRole ?? 'owner',
+      name: msg.accessName ?? 'Propriétaire',
+      expiresAt: msg.accessExpiresAt ?? null,
+      allowAudio: msg.allowAudio ?? true,
+      allowSwitchCamera: msg.allowSwitchCamera ?? true,
+    };
+
     this.authenticated = true;
 
     savePairedDevice({
@@ -278,6 +276,8 @@ export class SentinelWebRtcController {
       tokenId: this.tokenId,
       sasCode: localSas.sasCode,
       sasSymbols: localSas.sasSymbols,
+      accessRole: accessGrant.role,
+      accessName: accessGrant.name,
       pairedAt: findPairedDeviceByCode(this.pairingCode)?.pairedAt ?? Date.now(),
       lastConnectedAt: Date.now(),
     });
@@ -296,6 +296,11 @@ export class SentinelWebRtcController {
       cameraFacing: msg.cameraFacing,
       micEnabled: msg.micEnabled,
       uptimeSec: msg.uptimeSec,
+      accessRole: accessGrant.role,
+      accessName: accessGrant.name,
+      accessExpiresAt: accessGrant.expiresAt,
+      allowAudio: accessGrant.allowAudio,
+      allowSwitchCamera: accessGrant.allowSwitchCamera,
       updatedAt: Date.now(),
     });
 
@@ -304,6 +309,7 @@ export class SentinelWebRtcController {
       deviceId: msg.deviceId,
       sasCode: localSas.sasCode,
       sasSymbols: localSas.sasSymbols,
+      accessGrant,
     });
 
     if (!this.desiredStreaming && !this.pc) {
@@ -327,6 +333,11 @@ export class SentinelWebRtcController {
       cameraFacing: msg.cameraFacing,
       micEnabled: msg.micEnabled,
       uptimeSec: msg.uptimeSec,
+      accessRole: msg.accessRole,
+      accessName: msg.accessName,
+      accessExpiresAt: msg.accessExpiresAt,
+      allowAudio: msg.allowAudio,
+      allowSwitchCamera: msg.allowSwitchCamera,
       updatedAt: Date.now(),
     });
 
@@ -339,9 +350,27 @@ export class SentinelWebRtcController {
 
   private handleAuthErr(msg: AuthErrMsg): void {
     this.authenticated = false;
-    if (msg.reason === 'LOCKED_OUT') {
+    this.desiredStreaming = false;
+    this.closePeerConnectionOnly();
+
+    if (msg.reason === 'ACCESS_EXPIRED' || msg.reason === 'ACCESS_REVOKED') {
+      if (this.retryTimer !== null) {
+        window.clearInterval(this.retryTimer);
+        this.retryTimer = null;
+      }
+      if (this.streamRecoverTimer !== null) {
+        window.clearTimeout(this.streamRecoverTimer);
+        this.streamRecoverTimer = null;
+      }
+      if (this.signaling) {
+        this.signaling.destroy();
+        this.signaling = null;
+      }
+      this.callbacks.onStateChange('offline');
+    } else if (msg.reason === 'LOCKED_OUT') {
       this.callbacks.onStateChange('locked');
     }
+
     this.callbacks.onAuthError(msg);
   }
 
@@ -527,7 +556,6 @@ export class SentinelWebRtcController {
   private async handleSdpOffer(msg: SdpOfferMsg): Promise<void> {
     if (!this.signaling) return;
 
-    // Accept piggybacked SDP offer even if activeSessionId was adopted on the fly
     if (!this.pc || msg.sessionId !== this.activeSessionId) {
       this.closePeerConnectionOnly();
       this.activeSessionId = msg.sessionId;
@@ -599,6 +627,22 @@ export class SentinelWebRtcController {
   }
 
   private handleStreamState(msg: StreamStateMsg): void {
+    if (msg.state === 'expired' || msg.state === 'revoked') {
+      this.handleAuthErr({
+        type: 'AUTH_ERR',
+        reason: msg.state === 'expired' ? 'ACCESS_EXPIRED' : 'ACCESS_REVOKED',
+        message:
+          msg.error ||
+          (msg.state === 'expired'
+            ? 'La période d’accès de ce pass temporaire est expirée.'
+            : 'Cet accès a été suspendu ou révoqué par le propriétaire du téléphone.'),
+        lockoutRemainingMs: 0,
+        failedAttempts: 0,
+        ts: Date.now(),
+      });
+      return;
+    }
+
     if (msg.state === 'standby') {
       this.desiredStreaming = false;
       this.closePeerConnectionOnly();

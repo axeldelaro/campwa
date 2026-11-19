@@ -1,34 +1,91 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   BatteryCharging,
+  Camera,
   Check,
   CheckCircle2,
+  Clock,
   Copy,
+  Eye,
   KeyRound,
+  Mic,
   Play,
+  Plus,
   Power,
   Radio,
   RefreshCw,
+  Share2,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
+  Timer,
+  Trash2,
+  UserCheck,
+  Users,
   Wifi,
+  XCircle,
   Zap,
 } from 'lucide-react';
+import { generateSecurePairingCode, normalizePairingCode } from '../crypto/cryptoEngine';
 import { SentinelNative } from '../native/sentinelPlugin';
 import { BrowserEmitterEngine } from '../services/browserEmitterEngine';
-import type { NativePortalState } from '../types/sentinel';
+import type { AccessProfile, AccessProfileInput, NativePortalState } from '../types/sentinel';
 
 interface AndroidEmitterViewProps {
   isNativeAndroid: boolean;
 }
 
+type EmitterSectionTab = 'portal' | 'passes' | 'friends';
+
+const DURATION_PRESETS = [
+  { label: '15 min', ms: 15 * 60 * 1000 },
+  { label: '1 heure', ms: 60 * 60 * 1000 },
+  { label: '4 heures', ms: 4 * 60 * 60 * 1000 },
+  { label: '24 heures', ms: 24 * 60 * 60 * 1000 },
+  { label: '7 jours', ms: 7 * 24 * 60 * 60 * 1000 },
+] as const;
+
+const WEB_APP_PUBLIC_URL = 'https://axeldelaro.github.io/campwa/';
+
+function formatRemaining(expiresAt: number | null, nowMs: number): string {
+  if (expiresAt === null) return 'Permanent (serveur allumé)';
+  const diff = expiresAt - nowMs;
+  if (diff <= 0) return 'Expiré';
+  const totalSec = Math.floor(diff / 1000);
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  if (days > 0) return `Expire dans ${days}j ${hours}h`;
+  if (hours > 0) return `Expire dans ${hours}h ${mins}m`;
+  if (mins > 0) return `Expire dans ${mins}m ${secs}s`;
+  return `Expire dans ${secs}s`;
+}
+
 export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNativeAndroid }) => {
   const [portal, setPortal] = useState<NativePortalState | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [section, setSection] = useState<EmitterSectionTab>('portal');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  // Pass / Friend creation form state
+  const [formName, setFormName] = useState('');
+  const [formCode, setFormCode] = useState('');
+  const [durationPresetIdx, setDurationPresetIdx] = useState<number>(1); // Default 1h
+  const [useCustomExpiry, setUseCustomExpiry] = useState(false);
+  const [customExpiryLocal, setCustomExpiryLocal] = useState('');
+  const [friendHasExpiry, setFriendHasExpiry] = useState(false);
+  const [allowAudio, setAllowAudio] = useState(true);
+  const [allowSwitchCamera, setAllowSwitchCamera] = useState(true);
 
   const webEngineRef = useRef<BrowserEmitterEngine | null>(null);
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (isNativeAndroid) {
@@ -77,10 +134,6 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     }
   }, [isNativeAndroid]);
 
-  /**
-   * 1-Click Complete Setup: Requests permissions sequentially and immediately launches
-   * the persistent Android ForegroundService + Doze battery exemption dialog.
-   */
   const handleOneTapSetupAndStart = async () => {
     setBusy(true);
     try {
@@ -146,15 +199,168 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     }
   };
 
-  const handleCopyCode = async () => {
-    if (!portal) return;
+  const handleKickViewer = async () => {
+    setBusy(true);
     try {
-      await navigator.clipboard.writeText(portal.pairingCode);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
+      if (isNativeAndroid) {
+        const next = await SentinelNative.kickActiveViewer();
+        setPortal(next);
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.kickActiveViewer('revoked');
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCreateProfile = async (role: 'guest' | 'friend', e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+
+    const chosenCode = normalizePairingCode(formCode) || generateSecurePairingCode();
+    if (chosenCode.length !== 6) {
+      setFormError('Le code fixe doit comporter exactement 6 caractères (ex: PAUL01 ou SOIR24).');
+      return;
+    }
+
+    let expiresAt: number | null = null;
+    if (role === 'guest' || (role === 'friend' && friendHasExpiry)) {
+      if (useCustomExpiry && customExpiryLocal) {
+        const parsedTs = new Date(customExpiryLocal).getTime();
+        if (Number.isNaN(parsedTs) || parsedTs <= Date.now() + 60_000) {
+          setFormError('Veuillez choisir une date/heure d’expiration future.');
+          return;
+        }
+        expiresAt = parsedTs;
+      } else {
+        const preset = DURATION_PRESETS[durationPresetIdx] ?? DURATION_PRESETS[1];
+        expiresAt = Date.now() + preset.ms;
+      }
+    }
+
+    const input: AccessProfileInput = {
+      name: formName.trim() || (role === 'friend' ? 'Nouvel Ami' : 'Pass Temporaire'),
+      role,
+      code: chosenCode,
+      enabled: true,
+      expiresAt,
+      allowAudio,
+      allowSwitchCamera,
+    };
+
+    setBusy(true);
+    try {
+      if (isNativeAndroid) {
+        const next = await SentinelNative.upsertAccessProfile(input);
+        setPortal(next);
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.upsertAccessProfile(input);
+        setPortal(next);
+      }
+      setFormName('');
+      setFormCode('');
+      setUseCustomExpiry(false);
+      setCustomExpiryLocal('');
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Impossible d’enregistrer ce profil.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleProfile = async (prof: AccessProfile) => {
+    setBusy(true);
+    try {
+      if (isNativeAndroid) {
+        const next = await SentinelNative.toggleAccessProfile({
+          id: prof.id,
+          enabled: !prof.enabled,
+        });
+        setPortal(next);
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.toggleAccessProfile(prof.id, !prof.enabled);
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleExtendPass = async (prof: AccessProfile, addMs: number) => {
+    setBusy(true);
+    try {
+      const base = Math.max(Date.now(), prof.expiresAt ?? Date.now());
+      const updatedInput: AccessProfileInput = {
+        id: prof.id,
+        name: prof.name,
+        role: prof.role,
+        code: prof.code,
+        enabled: true,
+        expiresAt: base + addMs,
+        allowAudio: prof.allowAudio,
+        allowSwitchCamera: prof.allowSwitchCamera,
+      };
+      if (isNativeAndroid) {
+        const next = await SentinelNative.upsertAccessProfile(updatedInput);
+        setPortal(next);
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.upsertAccessProfile(updatedInput);
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteProfile = async (id: string) => {
+    setBusy(true);
+    try {
+      if (isNativeAndroid) {
+        const next = await SentinelNative.deleteAccessProfile({ id });
+        setPortal(next);
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.deleteAccessProfile(id);
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCopyText = async (text: string, tag: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(tag);
+      window.setTimeout(() => setCopiedId(null), 2000);
     } catch {
       // Ignore
     }
+  };
+
+  const handleShareAccess = async (prof: AccessProfile) => {
+    const baseUrl = isNativeAndroid
+      ? WEB_APP_PUBLIC_URL
+      : `${window.location.origin}${window.location.pathname}`;
+    const directUrl = `${baseUrl}?code=${prof.code}`;
+    const expiryLabel =
+      prof.expiresAt !== null
+        ? `Valide jusqu’au ${new Date(prof.expiresAt).toLocaleString('fr-FR')}`
+        : 'Accès ami autorisé dès que le serveur est actif';
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `Accès SentinelCam — ${prof.name}`,
+          text: `Code d’accès caméra (${prof.name}) : ${prof.code}\n${expiryLabel}`,
+          url: directUrl,
+        });
+        return;
+      } catch {
+        // Fallback to clipboard
+      }
+    }
+    await handleCopyText(directUrl, `share-${prof.id}`);
   };
 
   if (!portal) {
@@ -178,23 +384,23 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             Activer SentinelCam en Continu
           </h1>
           <p className="mt-2 text-xs leading-relaxed text-slate-300">
-            Une seule validation suffit : l’application maintiendra ensuite un pont chiffré
-            permanent en arrière-plan (même écran verrouillé ou application fermée), avec une
-            notification système transparente permettant de couper le portail à tout moment.
+            Une seule validation suffit : l’application maintiendra un pont chiffré en mode
+            éco-énergie (0% conso caméra en veille) avec gestion de codes temporaires et profils
+            amis.
           </p>
 
           <div className="mt-5 space-y-2 rounded-2xl border border-slate-800 bg-obsidian-950 p-4 text-left text-xs text-slate-300">
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-              <span>Accès Caméra & Microphone à distance</span>
+              <span>Accès Caméra & Microphone à la demande</span>
             </div>
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-              <span>Fonctionnement continu en tâche de fond (hors veille Doze)</span>
+              <span>Codes fixes temporaires & Profils Amis révocables en 1 clic</span>
             </div>
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-              <span>Reconnexion automatique Wi-Fi ↔ 4G/5G & après redémarrage</span>
+              <span>Éco-Veille en tâche de fond + reconnexion automatique</span>
             </div>
           </div>
 
@@ -221,165 +427,664 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     );
   }
 
-  /* ==================== PERSISTENT BACKGROUND PORTAL SCREEN ==================== */
+  const allProfiles = portal.accessProfiles ?? [];
+  const timedPasses = allProfiles.filter((p) => p.role === 'guest');
+  const friendProfiles = allProfiles.filter((p) => p.role === 'friend');
+
+  const renderProfileCard = (prof: AccessProfile) => {
+    const isExpired = prof.expiresAt !== null && prof.expiresAt <= nowMs;
+    const isActive = prof.enabled && !isExpired;
+
+    return (
+      <div
+        key={prof.id}
+        className={`rounded-2xl border p-4 transition ${
+          isActive
+            ? 'border-slate-800 bg-obsidian-950/90'
+            : 'border-slate-800/60 bg-obsidian-950/40 opacity-75'
+        }`}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="truncate text-sm font-bold text-white">{prof.name}</span>
+              <span className="rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 font-mono text-xs font-extrabold tracking-wider text-emerald-300">
+                {prof.code}
+              </span>
+              {isExpired ? (
+                <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+                  Expiré
+                </span>
+              ) : prof.enabled ? (
+                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                  Actif
+                </span>
+              ) : (
+                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+                  En pause
+                </span>
+              )}
+            </div>
+
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+              <span className="inline-flex items-center gap-1">
+                <Clock className="h-3 w-3 text-cyan-400" />
+                {formatRemaining(prof.expiresAt, nowMs)}
+              </span>
+              <span>• {prof.allowAudio ? 'Micro ON' : 'Vidéo seule'}</span>
+              <span>• {prof.allowSwitchCamera ? 'Avant/Arrière' : 'Selfie seule'}</span>
+            </div>
+
+            {prof.lastAccessAt && (
+              <div className="mt-1 text-[10px] text-slate-500">
+                Dernier accès : {new Date(prof.lastAccessAt).toLocaleString('fr-FR')}
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void handleToggleProfile(prof)}
+            className={`shrink-0 rounded-xl border px-2.5 py-1.5 text-[11px] font-bold transition ${
+              prof.enabled
+                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+                : 'border-slate-700 bg-obsidian-900 text-slate-400 hover:text-white'
+            }`}
+          >
+            {prof.enabled ? 'Suspendre' : 'Réactiver'}
+          </button>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-800/80 pt-3">
+          <button
+            type="button"
+            onClick={() => void handleCopyText(prof.code, `code-${prof.id}`)}
+            className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-obsidian-900 px-2.5 py-1.5 text-[11px] font-semibold text-slate-200 hover:border-emerald-500/50"
+          >
+            {copiedId === `code-${prof.id}` ? (
+              <>
+                <Check className="h-3 w-3 text-emerald-400" />
+                <span className="text-emerald-300">Code copié</span>
+              </>
+            ) : (
+              <>
+                <Copy className="h-3 w-3" />
+                <span>Code</span>
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleShareAccess(prof)}
+            className="inline-flex items-center gap-1 rounded-xl border border-cyan-500/35 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-300 hover:bg-cyan-500/20"
+          >
+            {copiedId === `share-${prof.id}` ? (
+              <>
+                <Check className="h-3 w-3" />
+                <span>Lien copié !</span>
+              </>
+            ) : (
+              <>
+                <Share2 className="h-3 w-3" />
+                <span>Lien direct</span>
+              </>
+            )}
+          </button>
+
+          {prof.role === 'guest' && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void handleExtendPass(prof, 60 * 60 * 1000)}
+              className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-obsidian-900 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:border-emerald-500/40 hover:text-emerald-300"
+            >
+              <Plus className="h-3 w-3" />
+              <span>+1h</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void handleDeleteProfile(prof.id)}
+            className="ml-auto inline-flex items-center gap-1 rounded-xl border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-rose-300 hover:bg-rose-500/20"
+            title="Supprimer définitivement cet accès"
+          >
+            <Trash2 className="h-3 w-3" />
+            <span>Révoquer</span>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  /* ==================== PERSISTENT PORTAL + ACCESS MANAGEMENT ==================== */
   return (
-    <div className="mx-auto max-w-lg px-4 py-6">
+    <div className="mx-auto max-w-xl px-4 py-6">
       {!isNativeAndroid && (
         <div className="mb-4 flex items-center gap-2.5 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-xs text-cyan-200">
           <Smartphone className="h-4 w-4 shrink-0 text-cyan-400" />
           <span>
-            <strong>Mode Test Navigateur</strong> — Installez l’APK Android pour le maintien
-            permanent écran éteint.
+            <strong>Mode Émetteur Web</strong> — Créez des codes temporaires ou profils amis ici ou
+            sur votre APK Android.
           </span>
         </div>
       )}
 
-      <div className="rounded-3xl border border-slate-800 bg-obsidian-900/95 p-6 shadow-2xl">
-        {/* Live Status Pill */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Radio
-              className={`h-5 w-5 ${
-                portal.portalState === 'streaming'
-                  ? 'text-rose-400 animate-pulse'
-                  : portal.serviceRunning
-                  ? 'text-emerald-400'
-                  : 'text-slate-500'
-              }`}
-            />
-            <span className="text-sm font-bold text-white">
-              {portal.portalState === 'streaming'
-                ? 'Caméra en direct'
-                : portal.serviceRunning
-                ? 'Actif en tâche de fond 24h/24'
-                : 'Portail en pause'}
-            </span>
-          </div>
-
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-mono text-[11px] font-semibold ${
-              portal.mqttConnected
-                ? 'bg-emerald-500/15 text-emerald-300'
-                : 'bg-amber-500/15 text-amber-300'
-            }`}
-          >
-            <Wifi className="h-3 w-3" />
-            {portal.mqttConnected ? 'Relais Connecté' : 'Reconnexion...'}
-          </span>
-        </div>
-
-        {/* 6-CHAR PAIRING CODE */}
-        <div className="mt-6 rounded-2xl border border-emerald-500/30 bg-obsidian-950 p-6 text-center shadow-inner">
-          <div className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-slate-400">
-            <KeyRound className="h-3.5 w-3.5 text-emerald-400" />
-            <span>Votre Code de Connexion</span>
-          </div>
-
-          <div className="mt-3 flex justify-center gap-2">
-            {portal.pairingCode.split('').map((c, idx) => (
-              <span
-                key={idx}
-                className="flex h-14 w-11 items-center justify-center rounded-xl border border-emerald-500/40 bg-obsidian-900 font-mono text-2xl font-extrabold text-emerald-300 shadow-lg sm:h-16 sm:w-12 sm:text-3xl"
-              >
-                {c}
-              </span>
-            ))}
-          </div>
-
-          <p className="mt-3 text-xs text-slate-400">
-            Entrez ce code sur le site web pour vous connecter à tout moment, même lorsque cet écran
-            est verrouillé ou que vous utilisez d’autres applications.
-          </p>
-
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
-            <button
-              type="button"
-              onClick={() => void handleCopyCode()}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-extrabold text-obsidian-950 transition hover:bg-emerald-400"
-            >
-              {copied ? (
-                <>
-                  <Check className="h-3.5 w-3.5" />
-                  <span>Copié !</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="h-3.5 w-3.5" />
-                  <span>Copier le code</span>
-                </>
+      {/* Active Viewer Live Alert Banner (shows WHO is currently watching!) */}
+      {portal.portalState === 'streaming' && portal.activeViewerName && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-500/45 bg-rose-500/15 px-4 py-3 shadow-lg">
+          <div className="flex items-center gap-2.5">
+            <Eye className="h-5 w-5 text-rose-400 animate-pulse" />
+            <div className="text-xs">
+              <div className="font-bold text-white">
+                Visionnage en direct : {portal.activeViewerName}{' '}
+                <span className="rounded bg-rose-500/30 px-1.5 py-0.5 text-[10px] uppercase text-rose-200">
+                  {portal.activeViewerRole === 'owner'
+                    ? 'Propriétaire'
+                    : portal.activeViewerRole === 'friend'
+                    ? 'Ami'
+                    : 'Pass Temporaire'}
+                </span>
+              </div>
+              {portal.activeViewerExpiresAt && (
+                <div className="text-[11px] text-rose-200/80">
+                  {formatRemaining(portal.activeViewerExpiresAt, nowMs)}
+                </div>
               )}
-            </button>
-
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void handleRegenerateCode()}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-900 px-3.5 py-2 text-xs font-semibold text-slate-300 transition hover:text-white"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              <span>Nouveau code</span>
-            </button>
+            </div>
           </div>
-        </div>
-
-        {/* Battery Optimization Reminder (if user skipped system dialog) */}
-        {isNativeAndroid && !portal.permissions.batteryOptimizationIgnored && (
-          <button
-            type="button"
-            onClick={() => void handleRequestBatteryDoze()}
-            className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs font-bold text-amber-300 transition hover:bg-amber-500/20"
-          >
-            <BatteryCharging className="h-4 w-4 shrink-0" />
-            <span>Autoriser l’arrière-plan illimité (anti-veille batterie)</span>
-          </button>
-        )}
-
-        {isNativeAndroid && !portal.permissions.camera && (
-          <button
-            type="button"
-            onClick={() => void handleOneTapSetupAndStart()}
-            className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs font-bold text-rose-300"
-          >
-            <ShieldAlert className="h-4 w-4 shrink-0" />
-            <span>Autoriser l’accès Caméra manquant</span>
-          </button>
-        )}
-
-        {/* Start / Pause Portal Button */}
-        <div className="mt-5">
           <button
             type="button"
             disabled={busy}
-            onClick={() => void handleToggleService()}
-            className={`flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-sm font-bold transition ${
-              portal.serviceRunning
-                ? 'border border-slate-700 bg-obsidian-950 text-slate-300 hover:border-rose-500/40 hover:text-rose-300'
-                : 'bg-emerald-500 text-obsidian-950 shadow-lg shadow-emerald-500/25 hover:bg-emerald-400'
-            }`}
+            onClick={() => void handleKickViewer()}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-rose-500 px-3 py-1.5 text-xs font-extrabold text-white transition hover:bg-rose-400"
           >
-            {portal.serviceRunning ? (
-              <>
-                <Power className="h-4 w-4" />
-                <span>Couper temporairement le portail</span>
-              </>
-            ) : (
-              <>
-                <Play className="h-4 w-4" />
-                <span>Relancer le portail continu</span>
-              </>
-            )}
+            <XCircle className="h-3.5 w-3.5" />
+            <span>Couper</span>
           </button>
         </div>
+      )}
 
-        {portal.sasCode && (
-          <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-800/80 bg-obsidian-950/60 px-3.5 py-2 text-[11px] text-slate-400">
-            <span>Sécurité E2EE active</span>
-            <span className="font-mono font-bold text-emerald-400">
-              SAS {portal.sasCode} {portal.sasSymbols}
+      {/* Navigation Tabs: Portail | Pass Temporaires | Profils Amis */}
+      <div className="mb-4 grid grid-cols-3 gap-1.5 rounded-2xl border border-slate-800 bg-obsidian-900/90 p-1.5">
+        <button
+          type="button"
+          onClick={() => {
+            setSection('portal');
+            setFormError(null);
+          }}
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-bold transition ${
+            section === 'portal'
+              ? 'bg-emerald-500 text-obsidian-950 shadow'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <Radio className="h-3.5 w-3.5" />
+          <span>Portail</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setSection('passes');
+            setFormError(null);
+          }}
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-bold transition ${
+            section === 'passes'
+              ? 'bg-emerald-500 text-obsidian-950 shadow'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <Timer className="h-3.5 w-3.5" />
+          <span>Pass ({timedPasses.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setSection('friends');
+            setFormError(null);
+          }}
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-bold transition ${
+            section === 'friends'
+              ? 'bg-emerald-500 text-obsidian-950 shadow'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <Users className="h-3.5 w-3.5" />
+          <span>Amis ({friendProfiles.length})</span>
+        </button>
+      </div>
+
+      {/* ==================== TAB 1: MASTER PORTAL ==================== */}
+      {section === 'portal' && (
+        <div className="rounded-3xl border border-slate-800 bg-obsidian-900/95 p-6 shadow-2xl">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Radio
+                className={`h-5 w-5 ${
+                  portal.portalState === 'streaming'
+                    ? 'text-rose-400 animate-pulse'
+                    : portal.serviceRunning
+                    ? 'text-emerald-400'
+                    : 'text-slate-500'
+                }`}
+              />
+              <span className="text-sm font-bold text-white">
+                {portal.portalState === 'streaming'
+                  ? 'Caméra en direct'
+                  : portal.serviceRunning
+                  ? 'Éco-Veille active 24h/24'
+                  : 'Serveur en pause'}
+              </span>
+            </div>
+
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-mono text-[11px] font-semibold ${
+                portal.mqttConnected
+                  ? 'bg-emerald-500/15 text-emerald-300'
+                  : 'bg-amber-500/15 text-amber-300'
+              }`}
+            >
+              <Wifi className="h-3 w-3" />
+              {portal.mqttConnected ? 'Relais Connecté' : 'En attente'}
             </span>
           </div>
-        )}
-      </div>
+
+          <div className="mt-5 rounded-2xl border border-emerald-500/30 bg-obsidian-950 p-6 text-center shadow-inner">
+            <div className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-slate-400">
+              <KeyRound className="h-3.5 w-3.5 text-emerald-400" />
+              <span>Code Principal (Propriétaire)</span>
+            </div>
+
+            <div className="mt-3 flex justify-center gap-2">
+              {portal.pairingCode.split('').map((c, idx) => (
+                <span
+                  key={idx}
+                  className="flex h-14 w-11 items-center justify-center rounded-xl border border-emerald-500/40 bg-obsidian-900 font-mono text-2xl font-extrabold text-emerald-300 shadow-lg sm:h-16 sm:w-12 sm:text-3xl"
+                >
+                  {c}
+                </span>
+              ))}
+            </div>
+
+            <p className="mt-3 text-xs text-slate-400">
+              Donne un contrôle total. Pour partager un accès limité dans le temps ou permanent à
+              un ami, utilisez les onglets{' '}
+              <strong className="text-emerald-300">Pass</strong> et{' '}
+              <strong className="text-cyan-300">Amis</strong> ci-dessus.
+            </p>
+
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => void handleCopyText(portal.pairingCode, 'master')}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-extrabold text-obsidian-950 transition hover:bg-emerald-400"
+              >
+                {copiedId === 'master' ? (
+                  <>
+                    <Check className="h-3.5 w-3.5" />
+                    <span>Copié !</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-3.5 w-3.5" />
+                    <span>Copier</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void handleRegenerateCode()}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-900 px-3.5 py-2 text-xs font-semibold text-slate-300 transition hover:text-white"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>Nouveau code</span>
+              </button>
+            </div>
+          </div>
+
+          {isNativeAndroid && !portal.permissions.batteryOptimizationIgnored && (
+            <button
+              type="button"
+              onClick={() => void handleRequestBatteryDoze()}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs font-bold text-amber-300 transition hover:bg-amber-500/20"
+            >
+              <BatteryCharging className="h-4 w-4 shrink-0" />
+              <span>Autoriser l’arrière-plan illimité (anti-veille batterie)</span>
+            </button>
+          )}
+
+          {isNativeAndroid && !portal.permissions.camera && (
+            <button
+              type="button"
+              onClick={() => void handleOneTapSetupAndStart()}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs font-bold text-rose-300"
+            >
+              <ShieldAlert className="h-4 w-4 shrink-0" />
+              <span>Autoriser l’accès Caméra manquant</span>
+            </button>
+          )}
+
+          <div className="mt-5">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void handleToggleService()}
+              className={`flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-sm font-bold transition ${
+                portal.serviceRunning
+                  ? 'border border-slate-700 bg-obsidian-950 text-slate-300 hover:border-rose-500/40 hover:text-rose-300'
+                  : 'bg-emerald-500 text-obsidian-950 shadow-lg shadow-emerald-500/25 hover:bg-emerald-400'
+              }`}
+            >
+              {portal.serviceRunning ? (
+                <>
+                  <Power className="h-4 w-4" />
+                  <span>Couper le serveur caméra</span>
+                </>
+              ) : (
+                <>
+                  <Play className="h-4 w-4" />
+                  <span>Allumer le serveur caméra</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== TAB 2: CUSTOM FIXED TIMED ACCESS CODES ==================== */}
+      {section === 'passes' && (
+        <div className="space-y-4">
+          <form
+            onSubmit={(e) => void handleCreateProfile('guest', e)}
+            className="rounded-3xl border border-slate-800 bg-obsidian-900/95 p-5 shadow-2xl"
+          >
+            <div className="flex items-center gap-2">
+              <Timer className="h-5 w-5 text-emerald-400" />
+              <h2 className="text-sm font-extrabold text-white">
+                Créer un Code Fixe Temporaire
+              </h2>
+            </div>
+            <p className="mt-1 text-xs text-slate-400">
+              Choisissez un code fixe personnalisé (6 caractères) valide uniquement pendant la
+              période définie. À la fin du compte à rebours, le flux se coupe automatiquement.
+            </p>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400">
+                  Nom du pass
+                </label>
+                <input
+                  type="text"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  placeholder="Ex: Baby-sitter, Visite, Soirée"
+                  className="mt-1 w-full rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-2.5 text-xs text-white placeholder-slate-600 focus:border-emerald-400 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400">
+                  Code fixe (6 caractères au choix)
+                </label>
+                <div className="mt-1 flex gap-1.5">
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={formCode}
+                    onChange={(e) => setFormCode(normalizePairingCode(e.target.value))}
+                    placeholder="EX: SOIR26"
+                    className="w-full rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-2.5 font-mono text-sm font-extrabold uppercase tracking-widest text-emerald-300 placeholder-slate-600 focus:border-emerald-400 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setFormCode(generateSecurePairingCode())}
+                    className="shrink-0 rounded-xl border border-slate-700 bg-obsidian-950 px-3 text-slate-300 hover:border-emerald-500/50 hover:text-emerald-300"
+                    title="Générer un code aléatoire"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Duration Presets */}
+            <div className="mt-4">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-semibold text-slate-400">
+                  Durée d’autorisation
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setUseCustomExpiry((v) => !v)}
+                  className="text-[11px] font-semibold text-cyan-400 hover:underline"
+                >
+                  {useCustomExpiry ? 'Utiliser une durée rapide' : 'Choisir une date/heure précise'}
+                </button>
+              </div>
+
+              {!useCustomExpiry ? (
+                <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
+                  {DURATION_PRESETS.map((preset, idx) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => setDurationPresetIdx(idx)}
+                      className={`rounded-xl border px-2 py-2 text-xs font-bold transition ${
+                        durationPresetIdx === idx
+                          ? 'border-emerald-400 bg-emerald-500/20 text-emerald-300'
+                          : 'border-slate-800 bg-obsidian-950 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <input
+                  type="datetime-local"
+                  value={customExpiryLocal}
+                  onChange={(e) => setCustomExpiryLocal(e.target.value)}
+                  className="mt-2 w-full rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-2.5 text-xs text-white focus:border-emerald-400 focus:outline-none"
+                />
+              )}
+            </div>
+
+            {/* Permissions */}
+            <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-300">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={allowAudio}
+                  onChange={(e) => setAllowAudio(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
+                />
+                <Mic className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Autoriser le micro</span>
+              </label>
+
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={allowSwitchCamera}
+                  onChange={(e) => setAllowSwitchCamera(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
+                />
+                <Camera className="h-3.5 w-3.5 text-cyan-400" />
+                <span>Autoriser caméra arrière</span>
+              </label>
+            </div>
+
+            {formError && (
+              <div className="mt-3 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                {formError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={busy}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-5 py-3 text-xs font-extrabold text-obsidian-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-400 disabled:opacity-50"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Activer ce Code Temporaire</span>
+            </button>
+          </form>
+
+          {/* Active Timed Passes List */}
+          <div className="space-y-2.5">
+            {timedPasses.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-800 bg-obsidian-900/50 p-6 text-center text-xs text-slate-500">
+                Aucun pass temporaire actif. Créez-en un ci-dessus pour partager votre caméra
+                pendant une période limitée.
+              </div>
+            ) : (
+              timedPasses.map(renderProfileCard)
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== TAB 3: FRIEND PROFILES ==================== */}
+      {section === 'friends' && (
+        <div className="space-y-4">
+          <form
+            onSubmit={(e) => void handleCreateProfile('friend', e)}
+            className="rounded-3xl border border-slate-800 bg-obsidian-900/95 p-5 shadow-2xl"
+          >
+            <div className="flex items-center gap-2">
+              <UserCheck className="h-5 w-5 text-cyan-400" />
+              <h2 className="text-sm font-extrabold text-white">
+                Ajouter un Profil Ami Autorisé
+              </h2>
+            </div>
+            <p className="mt-1 text-xs text-slate-400">
+              Un ami dispose de son propre code fixe personnel et peut accéder à la caméra à tout
+              moment dès que votre serveur SentinelCam est allumé. Vous pouvez le suspendre en 1
+              clic.
+            </p>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400">
+                  Prénom / Nom de l’ami
+                </label>
+                <input
+                  type="text"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  placeholder="Ex: Paul, Marie, Famille"
+                  className="mt-1 w-full rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-2.5 text-xs text-white placeholder-slate-600 focus:border-cyan-400 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400">
+                  Code personnel fixe (6 car.)
+                </label>
+                <div className="mt-1 flex gap-1.5">
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={formCode}
+                    onChange={(e) => setFormCode(normalizePairingCode(e.target.value))}
+                    placeholder="EX: PAUL01"
+                    className="w-full rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-2.5 font-mono text-sm font-extrabold uppercase tracking-widest text-cyan-300 placeholder-slate-600 focus:border-cyan-400 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setFormCode(generateSecurePairingCode())}
+                    className="shrink-0 rounded-xl border border-slate-700 bg-obsidian-950 px-3 text-slate-300 hover:border-cyan-400 hover:text-cyan-300"
+                    title="Générer un code aléatoire"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-300">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={allowAudio}
+                  onChange={(e) => setAllowAudio(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
+                />
+                <span>Autoriser le micro</span>
+              </label>
+
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={allowSwitchCamera}
+                  onChange={(e) => setAllowSwitchCamera(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
+                />
+                <span>Autoriser caméra arrière</span>
+              </label>
+
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={friendHasExpiry}
+                  onChange={(e) => setFriendHasExpiry(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-emerald-500"
+                />
+                <span>Limiter dans le temps (optionnel)</span>
+              </label>
+            </div>
+
+            {friendHasExpiry && (
+              <div className="mt-3">
+                <input
+                  type="datetime-local"
+                  value={customExpiryLocal}
+                  onChange={(e) => {
+                    setUseCustomExpiry(true);
+                    setCustomExpiryLocal(e.target.value);
+                  }}
+                  className="w-full rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-2 text-xs text-white focus:border-cyan-400 focus:outline-none"
+                />
+              </div>
+            )}
+
+            {formError && (
+              <div className="mt-3 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                {formError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={busy}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-400 to-emerald-400 px-5 py-3 text-xs font-extrabold text-obsidian-950 shadow-lg transition hover:brightness-110 disabled:opacity-50"
+            >
+              <UserCheck className="h-4 w-4" />
+              <span>Enregistrer ce Profil Ami</span>
+            </button>
+          </form>
+
+          {/* Friends List */}
+          <div className="space-y-2.5">
+            {friendProfiles.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-800 bg-obsidian-900/50 p-6 text-center text-xs text-slate-500">
+                Aucun profil ami ajouté. Ajoutez un proche ci-dessus pour qu’il puisse se connecter
+                avec son propre code dès que votre serveur est allumé.
+              </div>
+            ) : (
+              friendProfiles.map(renderProfileCard)
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

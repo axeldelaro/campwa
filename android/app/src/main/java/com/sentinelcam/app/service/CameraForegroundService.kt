@@ -27,6 +27,7 @@ import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.receiver.KeepAliveReceiver
 import com.sentinelcam.app.receiver.StopPortalReceiver
 import com.sentinelcam.app.signaling.MqttSignalingEngine
+import com.sentinelcam.app.signaling.SignalingChannelSpec
 import com.sentinelcam.app.storage.PortalPreferences
 import com.sentinelcam.app.webrtc.NativeWebRtcEngine
 import kotlinx.coroutines.CoroutineScope
@@ -37,6 +38,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 
 class CameraForegroundService : Service() {
@@ -47,18 +49,31 @@ class CameraForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
-    private var activeBootstrapKeys: BootstrapKeys? = null
+    private val channelKeysById = ConcurrentHashMap<String, BootstrapKeys>()
     private var signalingEngine: MqttSignalingEngine? = null
     private var webRtcEngine: NativeWebRtcEngine? = null
     private var startedAtMs: Long = System.currentTimeMillis()
-    private var activeSignalingCode: String = ""
     private var telemetryLoopStarted: Boolean = false
 
     @Volatile
     private var lastViewerSeenMs: Long = 0L
 
     @Volatile
+    private var activeStreamChannelId: String = OWNER_CHANNEL_ID
+
+    @Volatile
     private var cameraFgsPromoted: Boolean = false
+
+    private data class ResolvedGrant(
+        val allowed: Boolean,
+        val denyReason: String? = null,
+        val denyMessage: String? = null,
+        val role: String = "owner",
+        val name: String = "Propriétaire",
+        val expiresAt: Long? = null,
+        val allowAudio: Boolean = true,
+        val allowSwitchCamera: Boolean = true
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -83,24 +98,28 @@ class CameraForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        // Schedule lightweight watchdog (also polls push invitations if app later closes)
         PortalWatchdogJobService.scheduleWatchdog(this)
         KeepAliveReceiver.scheduleNextPulse(this)
 
         when (intent?.action) {
             ACTION_NUDGE_NETWORK -> {
-                ensureSignalingRunning(forceReload = false)
+                ensureSignalingRunning(forceRebuild = false)
                 signalingEngine?.nudgeReconnect()
                 return START_STICKY
             }
 
+            ACTION_SYNC_CHANNELS -> {
+                syncChannelsHot()
+                return START_STICKY
+            }
+
             ACTION_RESTART_SIGNALING -> {
-                ensureSignalingRunning(forceReload = true)
+                ensureSignalingRunning(forceRebuild = true)
                 return START_STICKY
             }
         }
 
-        ensureSignalingRunning(forceReload = false)
+        ensureSignalingRunning(forceRebuild = false)
         notifyStateListeners()
         return START_STICKY
     }
@@ -131,25 +150,21 @@ class CameraForegroundService : Service() {
         mqttConnected = false
         isStreaming = false
         cameraFgsPromoted = false
+        activeViewerName = null
+        activeViewerRole = null
+        activeViewerExpiresAt = null
         activeBrokerLabel = if (shouldRevive) "Reconnexion..." else "En pause"
 
         serviceScope.cancel()
 
         val sig = signalingEngine
         signalingEngine = null
-        try {
-            sig?.destroy()
-        } catch (_: Throwable) {
-        }
+        try { sig?.destroy() } catch (_: Throwable) {}
 
         val rtc = webRtcEngine
         webRtcEngine = null
-        try {
-            rtc?.shutdownEngine()
-        } catch (_: Throwable) {
-        }
+        try { rtc?.shutdownEngine() } catch (_: Throwable) {}
 
-        // Release CPU/WiFi locks immediately
         releaseStreamingLocks()
 
         try {
@@ -168,11 +183,6 @@ class CameraForegroundService : Service() {
         super.onDestroy()
     }
 
-    /**
-     * Eco-Battery Lock Management:
-     * WakeLock & Low-Latency WifiLock are ONLY acquired while actively streaming video!
-     * During idle standby, 0% CPU WakeLock is held so the smartphone sleeps deeply.
-     */
     private fun acquireStreamingLocks() {
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -182,7 +192,7 @@ class CameraForegroundService : Service() {
                     "SentinelCam::ActiveStreamWakeLock"
                 ).apply {
                     setReferenceCounted(false)
-                    acquire(4 * 60 * 60 * 1000L) // Max 4h safety cap
+                    acquire(4 * 60 * 60 * 1000L)
                 }
             }
         } catch (_: Throwable) {
@@ -227,7 +237,8 @@ class CameraForegroundService : Service() {
             context = this,
             onLocalOfferReady = { sessionId, sdp, fingerprint ->
                 signalingEngine?.send(
-                    JSONObject().apply {
+                    channelId = activeStreamChannelId,
+                    payload = JSONObject().apply {
                         put("type", "SDP_OFFER")
                         put("sessionId", sessionId)
                         put("sdp", sdp)
@@ -239,7 +250,8 @@ class CameraForegroundService : Service() {
             },
             onLocalIceCandidate = { sessionId, candidate ->
                 signalingEngine?.send(
-                    JSONObject().apply {
+                    channelId = activeStreamChannelId,
+                    payload = JSONObject().apply {
                         put("type", "ICE_CANDIDATE")
                         put("sessionId", sessionId)
                         put("candidate", candidate.sdp)
@@ -256,6 +268,9 @@ class CameraForegroundService : Service() {
                     acquireStreamingLocks()
                 } else {
                     releaseStreamingLocks()
+                    activeViewerName = null
+                    activeViewerRole = null
+                    activeViewerExpiresAt = null
                 }
                 currentFacing = webRtcEngine?.currentFacing ?: "front"
                 currentMic = webRtcEngine?.currentMicEnabled ?: false
@@ -265,7 +280,7 @@ class CameraForegroundService : Service() {
                 if (isRunning) {
                     serviceScope.launch(Dispatchers.Main) {
                         updateNotificationAndNotifyListeners()
-                        broadcastPresenceNow()
+                        broadcastPresenceNow(activeStreamChannelId)
                     }
                 }
             }
@@ -274,10 +289,26 @@ class CameraForegroundService : Service() {
         return rtc
     }
 
-    private fun ensureSignalingRunning(forceReload: Boolean) {
-        val currentCode = prefs.pairingCode
-        if (signalingEngine == null || forceReload || activeSignalingCode != currentCode) {
-            activeSignalingCode = currentCode
+    private fun buildAllChannelSpecs(): List<SignalingChannelSpec> {
+        val list = ArrayList<SignalingChannelSpec>()
+        val ownerKeys = CryptoProtocol.deriveBootstrapKeys(prefs.pairingCode)
+        list.add(SignalingChannelSpec(OWNER_CHANNEL_ID, ownerKeys))
+        channelKeysById.clear()
+        channelKeysById[OWNER_CHANNEL_ID] = ownerKeys
+
+        for (prof in prefs.getAccessProfiles()) {
+            try {
+                val keys = CryptoProtocol.deriveBootstrapKeys(prof.code)
+                list.add(SignalingChannelSpec(prof.id, keys))
+                channelKeysById[prof.id] = keys
+            } catch (_: Throwable) {
+            }
+        }
+        return list
+    }
+
+    private fun ensureSignalingRunning(forceRebuild: Boolean) {
+        if (signalingEngine == null || forceRebuild) {
             val prev = signalingEngine
             signalingEngine = null
             try { prev?.destroy() } catch (_: Throwable) {}
@@ -286,15 +317,14 @@ class CameraForegroundService : Service() {
 
             serviceScope.launch(Dispatchers.IO) {
                 try {
-                    val keys = CryptoProtocol.deriveBootstrapKeys(currentCode)
-                    activeBootstrapKeys = keys
+                    val specs = buildAllChannelSpecs()
+                    val ownerWakeTopic = specs.first().keys.wakePushTopic
                     val engine = MqttSignalingEngine(
                         context = applicationContext,
-                        topicId = keys.topicId,
-                        wakePushTopic = keys.wakePushTopic,
-                        bootstrapEncKey = keys.bootstrapEncKey,
-                        onMessageDecrypted = { json, _ ->
-                            handleDecryptedSignal(json)
+                        initialChannels = specs,
+                        primaryWakePushTopic = ownerWakeTopic,
+                        onMessageDecrypted = { channelId, json, _ ->
+                            handleDecryptedSignal(channelId, json)
                         },
                         onConnectionStateChanged = { connected, brokerLabel ->
                             mqttConnected = connected
@@ -308,39 +338,176 @@ class CameraForegroundService : Service() {
                 } catch (_: Throwable) {
                 }
             }
+        } else {
+            syncChannelsHot()
         }
 
         if (!telemetryLoopStarted) {
             telemetryLoopStarted = true
-            startEcoTelemetryLoop()
+            startEcoTelemetryAndExpiryLoop()
         }
     }
 
-    /**
-     * Eco-Telemetry Loop:
-     * Sends 0 bytes when nobody is watching! Only sends battery/network telemetry while
-     * a viewer is actively connected (`lastViewerSeenMs` within last 35s or streaming).
-     */
-    private fun startEcoTelemetryLoop() {
+    fun syncChannelsHot() {
+        val engine = signalingEngine
+        if (engine == null) {
+            ensureSignalingRunning(forceRebuild = false)
+            return
+        }
         serviceScope.launch(Dispatchers.IO) {
+            try {
+                val specs = buildAllChannelSpecs()
+                engine.syncChannels(specs)
+                enforceActiveViewerValidity()
+                notifyStateListeners()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun startEcoTelemetryAndExpiryLoop() {
+        serviceScope.launch(Dispatchers.IO) {
+            var tick = 0
             while (isActive) {
-                delay(6_000L)
+                delay(3_000L)
                 if (!isRunning) continue
-                val viewerActive = isStreaming || (System.currentTimeMillis() - lastViewerSeenMs) < 35_000L
-                if (viewerActive) {
-                    broadcastPresenceNow()
+                enforceActiveViewerValidity()
+                tick++
+                if (tick % 2 == 0) {
+                    val viewerActive = isStreaming || (System.currentTimeMillis() - lastViewerSeenMs) < 35_000L
+                    if (viewerActive) {
+                        broadcastPresenceNow(activeStreamChannelId)
+                    }
                 }
             }
         }
     }
 
-    fun sleepCameraInternal() {
+    private fun resolveGrant(channelId: String): ResolvedGrant {
+        if (channelId == OWNER_CHANNEL_ID) {
+            return ResolvedGrant(
+                allowed = true,
+                role = "owner",
+                name = "Propriétaire",
+                expiresAt = null,
+                allowAudio = true,
+                allowSwitchCamera = true
+            )
+        }
+
+        val prof = prefs.findAccessProfileById(channelId)
+            ?: return ResolvedGrant(
+                allowed = false,
+                denyReason = "ACCESS_REVOKED",
+                denyMessage = "Ce code d’accès a été supprimé par le propriétaire."
+            )
+
+        if (!prof.enabled) {
+            return ResolvedGrant(
+                allowed = false,
+                denyReason = "ACCESS_REVOKED",
+                denyMessage = "L’accès « ${prof.name} » a été suspendu par le propriétaire.",
+                role = prof.role,
+                name = prof.name,
+                expiresAt = prof.expiresAt
+            )
+        }
+
+        val exp = prof.expiresAt
+        if (exp != null && System.currentTimeMillis() > exp) {
+            return ResolvedGrant(
+                allowed = false,
+                denyReason = "ACCESS_EXPIRED",
+                denyMessage = "Le pass temporaire « ${prof.name} » est arrivé à expiration.",
+                role = prof.role,
+                name = prof.name,
+                expiresAt = exp
+            )
+        }
+
+        return ResolvedGrant(
+            allowed = true,
+            role = prof.role,
+            name = prof.name,
+            expiresAt = exp,
+            allowAudio = prof.allowAudio,
+            allowSwitchCamera = prof.allowSwitchCamera
+        )
+    }
+
+    private fun enforceActiveViewerValidity() {
+        if (!isStreaming || activeStreamChannelId == OWNER_CHANNEL_ID) return
+        val grant = resolveGrant(activeStreamChannelId)
+        if (!grant.allowed) {
+            val isExpired = grant.denyReason == "ACCESS_EXPIRED"
+            kickActiveViewerInternal(
+                reasonState = if (isExpired) "expired" else "revoked",
+                authReason = grant.denyReason ?: "ACCESS_REVOKED",
+                message = grant.denyMessage ?: "Accès terminé."
+            )
+        }
+    }
+
+    fun kickActiveViewerInternal(
+        reasonState: String = "revoked",
+        authReason: String = "ACCESS_REVOKED",
+        message: String = "Connexion coupée par le propriétaire du smartphone."
+    ) {
+        val targetCh = activeStreamChannelId
         val activeSession = webRtcEngine?.currentSessionId.orEmpty()
         webRtcEngine?.stopStream()
         releaseStreamingLocks()
+
         if (activeSession.isNotEmpty()) {
             signalingEngine?.send(
-                JSONObject().apply {
+                channelId = targetCh,
+                payload = JSONObject().apply {
+                    put("type", "STREAM_STATE")
+                    put("sessionId", activeSession)
+                    put("state", reasonState)
+                    put("cameraFacing", currentFacing)
+                    put("micEnabled", false)
+                    put("error", message)
+                    put("ts", System.currentTimeMillis())
+                },
+                mode = "sess"
+            )
+        }
+
+        signalingEngine?.send(
+            channelId = targetCh,
+            payload = JSONObject().apply {
+                put("type", "AUTH_ERR")
+                put("reason", authReason)
+                put("message", message)
+                put("lockoutRemainingMs", 0L)
+                put("failedAttempts", 0)
+                put("ts", System.currentTimeMillis())
+            },
+            mode = "boot"
+        )
+
+        activeViewerName = null
+        activeViewerRole = null
+        activeViewerExpiresAt = null
+        serviceScope.launch(Dispatchers.Main) {
+            updateNotificationAndNotifyListeners()
+        }
+    }
+
+    fun sleepCameraInternal() {
+        val targetCh = activeStreamChannelId
+        val activeSession = webRtcEngine?.currentSessionId.orEmpty()
+        webRtcEngine?.stopStream()
+        releaseStreamingLocks()
+        activeViewerName = null
+        activeViewerRole = null
+        activeViewerExpiresAt = null
+
+        if (activeSession.isNotEmpty()) {
+            signalingEngine?.send(
+                channelId = targetCh,
+                payload = JSONObject().apply {
                     put("type", "STREAM_STATE")
                     put("sessionId", activeSession)
                     put("state", "standby")
@@ -354,7 +521,8 @@ class CameraForegroundService : Service() {
         updateNotificationAndNotifyListeners()
     }
 
-    private fun buildPortalStatusJson(): JSONObject {
+    private fun buildPortalStatusJson(channelId: String): JSONObject {
+        val grant = resolveGrant(channelId)
         val bat = readBatteryInfo()
         val lockoutRem = (prefs.lockoutUntil - System.currentTimeMillis()).coerceAtLeast(0L)
         val stateStr = when {
@@ -378,73 +546,117 @@ class CameraForegroundService : Service() {
             put("cameraFacing", currentFacing)
             put("micEnabled", currentMic)
             put("uptimeSec", ((System.currentTimeMillis() - startedAtMs) / 1000L).coerceAtLeast(0L))
+            put("accessRole", grant.role)
+            put("accessName", grant.name)
+            put("accessExpiresAt", grant.expiresAt ?: JSONObject.NULL)
+            put("allowAudio", grant.allowAudio)
+            put("allowSwitchCamera", grant.allowSwitchCamera)
             put("ts", System.currentTimeMillis())
         }
     }
 
-    private fun broadcastPresenceNow() {
+    private fun broadcastPresenceNow(channelId: String) {
         try {
-            val status = buildPortalStatusJson()
-            signalingEngine?.send(status, mode = "boot", toPresence = true)
+            val status = buildPortalStatusJson(channelId)
+            signalingEngine?.send(channelId, status, mode = "boot", toPresence = true)
             webRtcEngine?.sendTelemetryOverDataChannel(status)
         } catch (_: Throwable) {
         }
     }
 
-    private fun handleDecryptedSignal(msg: JSONObject) {
+    private fun handleDecryptedSignal(channelId: String, msg: JSONObject) {
         if (!isRunning) return
+
+        val grant = resolveGrant(channelId)
+        if (!grant.allowed) {
+            signalingEngine?.send(
+                channelId = channelId,
+                payload = JSONObject().apply {
+                    put("type", "AUTH_ERR")
+                    put("reason", grant.denyReason ?: "ACCESS_REVOKED")
+                    put("message", grant.denyMessage ?: "Accès non autorisé.")
+                    put("lockoutRemainingMs", 0L)
+                    put("failedAttempts", 0)
+                    put("ts", System.currentTimeMillis())
+                },
+                mode = "boot"
+            )
+            return
+        }
+
         lastViewerSeenMs = System.currentTimeMillis()
 
         try {
             when (msg.optString("type")) {
-                "HELLO_WAKE" -> handleHelloWake(msg)
+                "HELLO_WAKE" -> handleHelloWake(channelId, grant, msg)
 
                 "PING_STATUS" -> {
-                    signalingEngine?.send(buildPortalStatusJson(), mode = "boot")
+                    signalingEngine?.send(channelId, buildPortalStatusJson(channelId), mode = "boot")
                 }
 
                 "CMD_START_STREAM" -> {
                     val sessionId = msg.optString("sessionId", "")
-                    val facing = msg.optString("cameraFacing", "front")
-                    val enableAudio = msg.optBoolean("enableAudio", false)
+                    val reqFacing = msg.optString("cameraFacing", "front")
+                    val reqAudio = msg.optBoolean("enableAudio", false)
                     val quality = msg.optString("quality", "hd")
                     if (sessionId.isNotEmpty()) {
+                        val effectiveFacing = if (grant.allowSwitchCamera) reqFacing else "front"
+                        val effectiveAudio = if (grant.allowAudio) reqAudio else false
+                        activeStreamChannelId = channelId
+                        activeViewerName = grant.name
+                        activeViewerRole = grant.role
+                        activeViewerExpiresAt = grant.expiresAt
+                        if (channelId != OWNER_CHANNEL_ID) {
+                            prefs.touchProfileLastAccess(channelId)
+                        }
                         acquireStreamingLocks()
-                        ensureWebRtcInitialized().startStream(sessionId, facing, enableAudio, quality)
+                        ensureWebRtcInitialized().startStream(sessionId, effectiveFacing, effectiveAudio, quality)
+                        serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
                     }
                 }
 
                 "CMD_STOP_STREAM" -> {
                     val sessionId = msg.optString("sessionId", "")
-                    webRtcEngine?.stopStream()
-                    releaseStreamingLocks()
-                    signalingEngine?.send(
-                        JSONObject().apply {
-                            put("type", "STREAM_STATE")
-                            put("sessionId", sessionId)
-                            put("state", "standby")
-                            put("cameraFacing", currentFacing)
-                            put("micEnabled", currentMic)
-                            put("ts", System.currentTimeMillis())
-                        },
-                        mode = "sess"
-                    )
+                    if (channelId == activeStreamChannelId || channelId == OWNER_CHANNEL_ID) {
+                        webRtcEngine?.stopStream()
+                        releaseStreamingLocks()
+                        activeViewerName = null
+                        activeViewerRole = null
+                        activeViewerExpiresAt = null
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "STREAM_STATE")
+                                put("sessionId", sessionId)
+                                put("state", "standby")
+                                put("cameraFacing", currentFacing)
+                                put("micEnabled", currentMic)
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                        serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
+                    }
                 }
 
                 "CMD_SWITCH_CAMERA" -> {
-                    val targetFacing = msg.optString("cameraFacing", "front")
-                    webRtcEngine?.switchCamera(targetFacing)
-                    currentFacing = targetFacing
-                    broadcastPresenceNow()
-                    notifyStateListeners()
+                    if (grant.allowSwitchCamera && (channelId == activeStreamChannelId || channelId == OWNER_CHANNEL_ID)) {
+                        val targetFacing = msg.optString("cameraFacing", "front")
+                        webRtcEngine?.switchCamera(targetFacing)
+                        currentFacing = targetFacing
+                        broadcastPresenceNow(channelId)
+                        notifyStateListeners()
+                    }
                 }
 
                 "CMD_TOGGLE_MIC" -> {
-                    val enableAudio = msg.optBoolean("enableAudio", false)
-                    webRtcEngine?.setMicrophoneEnabled(enableAudio)
-                    currentMic = enableAudio
-                    broadcastPresenceNow()
-                    notifyStateListeners()
+                    if (grant.allowAudio && (channelId == activeStreamChannelId || channelId == OWNER_CHANNEL_ID)) {
+                        val enableAudio = msg.optBoolean("enableAudio", false)
+                        webRtcEngine?.setMicrophoneEnabled(enableAudio)
+                        currentMic = enableAudio
+                        broadcastPresenceNow(channelId)
+                        notifyStateListeners()
+                    }
                 }
 
                 "SDP_ANSWER" -> {
@@ -469,16 +681,14 @@ class CameraForegroundService : Service() {
         }
     }
 
-    /**
-     * 1-RTT Instant Handshake + Optional Piggybacked Stream Startup (< 0.8s total connection!).
-     */
-    private fun handleHelloWake(msg: JSONObject) {
-        val keys = activeBootstrapKeys ?: return
+    private fun handleHelloWake(channelId: String, grant: ResolvedGrant, msg: JSONObject) {
+        val keys = channelKeysById[channelId] ?: return
         val now = System.currentTimeMillis()
         val lockoutRem = (prefs.lockoutUntil - now).coerceAtLeast(0L)
         if (lockoutRem > 0L) {
             signalingEngine?.send(
-                JSONObject().apply {
+                channelId = channelId,
+                payload = JSONObject().apply {
                     put("type", "AUTH_ERR")
                     put("reason", "LOCKED_OUT")
                     put("message", "Temporisation active (${(lockoutRem / 1000L) + 1}s).")
@@ -517,7 +727,7 @@ class CameraForegroundService : Service() {
             serverNonce = serverNonce,
             deviceId = prefs.deviceId
         )
-        signalingEngine?.registerSessionKey(clientNonce, sessionKey)
+        signalingEngine?.registerSessionKey(channelId, clientNonce, sessionKey)
 
         val serverProof = CryptoProtocol.computeHelloAckProof(
             bootstrapAuthRaw = keys.bootstrapAuthKey,
@@ -527,11 +737,15 @@ class CameraForegroundService : Service() {
         )
 
         val sas = CryptoProtocol.computeSas(
-            normalizedCode = prefs.pairingCode,
+            normalizedCode = keys.normalizedCode,
             tokenId = tokenId,
             deviceId = prefs.deviceId,
             bootstrapAuthRaw = keys.bootstrapAuthKey
         )
+
+        if (channelId != OWNER_CHANNEL_ID) {
+            prefs.touchProfileLastAccess(channelId)
+        }
 
         prefs.pairedTokenId = tokenId
         prefs.sasCode = sas.sasCode
@@ -541,7 +755,8 @@ class CameraForegroundService : Service() {
 
         val bat = readBatteryInfo()
         signalingEngine?.send(
-            JSONObject().apply {
+            channelId = channelId,
+            payload = JSONObject().apply {
                 put("type", "HELLO_ACK")
                 put("deviceId", prefs.deviceId)
                 put("deviceName", prefs.deviceName)
@@ -557,6 +772,11 @@ class CameraForegroundService : Service() {
                 put("cameraFacing", currentFacing)
                 put("micEnabled", currentMic)
                 put("uptimeSec", ((now - startedAtMs) / 1000L).coerceAtLeast(0L))
+                put("accessRole", grant.role)
+                put("accessName", grant.name)
+                put("accessExpiresAt", grant.expiresAt ?: JSONObject.NULL)
+                put("allowAudio", grant.allowAudio)
+                put("allowSwitchCamera", grant.allowSwitchCamera)
                 put("ts", now)
             },
             mode = "boot"
@@ -565,11 +785,19 @@ class CameraForegroundService : Service() {
         val autoStart = msg.optBoolean("autoStartStream", false)
         val sessionId = msg.optString("sessionId", "")
         if (autoStart && sessionId.isNotEmpty()) {
-            val facing = msg.optString("cameraFacing", "front")
-            val enableAudio = msg.optBoolean("enableAudio", false)
+            val reqFacing = msg.optString("cameraFacing", "front")
+            val reqAudio = msg.optBoolean("enableAudio", false)
             val quality = msg.optString("quality", "hd")
+            val effectiveFacing = if (grant.allowSwitchCamera) reqFacing else "front"
+            val effectiveAudio = if (grant.allowAudio) reqAudio else false
+
+            activeStreamChannelId = channelId
+            activeViewerName = grant.name
+            activeViewerRole = grant.role
+            activeViewerExpiresAt = grant.expiresAt
             acquireStreamingLocks()
-            ensureWebRtcInitialized().startStream(sessionId, facing, enableAudio, quality)
+            ensureWebRtcInitialized().startStream(sessionId, effectiveFacing, effectiveAudio, quality)
+            serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
         }
 
         notifyStateListeners()
@@ -604,7 +832,6 @@ class CameraForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // BroadcastReceiver PendingIntents (100% crash-free on Android 8-15!)
         val stopIntent = Intent(this, StopPortalReceiver::class.java).apply {
             action = StopPortalReceiver.ACTION_USER_STOP_PORTAL
         }
@@ -615,14 +842,22 @@ class CameraForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val title = if (isStreaming) {
+        val viewerLabel = activeViewerName
+        val title = if (isStreaming && viewerLabel != null) {
+            "Streaming en cours • $viewerLabel"
+        } else if (isStreaming) {
             "Streaming caméra en cours"
         } else {
             "SentinelCam actif (Éco-Veille)"
         }
 
+        val activeAccessCount = prefs.getAccessProfiles().count {
+            it.enabled && (it.expiresAt == null || it.expiresAt > System.currentTimeMillis())
+        }
         val subtitle = if (isStreaming) {
             "Flux direct actif (${if (currentFacing == "front") "Selfie" else "Arrière"})"
+        } else if (activeAccessCount > 0) {
+            "Code : ${prefs.pairingCode} • +$activeAccessCount accès ami/pass actif(s)"
         } else {
             "Code : ${prefs.pairingCode} • Capteur éteint (0% conso)"
         }
@@ -649,7 +884,7 @@ class CameraForegroundService : Service() {
             )
             builder.addAction(
                 android.R.drawable.ic_media_pause,
-                "Mettre en veille",
+                "Couper la vidéo",
                 sleepPi
             )
         }
@@ -766,10 +1001,12 @@ class CameraForegroundService : Service() {
     }
 
     companion object {
+        private const val OWNER_CHANNEL_ID = "owner"
         private const val CHANNEL_ID = "sentinelcam_portal_channel"
         private const val NOTIFICATION_ID = 4401
 
         const val ACTION_RESTART_SIGNALING = "com.sentinelcam.app.ACTION_RESTART_SIGNALING"
+        const val ACTION_SYNC_CHANNELS = "com.sentinelcam.app.ACTION_SYNC_CHANNELS"
         const val ACTION_NUDGE_NETWORK = "com.sentinelcam.app.ACTION_NUDGE_NETWORK"
         private const val EXTRA_FROM_UI = "extra_from_ui"
 
@@ -798,6 +1035,18 @@ class CameraForegroundService : Service() {
 
         @Volatile
         var currentMic: Boolean = false
+            private set
+
+        @Volatile
+        var activeViewerName: String? = null
+            private set
+
+        @Volatile
+        var activeViewerRole: String? = null
+            private set
+
+        @Volatile
+        var activeViewerExpiresAt: Long? = null
             private set
 
         private val listeners = CopyOnWriteArraySet<() -> Unit>()
@@ -859,6 +1108,22 @@ class CameraForegroundService : Service() {
             }
         }
 
+        fun syncAccessChannels(context: Context) {
+            try {
+                if (!isRunning) return
+                val running = instance
+                if (running != null) {
+                    running.syncChannelsHot()
+                } else {
+                    val intent = Intent(context.applicationContext, CameraForegroundService::class.java).apply {
+                        action = ACTION_SYNC_CHANNELS
+                    }
+                    context.applicationContext.startService(intent)
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
         fun reloadSignaling(context: Context) {
             try {
                 if (!isRunning) {
@@ -875,18 +1140,20 @@ class CameraForegroundService : Service() {
             }
         }
 
-        fun sleepCameraFromNotification(context: Context) {
+        fun kickActiveViewer() {
+            try {
+                instance?.kickActiveViewerInternal()
+            } catch (_: Throwable) {
+            }
+        }
+
+        fun sleepCameraFromNotification(@Suppress("UNUSED_PARAMETER") context: Context) {
             try {
                 instance?.sleepCameraInternal()
             } catch (_: Throwable) {
             }
         }
 
-        /**
-         * 100% Crash-Free Server Shutdown:
-         * Calls `stopService()` directly instead of sending a start Intent!
-         * Keeps Watchdog scheduled in Push-Invite listening mode so user can still receive wake invitations!
-         */
         fun stopPortal(context: Context) {
             try {
                 val appCtx = context.applicationContext
@@ -896,6 +1163,9 @@ class CameraForegroundService : Service() {
                 isRunning = false
                 isStreaming = false
                 mqttConnected = false
+                activeViewerName = null
+                activeViewerRole = null
+                activeViewerExpiresAt = null
                 activeBrokerLabel = "En pause"
 
                 appCtx.stopService(Intent(appCtx, CameraForegroundService::class.java))

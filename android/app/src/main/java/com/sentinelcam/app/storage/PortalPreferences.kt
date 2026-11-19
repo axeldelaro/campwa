@@ -13,6 +13,19 @@ data class AuditLogItem(
     val message: String
 )
 
+data class AccessProfileRecord(
+    val id: String,
+    val name: String,
+    val role: String, // "friend" or "guest"
+    val code: String, // 6-char fixed custom code
+    val enabled: Boolean,
+    val createdAt: Long,
+    val expiresAt: Long?, // null = permanent while enabled & server ON
+    val allowAudio: Boolean,
+    val allowSwitchCamera: Boolean,
+    val lastAccessAt: Long?
+)
+
 class PortalPreferences(context: Context) {
     private val safeContext: Context = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         context.applicationContext.createDeviceProtectedStorageContext()
@@ -105,73 +118,24 @@ class PortalPreferences(context: Context) {
             prefs.edit().putLong(KEY_LOCKOUT_UNTIL, value).commit()
         }
 
-    /**
-     * Multi-browser token registry keyed by tokenId -> pairedKeyHex (up to 10 authorized sessions).
-     * Ensures typing the valid 6-char code on PC, mobile, or a fresh browser always pairs cleanly,
-     * while regenerating the code revokes all tokens immediately.
-     */
-    fun getAuthorizedKeyForToken(tokenId: String): String? {
-        synchronized(LOCK) {
-            val mapJson = prefs.getString(KEY_TOKEN_MAP, null)
-            if (!mapJson.isNullOrEmpty()) {
-                try {
-                    val obj = JSONObject(mapJson)
-                    val found = obj.optString(tokenId, "")
-                    if (found.length == 64) return found
-                } catch (_: Throwable) {
-                }
-            }
-            if (pairedTokenId == tokenId && pairedKeyHex?.length == 64) {
-                return pairedKeyHex
-            }
-            return null
-        }
-    }
-
-    fun registerAuthorizedToken(tokenId: String, keyHex: String, sas: Pair<String, String>) {
-        synchronized(LOCK) {
-            val obj = try {
-                JSONObject(prefs.getString(KEY_TOKEN_MAP, "{}") ?: "{}")
-            } catch (_: Throwable) {
-                JSONObject()
-            }
-            obj.put(tokenId, keyHex)
-            // Keep max 10 tokens
-            val keys = obj.keys().asSequence().toList()
-            if (keys.size > 10) {
-                obj.remove(keys.first())
-            }
-            prefs.edit()
-                .putString(KEY_TOKEN_MAP, obj.toString())
-                .putString(KEY_PAIRED_TOKEN_ID, tokenId)
-                .putString(KEY_PAIRED_KEY_HEX, keyHex)
-                .putString(KEY_SAS_CODE, sas.first)
-                .putString(KEY_SAS_SYMBOLS, sas.second)
-                .putInt(KEY_FAILED_ATTEMPTS, 0)
-                .putLong(KEY_LOCKOUT_UNTIL, 0L)
-                .commit()
-        }
-    }
-
     fun hasAnyAuthorizedToken(): Boolean {
         synchronized(LOCK) {
-            if (!pairedKeyHex.isNullOrEmpty()) return true
-            val raw = prefs.getString(KEY_TOKEN_MAP, null) ?: return false
-            return try {
-                JSONObject(raw).length() > 0
-            } catch (_: Throwable) {
-                false
-            }
+            return !pairedTokenId.isNullOrEmpty() || !pairedKeyHex.isNullOrEmpty()
         }
     }
 
     fun regeneratePairingCode(): String {
         synchronized(LOCK) {
-            val nextCode = CryptoProtocol.generateSecurePairingCode()
+            val usedCodes = getAccessProfiles().map { it.code }.toSet()
+            var nextCode = CryptoProtocol.generateSecurePairingCode()
+            var tries = 0
+            while (usedCodes.contains(nextCode) && tries < 10) {
+                nextCode = CryptoProtocol.generateSecurePairingCode()
+                tries++
+            }
             prefs.edit()
                 .putString(KEY_PAIRING_CODE, nextCode)
                 .putString(KEY_DEVICE_SALT, CryptoProtocol.randomHex(32))
-                .remove(KEY_TOKEN_MAP)
                 .remove(KEY_PAIRED_TOKEN_ID)
                 .remove(KEY_PAIRED_KEY_HEX)
                 .remove(KEY_SAS_CODE)
@@ -179,7 +143,7 @@ class PortalPreferences(context: Context) {
                 .putInt(KEY_FAILED_ATTEMPTS, 0)
                 .putLong(KEY_LOCKOUT_UNTIL, 0L)
                 .commit()
-            appendLog("security", "Nouveau code généré [$nextCode] — jetons précédents révoqués.")
+            appendLog("security", "Nouveau code principal généré [$nextCode].")
             return nextCode
         }
     }
@@ -187,7 +151,6 @@ class PortalPreferences(context: Context) {
     fun resetPairingOnly() {
         synchronized(LOCK) {
             prefs.edit()
-                .remove(KEY_TOKEN_MAP)
                 .remove(KEY_PAIRED_TOKEN_ID)
                 .remove(KEY_PAIRED_KEY_HEX)
                 .remove(KEY_SAS_CODE)
@@ -195,8 +158,146 @@ class PortalPreferences(context: Context) {
                 .putInt(KEY_FAILED_ATTEMPTS, 0)
                 .putLong(KEY_LOCKOUT_UNTIL, 0L)
                 .commit()
-            appendLog("security", "Appairages réinitialisés.")
+            appendLog("security", "Sessions réinitialisées.")
         }
+    }
+
+    /* ==================== ACCESS PROFILES (FRIENDS & TIMED PASSES) ==================== */
+
+    fun getAccessProfiles(): List<AccessProfileRecord> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_ACCESS_PROFILES, null) ?: return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                val out = ArrayList<AccessProfileRecord>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val expVal = if (o.isNull("expiresAt")) null else o.optLong("expiresAt", -1L).takeIf { it > 0L }
+                    val lastVal = if (o.isNull("lastAccessAt")) null else o.optLong("lastAccessAt", -1L).takeIf { it > 0L }
+                    out.add(
+                        AccessProfileRecord(
+                            id = o.optString("id"),
+                            name = o.optString("name", "Accès"),
+                            role = if (o.optString("role") == "friend") "friend" else "guest",
+                            code = CryptoProtocol.normalizePairingCode(o.optString("code", "")),
+                            enabled = o.optBoolean("enabled", true),
+                            createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+                            expiresAt = expVal,
+                            allowAudio = o.optBoolean("allowAudio", true),
+                            allowSwitchCamera = o.optBoolean("allowSwitchCamera", true),
+                            lastAccessAt = lastVal
+                        )
+                    )
+                }
+                out.filter { it.id.isNotEmpty() && it.code.length == 6 }
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+    }
+
+    fun findAccessProfileById(id: String): AccessProfileRecord? {
+        return getAccessProfiles().firstOrNull { it.id == id }
+    }
+
+    fun upsertAccessProfile(
+        id: String?,
+        name: String,
+        role: String,
+        rawCode: String,
+        enabled: Boolean,
+        expiresAt: Long?,
+        allowAudio: Boolean,
+        allowSwitchCamera: Boolean
+    ): AccessProfileRecord {
+        synchronized(LOCK) {
+            val cleanCode = CryptoProtocol.normalizePairingCode(rawCode)
+            require(cleanCode.length == 6) {
+                "Le code fixe doit comporter exactement 6 caractères alphanumériques."
+            }
+            require(cleanCode != pairingCode) {
+                "Ce code est déjà utilisé comme code principal."
+            }
+
+            val current = getAccessProfiles().toMutableList()
+            val collision = current.firstOrNull { it.code == cleanCode && it.id != id }
+            require(collision == null) {
+                "Le code $cleanCode est déjà utilisé par « ${collision?.name} »."
+            }
+
+            val existing = if (!id.isNullOrEmpty()) current.firstOrNull { it.id == id } else null
+            val safeRole = if (role == "friend") "friend" else "guest"
+            val record = AccessProfileRecord(
+                id = existing?.id ?: "prof-${CryptoProtocol.randomHex(6)}",
+                name = name.trim().ifEmpty { if (safeRole == "friend") "Ami" else "Pass Temporaire" },
+                role = safeRole,
+                code = cleanCode,
+                enabled = enabled,
+                createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                expiresAt = expiresAt,
+                allowAudio = allowAudio,
+                allowSwitchCamera = allowSwitchCamera,
+                lastAccessAt = existing?.lastAccessAt
+            )
+
+            val updated = mutableListOf(record)
+            updated.addAll(current.filter { it.id != record.id })
+            saveAccessProfilesLocked(updated.take(20))
+            appendLog(
+                "security",
+                if (safeRole == "friend") "Profil ami enregistré : ${record.name} [${record.code}]"
+                else "Pass temporaire créé : ${record.name} [${record.code}]"
+            )
+            return record
+        }
+    }
+
+    fun toggleAccessProfile(id: String, enabled: Boolean) {
+        synchronized(LOCK) {
+            val updated = getAccessProfiles().map {
+                if (it.id == id) it.copy(enabled = enabled) else it
+            }
+            saveAccessProfilesLocked(updated)
+        }
+    }
+
+    fun deleteAccessProfile(id: String) {
+        synchronized(LOCK) {
+            val updated = getAccessProfiles().filter { it.id != id }
+            saveAccessProfilesLocked(updated)
+            appendLog("security", "Accès révoqué et supprimé.")
+        }
+    }
+
+    fun touchProfileLastAccess(id: String) {
+        synchronized(LOCK) {
+            val now = System.currentTimeMillis()
+            val updated = getAccessProfiles().map {
+                if (it.id == id) it.copy(lastAccessAt = now) else it
+            }
+            saveAccessProfilesLocked(updated)
+        }
+    }
+
+    private fun saveAccessProfilesLocked(list: List<AccessProfileRecord>) {
+        val arr = JSONArray()
+        for (p in list) {
+            arr.put(
+                JSONObject().apply {
+                    put("id", p.id)
+                    put("name", p.name)
+                    put("role", p.role)
+                    put("code", p.code)
+                    put("enabled", p.enabled)
+                    put("createdAt", p.createdAt)
+                    put("expiresAt", p.expiresAt ?: JSONObject.NULL)
+                    put("allowAudio", p.allowAudio)
+                    put("allowSwitchCamera", p.allowSwitchCamera)
+                    put("lastAccessAt", p.lastAccessAt ?: JSONObject.NULL)
+                }
+            )
+        }
+        prefs.edit().putString(KEY_ACCESS_PROFILES, arr.toString()).commit()
     }
 
     fun appendLog(level: String, message: String) {
@@ -253,7 +354,6 @@ class PortalPreferences(context: Context) {
         private const val KEY_PAIRING_CODE = "pairing_code"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_DEVICE_SALT = "device_salt"
-        private const val KEY_TOKEN_MAP = "authorized_token_map"
         private const val KEY_PAIRED_TOKEN_ID = "paired_token_id"
         private const val KEY_PAIRED_KEY_HEX = "paired_key_hex"
         private const val KEY_SAS_CODE = "sas_code"
@@ -261,5 +361,6 @@ class PortalPreferences(context: Context) {
         private const val KEY_FAILED_ATTEMPTS = "failed_attempts"
         private const val KEY_LOCKOUT_UNTIL = "lockout_until"
         private const val KEY_AUDIT_LOGS = "audit_logs"
+        private const val KEY_ACCESS_PROFILES = "access_profiles_v4"
     }
 }
