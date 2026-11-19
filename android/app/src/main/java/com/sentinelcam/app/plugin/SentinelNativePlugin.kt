@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.admin.DevicePolicyManager
+import android.app.role.RoleManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -27,8 +28,10 @@ import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
 import com.sentinelcam.app.control.ScreenTimeHelper
+import com.sentinelcam.app.control.SystemControlHelper
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.crypto.KeystoreVault
+import com.sentinelcam.app.data.CallLogHelper
 import com.sentinelcam.app.data.GalleryHelper
 import com.sentinelcam.app.receiver.SentinelDeviceAdminReceiver
 import com.sentinelcam.app.service.CameraForegroundService
@@ -75,6 +78,14 @@ import org.json.JSONObject
             strings = [
                 Manifest.permission.READ_SMS,
                 Manifest.permission.SEND_SMS
+            ]
+        ),
+        Permission(
+            alias = "callLog",
+            strings = [
+                Manifest.permission.READ_CALL_LOG,
+                Manifest.permission.READ_PHONE_STATE,
+                Manifest.permission.ANSWER_PHONE_CALLS
             ]
         ),
         Permission(
@@ -342,6 +353,65 @@ class SentinelNativePlugin : Plugin() {
         } catch (_: Throwable) {
             call.resolve(buildPortalStateObject())
         }
+    }
+
+    @PluginMethod
+    fun requestCallLogPermission(call: PluginCall) {
+        try {
+            grantTemporarySettingsGrace(90_000L)
+            requestPermissionForAlias("callLog", call, "callLogPermissionCallback")
+        } catch (_: Throwable) {
+            call.resolve(buildPortalStateObject())
+        }
+    }
+
+    @PermissionCallback
+    fun callLogPermissionCallback(call: PluginCall) {
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun requestCallScreeningRole(call: PluginCall) {
+        grantTemporarySettingsGrace(120_000L)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val rm = context.getSystemService(Context.ROLE_SERVICE) as? RoleManager
+                if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING) &&
+                    !rm.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)
+                ) {
+                    val intent = rm.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING)
+                    startActivityForResult(call, intent, "callScreeningRoleCallback")
+                    return
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        call.resolve(buildPortalStateObject())
+    }
+
+    @ActivityCallback
+    fun callScreeningRoleCallback(call: PluginCall?, @Suppress("UNUSED_PARAMETER") result: ActivityResult) {
+        CameraForegroundService.syncAccessChannels(context)
+        call?.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun requestWriteSettingsPermission(call: PluginCall) {
+        grantTemporarySettingsGrace(120_000L)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.System.canWrite(context)) {
+            try {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                    Uri.parse("package:${context.packageName}")
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Throwable) {
+            }
+        }
+        call.resolve(buildPortalStateObject())
     }
 
     @PluginMethod
@@ -949,6 +1019,9 @@ class SentinelNativePlugin : Plugin() {
             put("backgroundLocation", bgLocationGranted)
             put("sms", smsGranted)
             put("readSms", readSmsGranted)
+            put("callLog", CallLogHelper.hasCallLogPermission(context))
+            put("callScreening", CallLogHelper.hasCallScreeningRole(context))
+            put("writeSettings", SystemControlHelper.canWriteSystemSettings(context))
             put("gallery", GalleryHelper.hasGalleryPermission(context))
             put("storageManage", GalleryHelper.hasStorageManagePermission(context))
             put("usageAccess", ScreenTimeHelper.hasUsageAccess(context))

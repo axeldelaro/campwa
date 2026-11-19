@@ -186,6 +186,10 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
         { key: 'manage', label: 'Gestion photos (quarantaine)', ok: ph.storageManage },
         { key: 'readSms', label: 'Lecture SMS', ok: ph.readSms },
         { key: 'sendSms', label: 'Envoi SMS', ok: ph.sendSms },
+        ...(ph.callLog !== undefined ? [{ key: 'callLog', label: 'Journal d’appels', ok: ph.callLog }] : []),
+        ...(ph.callScreening !== undefined
+          ? [{ key: 'callScreen', label: 'Filtre d’appels', ok: ph.callScreening }]
+          : []),
       ]
     : screenTime
     ? [

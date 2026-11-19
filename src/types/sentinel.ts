@@ -183,6 +183,9 @@ export interface DevicePermissionsHealth {
   contacts: boolean;
   readSms: boolean;
   sendSms: boolean;
+  callLog?: boolean;
+  callScreening?: boolean;
+  writeSettings?: boolean;
   gallery: boolean;
   storageManage: boolean;
   usageAccess: boolean;
@@ -249,6 +252,8 @@ export interface DeviceTelemetry {
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
   gpsTodayPointsCount?: number;
+  offlineRecordingActive?: boolean;
+  offlineRecordingMode?: 'audio' | 'video';
   permissionsHealth?: DevicePermissionsHealth;
   updatedAt: number;
 }
@@ -358,6 +363,8 @@ export interface HelloAckMsg {
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
   gpsTodayPointsCount?: number;
+  offlineRecordingActive?: boolean;
+  offlineRecordingMode?: 'audio' | 'video';
   permissionsHealth?: DevicePermissionsHealth;
   ts: number;
 }
@@ -427,6 +434,8 @@ export interface PortalStatusMsg {
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
   gpsTodayPointsCount?: number;
+  offlineRecordingActive?: boolean;
+  offlineRecordingMode?: 'audio' | 'video';
   permissionsHealth?: DevicePermissionsHealth;
   ts: number;
 }
@@ -702,7 +711,12 @@ export interface DataControlResultMsg {
     | 'gallery_delete'
     | 'gallery_quarantine'
     | 'gallery_restore'
-    | 'gallery_delete_quarantine';
+    | 'gallery_delete_quarantine'
+    | 'call_block'
+    | 'recording_start'
+    | 'recording_stop'
+    | 'recording_delete'
+    | 'system_control';
   success: boolean;
   error?: string;
   ts: number;
@@ -1084,6 +1098,140 @@ export interface StreamStateMsg {
   ts: number;
 }
 
+export interface CallLogEntry {
+  id: string;
+  number: string;
+  contactName: string;
+  type: 'incoming' | 'outgoing' | 'missed' | 'rejected' | 'blocked';
+  date: number;
+  durationSec: number;
+  blocked: boolean;
+}
+
+export interface PhoneRuleEntry {
+  number: string;
+  label: string;
+  addedAt: number;
+}
+
+export interface CmdGetCallLogMsg {
+  type: 'CMD_GET_CALL_LOG';
+  requestId: string;
+  ts: number;
+}
+
+export interface DataCallLogMsg {
+  type: 'DATA_CALL_LOG';
+  requestId: string;
+  calls: CallLogEntry[];
+  blockedNumbers: PhoneRuleEntry[];
+  allowedNumbers: PhoneRuleEntry[];
+  blockUnknownCalls: boolean;
+  callWhitelistOnly: boolean;
+  hasCallLogPermission: boolean;
+  hasCallScreeningRole: boolean;
+  error?: string;
+  ts: number;
+}
+
+export interface CmdCallBlockRuleMsg {
+  type: 'CMD_CALL_BLOCK_RULE';
+  requestId: string;
+  action: 'add_block' | 'remove_block' | 'add_allow' | 'remove_allow' | 'set_flags';
+  number?: string;
+  label?: string;
+  blockUnknownCalls?: boolean;
+  callWhitelistOnly?: boolean;
+  ts: number;
+}
+
+export interface OfflineRecordingItem {
+  id: string;
+  mode: 'audio' | 'video';
+  mimeType: string;
+  startedAt: number;
+  durationSec: number;
+  sizeBytes: number;
+}
+
+export interface CmdRecordingActionMsg {
+  type: 'CMD_RECORDING_ACTION';
+  requestId: string;
+  action: 'list' | 'start' | 'stop' | 'delete' | 'get_file';
+  mode?: 'audio' | 'video';
+  durationMinutes?: number;
+  facing?: CameraFacingMode;
+  recordingId?: string;
+  ts: number;
+}
+
+export interface DataRecordingsMsg {
+  type: 'DATA_RECORDINGS';
+  requestId: string;
+  items: OfflineRecordingItem[];
+  isRecording: boolean;
+  activeMode: 'audio' | 'video';
+  activeStartedAt: number;
+  activeTargetEndAt: number;
+  error?: string;
+  ts: number;
+}
+
+export interface DataRecordingFileMsg {
+  type: 'DATA_RECORDING_FILE';
+  requestId: string;
+  recordingId: string;
+  mimeType: string;
+  chunkIndex: number;
+  totalChunks: number;
+  data: string;
+  error?: string;
+  ts: number;
+}
+
+export interface InstalledAppInventoryItem {
+  packageName: string;
+  appName: string;
+  versionName: string;
+  installedAt: number;
+  updatedAt: number;
+  isSystem: boolean;
+  sideloaded: boolean;
+  hasLauncher: boolean;
+}
+
+export interface CmdSystemControlMsg {
+  type: 'CMD_SYSTEM_CONTROL';
+  requestId: string;
+  action: 'get_status' | 'set_volume' | 'set_ringer' | 'set_brightness' | 'launch_app' | 'uninstall_app';
+  stream?: 'music' | 'ring' | 'alarm';
+  percent?: number;
+  mode?: 'normal' | 'vibrate' | 'silent';
+  packageName?: string;
+  ts: number;
+}
+
+export interface DataSystemStatusMsg {
+  type: 'DATA_SYSTEM_STATUS';
+  requestId: string;
+  volumeMusic: number;
+  volumeRing: number;
+  volumeAlarm: number;
+  ringerMode: 'normal' | 'vibrate' | 'silent';
+  brightnessPct: number;
+  canWriteSettings: boolean;
+  freeStorageMb: number;
+  totalStorageMb: number;
+  freeRamMb: number;
+  totalRamMb: number;
+  batteryTempC: number;
+  wifiSummary: string;
+  androidVersion: string;
+  model: string;
+  installedApps: InstalledAppInventoryItem[];
+  ts: number;
+}
+
 export type SignalMessage =
   | HelloWakeMsg
   | HelloAckMsg
@@ -1134,6 +1282,14 @@ export type SignalMessage =
   | CmdGetSmsMessagesMsg
   | DataSmsMessagesMsg
   | CmdFlashScreenMsg
+  | CmdGetCallLogMsg
+  | DataCallLogMsg
+  | CmdCallBlockRuleMsg
+  | CmdRecordingActionMsg
+  | DataRecordingsMsg
+  | DataRecordingFileMsg
+  | CmdSystemControlMsg
+  | DataSystemStatusMsg
   | CmdSetAiShieldMsg
   | CmdSetRemotePolicyMsg
   | CmdUnpairDecisionMsg
@@ -1161,6 +1317,9 @@ export interface NativePermissionStatus {
   backgroundLocation?: boolean;
   sms?: boolean;
   readSms?: boolean;
+  callLog?: boolean;
+  callScreening?: boolean;
+  writeSettings?: boolean;
   gallery?: boolean;
   storageManage?: boolean;
   usageAccess?: boolean;

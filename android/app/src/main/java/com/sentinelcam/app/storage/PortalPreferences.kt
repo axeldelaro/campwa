@@ -51,10 +51,16 @@ data class TimeExtensionRequest(
 data class SecurityEventItem(
     val id: String,
     val timestamp: Long,
-    val kind: String, // "intruder" | "sim" | "geofence" | "battery" | "bypass" | "request" | "admin"
+    val kind: String, // "intruder" | "sim" | "geofence" | "battery" | "bypass" | "request" | "admin" | "call" | "speed"
     val title: String,
     val detail: String,
     val photoBase64: String? = null
+)
+
+data class PhoneRuleEntry(
+    val number: String,
+    val label: String,
+    val addedAt: Long
 )
 
 data class AccessProfileRecord(
@@ -793,6 +799,106 @@ class PortalPreferences(context: Context) {
         }
     }
 
+    /* ==================== V23 CALL BLOCKING (BLACKLIST, UNKNOWN & WHITELIST) ==================== */
+
+    var blockUnknownCalls: Boolean
+        get() = prefs.getBoolean(KEY_BLOCK_UNKNOWN_CALLS, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_BLOCK_UNKNOWN_CALLS, value).commit()
+        }
+
+    var callWhitelistOnly: Boolean
+        get() = prefs.getBoolean(KEY_CALL_WHITELIST_ONLY, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_CALL_WHITELIST_ONLY, value).commit()
+        }
+
+    fun getBlockedNumbers(): List<PhoneRuleEntry> = readPhoneRuleList(KEY_BLOCKED_NUMBERS)
+
+    fun addBlockedNumber(number: String, label: String = "") {
+        val clean = number.trim().take(32)
+        if (clean.isEmpty()) return
+        synchronized(LOCK) {
+            val current = readPhoneRuleList(KEY_BLOCKED_NUMBERS)
+                .filterNot { it.number.equals(clean, ignoreCase = true) }
+                .toMutableList()
+            current.add(0, PhoneRuleEntry(clean, label.trim().take(40), System.currentTimeMillis()))
+            writePhoneRuleList(KEY_BLOCKED_NUMBERS, current.take(100))
+        }
+    }
+
+    fun removeBlockedNumber(number: String) {
+        val clean = number.trim()
+        synchronized(LOCK) {
+            val updated = readPhoneRuleList(KEY_BLOCKED_NUMBERS)
+                .filterNot { it.number.equals(clean, ignoreCase = true) }
+            writePhoneRuleList(KEY_BLOCKED_NUMBERS, updated)
+        }
+    }
+
+    fun getAllowedCallNumbers(): List<PhoneRuleEntry> = readPhoneRuleList(KEY_ALLOWED_CALL_NUMBERS)
+
+    fun addAllowedCallNumber(number: String, label: String = "") {
+        val clean = number.trim().take(32)
+        if (clean.isEmpty()) return
+        synchronized(LOCK) {
+            val current = readPhoneRuleList(KEY_ALLOWED_CALL_NUMBERS)
+                .filterNot { it.number.equals(clean, ignoreCase = true) }
+                .toMutableList()
+            current.add(0, PhoneRuleEntry(clean, label.trim().take(40), System.currentTimeMillis()))
+            writePhoneRuleList(KEY_ALLOWED_CALL_NUMBERS, current.take(100))
+        }
+    }
+
+    fun removeAllowedCallNumber(number: String) {
+        val clean = number.trim()
+        synchronized(LOCK) {
+            val updated = readPhoneRuleList(KEY_ALLOWED_CALL_NUMBERS)
+                .filterNot { it.number.equals(clean, ignoreCase = true) }
+            writePhoneRuleList(KEY_ALLOWED_CALL_NUMBERS, updated)
+        }
+    }
+
+    private fun readPhoneRuleList(key: String): List<PhoneRuleEntry> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(key, null) ?: return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                val out = ArrayList<PhoneRuleEntry>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val num = o.optString("number", "").trim()
+                    if (num.isNotEmpty()) {
+                        out.add(
+                            PhoneRuleEntry(
+                                number = num,
+                                label = o.optString("label", ""),
+                                addedAt = o.optLong("addedAt", 0L)
+                            )
+                        )
+                    }
+                }
+                out
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+    }
+
+    private fun writePhoneRuleList(key: String, list: List<PhoneRuleEntry>) {
+        val arr = JSONArray()
+        for (item in list) {
+            arr.put(
+                JSONObject().apply {
+                    put("number", item.number)
+                    put("label", item.label)
+                    put("addedAt", item.addedAt)
+                }
+            )
+        }
+        prefs.edit().putString(key, arr.toString()).commit()
+    }
+
     /* ==================== PARENTAL / ADMIN CODE-PROTECTED BACKGROUND MODE ==================== */
 
     var adminProtectionEnabled: Boolean
@@ -970,6 +1076,10 @@ class PortalPreferences(context: Context) {
                 .remove(KEY_GEOFENCES)
                 .remove(KEY_TIME_REQUESTS)
                 .remove(KEY_SECURITY_EVENTS)
+                .remove(KEY_BLOCKED_NUMBERS)
+                .remove(KEY_ALLOWED_CALL_NUMBERS)
+                .putBoolean(KEY_BLOCK_UNKNOWN_CALLS, false)
+                .putBoolean(KEY_CALL_WHITELIST_ONLY, false)
                 .putBoolean(KEY_AI_BLUR_FACES, false)
                 .putBoolean(KEY_AI_BLUR_NSFW, false)
                 .putBoolean(KEY_AI_NSFW_STRICT, false)
@@ -1253,6 +1363,10 @@ class PortalPreferences(context: Context) {
         private const val KEY_GEOFENCES = "geofences_v13"
         private const val KEY_TIME_REQUESTS = "time_requests_v13"
         private const val KEY_SECURITY_EVENTS = "security_events_v13"
+        private const val KEY_BLOCKED_NUMBERS = "blocked_numbers_v23"
+        private const val KEY_ALLOWED_CALL_NUMBERS = "allowed_call_numbers_v23"
+        private const val KEY_BLOCK_UNKNOWN_CALLS = "block_unknown_calls_v23"
+        private const val KEY_CALL_WHITELIST_ONLY = "call_whitelist_only_v23"
 
         private val DEFAULT_SCHOOL_PACKAGES = setOf(
             "com.android.calculator2",

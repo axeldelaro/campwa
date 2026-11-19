@@ -9,11 +9,13 @@ import {
   Lock,
   MapPin,
   MessageSquare,
+  Phone,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
   Sparkles,
+  Sun,
   Wifi,
 } from 'lucide-react';
 import { normalizePairingCode } from '../crypto/cryptoEngine';
@@ -263,6 +265,30 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       label: 'Paramètres de l’appli (si SMS bloqué : ⋮ → Paramètres restreints)',
       icon: ShieldAlert,
       action: () => runAction(() => SentinelNative.openAppPermissionsSettings()),
+    });
+  }
+  if (!p.callLog) {
+    missingOsSteps.push({
+      key: 'call-log',
+      label: 'Journal d’appels',
+      icon: Phone,
+      action: () => runAction(() => SentinelNative.requestCallLogPermission()),
+    });
+  }
+  if (!p.callScreening) {
+    missingOsSteps.push({
+      key: 'call-screening',
+      label: 'Filtre d’appels bloqués',
+      icon: ShieldAlert,
+      action: () => runAction(() => SentinelNative.requestCallScreeningRole()),
+    });
+  }
+  if (!p.writeSettings) {
+    missingOsSteps.push({
+      key: 'write-settings',
+      label: 'Luminosité & paramètres système',
+      icon: Sun,
+      action: () => runAction(() => SentinelNative.requestWriteSettingsPermission()),
     });
   }
 

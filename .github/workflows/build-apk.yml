@@ -130,17 +130,18 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v22.0.${{ github.run_number }}
-          name: "SentinelCam v22.0.${{ github.run_number }} (Révocation Totale à la Dissociation • Assistant Anti-Veille Constructeur • Contrôle Santé des Autorisations)"
+          tag_name: v23.0.${{ github.run_number }}
+          name: "SentinelCam v23.0.${{ github.run_number }} (Journal & Blocage d’Appels • Enregistrement Différé Hors-Ligne • Centre Système • Zones > 130 km/h sur Carte)"
           body: |
-            ### SentinelCam v22.0 (`v22.0.${{ github.run_number }}`)
+            ### SentinelCam v23.0 (`v23.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Disparition totale et irréversible des droits de l’adulte lors de la dissociation** : dès que le Parent délie l’appareil, SentinelCam coupe immédiatement tout flux/filtre/GPS, retire les droits administrateur Android, efface toutes les règles/quotas/horaires/PIN/accès à distance, **invalide définitivement l’ancien code d’accès et la clé famille** par rotation cryptographique, annule toutes les tâches d’arrière-plan et arrête complètement le service.
-            - **Assistant anti-veille intelligent selon la marque** *(Samsung, Xiaomi/Redmi/POCO, Oppo/Realme/OnePlus, Huawei/Honor, Vivo, Android)* : détecte automatiquement le constructeur du téléphone et ouvre en 1 clic le réglage exact (*Batterie non restreinte / Démarrage automatique*).
-            - **Contrôle santé complet des autorisations à distance** : dans l’onglet *Accueil* du site Parent, visualisez en temps réel les 12 autorisations clés du téléphone (Admin, Batterie, Temps d’écran, Superposition, Caméra, Micro, GPS, Galerie, Gestion photos, SMS).
-            - **Service complet peaufiné** : continuité 24 h/24 anti-fermeture, caméra auto-réparatrice, double liaison active, notifications 100 % préservées, messagerie SMS complète, quarantaine/suppression photos et superposition d’écran.
+            - **Journal d’appels complet & Blocage de numéros à distance** : consultez tous les appels (entrants, sortants, manqués, bloqués), bloquez n’importe quel numéro en 1 clic, bloquez les numéros masqués ou activez le mode « Contacts & liste blanche uniquement » (révoqué automatiquement si l’appareil est délié).
+            - **Enregistrement différé hors-ligne (Audio ambiant & Vidéo caméra)** : lancez un enregistrement (1 à 30 min) qui continue même si le site est fermé ou hors connexion, stocké dans un coffre chiffré invisible par l’enfant, lisible et téléchargeable à distance depuis *Médias → Enregistrements*.
+            - **Centre de commande matériel & système** : réglez en direct les volumes (Média, Sonnerie, Alarme), le mode sonnerie (Normal / Vibreur / Silencieux), la luminosité, et consultez l’inventaire complet des applis installées (détection des applis *Hors Play Store* / masquées, ouverture ou désinstallation à distance).
+            - **Carte GPS avec zones > 130 km/h de haute précision** : surlignage rouge exact des portions de trajet dépassant 130 km/h, badges de vitesse de pointe sur la carte, bandeau récapitulatif cliquable pour zoomer sur chaque zone, et alerte automatique dans le journal.
+            - **Inclut toute la fiabilité v20–v22** : révocation totale des droits parentaux à la dissociation, assistant anti-veille constructeur, contrôle santé des autorisations, caméra anti-coupure et notifications 100 % préservées.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

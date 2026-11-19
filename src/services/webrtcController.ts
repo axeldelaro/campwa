@@ -17,6 +17,7 @@ import type {
   ActiveAccessGrant,
   AuthErrMsg,
   CameraFacingMode,
+  DataCallLogMsg,
   DataContactsMsg,
   DataControlResultMsg,
   DataDeviceInfoMsg,
@@ -25,10 +26,13 @@ import type {
   DataLocationHistoryMsg,
   DataLocationMsg,
   DataQuarantineListMsg,
+  DataRecordingFileMsg,
+  DataRecordingsMsg,
   DataScreenTimeMsg,
   DataSmsMessagesMsg,
   DataSmsResultMsg,
   DataSmsThreadsMsg,
+  DataSystemStatusMsg,
   DerivedBootstrapKeys,
   DeviceTelemetry,
   GpsTrackingMode,
@@ -80,6 +84,16 @@ export interface ControllerCallbacks {
   onGalleryData?: (data: DataGalleryMsg) => void;
   onQuarantineListData?: (data: DataQuarantineListMsg) => void;
   onGalleryPhotoData?: (info: { mediaId: string; base64?: string; error?: string }) => void;
+  onCallLogData?: (data: DataCallLogMsg) => void;
+  onRecordingsData?: (data: DataRecordingsMsg) => void;
+  onRecordingFileProgress?: (info: { recordingId: string; received: number; total: number }) => void;
+  onRecordingFileData?: (info: {
+    recordingId: string;
+    mimeType: string;
+    base64?: string;
+    error?: string;
+  }) => void;
+  onSystemStatusData?: (data: DataSystemStatusMsg) => void;
   onStreamError?: (message: string) => void;
   onTalkieStateChange?: (active: boolean) => void;
   onTalkieLevel?: (level: number) => void;
@@ -136,6 +150,11 @@ export class SentinelWebRtcController {
   private photoReassembly = new Map<
     string,
     { mediaId: string; totalChunks: number; chunks: Map<number, string> }
+  >();
+
+  private recordingReassembly = new Map<
+    string,
+    { recordingId: string; mimeType: string; totalChunks: number; chunks: Map<number, string> }
   >();
 
   private statsTimer: number | null = null;
@@ -971,6 +990,75 @@ export class SentinelWebRtcController {
     }
   }
 
+  public async requestCallLog(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_CALL_LOG',
+        requestId: randomHex(8),
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async updateCallBlockRule(opts: {
+    action: 'add_block' | 'remove_block' | 'add_allow' | 'remove_allow' | 'set_flags';
+    number?: string;
+    label?: string;
+    blockUnknownCalls?: boolean;
+    callWhitelistOnly?: boolean;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_CALL_BLOCK_RULE',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async performRecordingAction(opts: {
+    action: 'list' | 'start' | 'stop' | 'delete' | 'get_file';
+    mode?: 'audio' | 'video';
+    durationMinutes?: number;
+    facing?: CameraFacingMode;
+    recordingId?: string;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_RECORDING_ACTION',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async sendSystemControl(opts: {
+    action: 'get_status' | 'set_volume' | 'set_ringer' | 'set_brightness' | 'launch_app' | 'uninstall_app';
+    stream?: 'music' | 'ring' | 'alarm';
+    percent?: number;
+    mode?: 'normal' | 'vibrate' | 'silent';
+    packageName?: string;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SYSTEM_CONTROL',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -1045,8 +1133,71 @@ export class SentinelWebRtcController {
         this.handleGalleryPhotoChunk(msg);
         break;
 
+      case 'DATA_CALL_LOG':
+        this.callbacks.onCallLogData?.(msg);
+        break;
+
+      case 'DATA_RECORDINGS':
+        this.callbacks.onRecordingsData?.(msg);
+        break;
+
+      case 'DATA_RECORDING_FILE':
+        this.handleRecordingFileChunk(msg);
+        break;
+
+      case 'DATA_SYSTEM_STATUS':
+        this.callbacks.onSystemStatusData?.(msg);
+        break;
+
       default:
         break;
+    }
+  }
+
+  private handleRecordingFileChunk(msg: DataRecordingFileMsg): void {
+    if (msg.error) {
+      this.callbacks.onRecordingFileData?.({
+        recordingId: msg.recordingId,
+        mimeType: msg.mimeType || 'audio/mp4',
+        error: msg.error,
+      });
+      return;
+    }
+    if (msg.totalChunks <= 1) {
+      this.callbacks.onRecordingFileData?.({
+        recordingId: msg.recordingId,
+        mimeType: msg.mimeType || 'audio/mp4',
+        base64: msg.data,
+      });
+      return;
+    }
+    let bucket = this.recordingReassembly.get(msg.requestId);
+    if (!bucket) {
+      bucket = {
+        recordingId: msg.recordingId,
+        mimeType: msg.mimeType || 'audio/mp4',
+        totalChunks: msg.totalChunks,
+        chunks: new Map<number, string>(),
+      };
+      this.recordingReassembly.set(msg.requestId, bucket);
+    }
+    bucket.chunks.set(msg.chunkIndex, msg.data);
+    this.callbacks.onRecordingFileProgress?.({
+      recordingId: bucket.recordingId,
+      received: bucket.chunks.size,
+      total: bucket.totalChunks,
+    });
+    if (bucket.chunks.size >= bucket.totalChunks) {
+      this.recordingReassembly.delete(msg.requestId);
+      let full = '';
+      for (let i = 0; i < bucket.totalChunks; i++) {
+        full += bucket.chunks.get(i) || '';
+      }
+      this.callbacks.onRecordingFileData?.({
+        recordingId: bucket.recordingId,
+        mimeType: bucket.mimeType,
+        base64: full,
+      });
     }
   }
 
@@ -1208,6 +1359,8 @@ export class SentinelWebRtcController {
       gpsTrackingMode: msg.gpsTrackingMode,
       gpsPointsCount: msg.gpsPointsCount,
       gpsTodayPointsCount: msg.gpsTodayPointsCount,
+      offlineRecordingActive: msg.offlineRecordingActive,
+      offlineRecordingMode: msg.offlineRecordingMode,
       permissionsHealth: msg.permissionsHealth,
       updatedAt: Date.now(),
     });
@@ -1290,6 +1443,8 @@ export class SentinelWebRtcController {
       gpsTrackingMode: msg.gpsTrackingMode,
       gpsPointsCount: msg.gpsPointsCount,
       gpsTodayPointsCount: msg.gpsTodayPointsCount,
+      offlineRecordingActive: msg.offlineRecordingActive,
+      offlineRecordingMode: msg.offlineRecordingMode,
       permissionsHealth: msg.permissionsHealth,
       updatedAt: Date.now(),
     });

@@ -24,6 +24,7 @@ import {
   MicOff,
   Monitor,
   Navigation,
+  Phone,
   Power,
   RefreshCw,
   Send,
@@ -58,13 +59,17 @@ import type {
   AppUsageEntry,
   AuthErrMsg,
   CameraFacingMode,
+  DataCallLogMsg,
+  DataRecordingsMsg,
   DataScreenTimeMsg,
+  DataSystemStatusMsg,
   DeviceTelemetry,
   GalleryAlbumItem,
   GalleryPhotoItem,
   GpsTrackPoint,
   LocationHistoryBundle,
   MediaSourceMode,
+  OfflineRecordingItem,
   PortalOperationalState,
   SharedContactItem,
   SharedDeviceInfoData,
@@ -74,11 +79,14 @@ import type {
   SnapshotItem,
   StreamQualityPreset,
 } from '../types/sentinel';
+import { CallsTab } from './CallsTab';
 import { GeofenceZonesCard, ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
 import { GalleryTab } from './GalleryTab';
 import { GpsTrailMap } from './GpsTrailMap';
 import { ParentFamilyHub } from './ParentFamilyHub';
+import { RecordingsTab } from './RecordingsTab';
 import { SmsMessagesTab } from './SmsMessagesTab';
+import { SystemCommandCard } from './SystemCommandCard';
 
 interface ControlStationViewProps {
   onBrokerHealthChange: (connected: boolean, brokers: BrokerHealth[]) => void;
@@ -110,7 +118,32 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [accessGrant, setAccessGrant] = useState<ActiveAccessGrant | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [viewerTab, setViewerTab] = useState<ViewerTab>('home');
-  const [mediaSubTab, setMediaSubTab] = useState<'photos' | 'live'>('photos');
+  const [messagesSubTab, setMessagesSubTab] = useState<'sms' | 'calls'>('sms');
+  const [mediaSubTab, setMediaSubTab] = useState<'photos' | 'live' | 'recordings'>('photos');
+
+  // Call Log & Number Blocker State
+  const [callLogData, setCallLogData] = useState<DataCallLogMsg | null>(null);
+  const [callLogLoading, setCallLogLoading] = useState(false);
+
+  // Offline Deferred Recordings State
+  const [recordingsData, setRecordingsData] = useState<DataRecordingsMsg | null>(null);
+  const [recordingsLoading, setRecordingsLoading] = useState(false);
+  const [recordingDownloadProgress, setRecordingDownloadProgress] = useState<{
+    recordingId: string;
+    received: number;
+    total: number;
+  } | null>(null);
+  const [activeRecordingMedia, setActiveRecordingMedia] = useState<{
+    item: OfflineRecordingItem;
+    mimeType: string;
+    base64?: string;
+    loading: boolean;
+    error?: string;
+  } | null>(null);
+
+  // Hardware & System Command Center State
+  const [systemStatus, setSystemStatus] = useState<DataSystemStatusMsg | null>(null);
+  const [systemStatusLoading, setSystemStatusLoading] = useState(false);
 
   // Add Child Pairing
   const [pairingActiveCode, setPairingActiveCode] = useState<string | null>(null);
@@ -396,6 +429,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             remote_policy: 'Autorisations mises à jour.',
             unpair_decision: res.error || 'Décision appliquée.',
             flash_screen: res.error || 'Affiché sur l’écran.',
+            call_block: res.error || 'Filtrage d’appels mis à jour.',
+            recording_start: res.error || 'Enregistrement démarré.',
+            recording_stop: res.error || 'Enregistrement sauvegardé.',
+            recording_delete: res.error || 'Enregistrement supprimé.',
+            system_control: res.error || 'Paramètre système mis à jour.',
           };
           setControlFeedback({ ok: true, text: labels[res.action] || 'Règle enregistrée.' });
         } else {
@@ -431,6 +469,34 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           if (!prev || prev.item.id !== info.mediaId) return prev;
           return { ...prev, loading: false, base64: info.base64, error: info.error };
         });
+      },
+      onCallLogData: (data) => {
+        setCallLogLoading(false);
+        setCallLogData(data);
+      },
+      onRecordingsData: (data) => {
+        setRecordingsLoading(false);
+        setRecordingsData(data);
+      },
+      onRecordingFileProgress: (prog) => {
+        setRecordingDownloadProgress(prog);
+      },
+      onRecordingFileData: (info) => {
+        setRecordingDownloadProgress(null);
+        setActiveRecordingMedia((prev) => {
+          if (!prev || prev.item.id !== info.recordingId) return prev;
+          return {
+            ...prev,
+            mimeType: info.mimeType || prev.mimeType,
+            loading: false,
+            base64: info.base64,
+            error: info.error,
+          };
+        });
+      },
+      onSystemStatusData: (data) => {
+        setSystemStatusLoading(false);
+        setSystemStatus(data);
       },
       onStreamError: (msg) => setStreamNotice(msg),
       onTalkieStateChange: (active) => {
@@ -491,10 +557,15 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setStreamNotice(null);
     setPushSentFeedback(null);
     setViewerTab('home');
+    setMessagesSubTab('sms');
     setMediaSubTab('photos');
     setSmsThreads([]);
     setActiveSmsThread(null);
     setSmsMessages([]);
+    setCallLogData(null);
+    setRecordingsData(null);
+    setActiveRecordingMedia(null);
+    setSystemStatus(null);
     setContacts([]);
     setGalleryItems([]);
     setQuarantineItems([]);
@@ -1280,37 +1351,122 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         />
       )}
 
-      {/* ==================== TAB 2: MESSAGES (NATIVE SMS APP VIEW) ==================== */}
+      {/* ==================== TAB 2: MESSAGES (SMS & JOURNAL D'APPELS / BLOCAGE) ==================== */}
       {viewerTab === 'messages' && (
-        <SmsMessagesTab
-          threads={smsThreads}
-          threadsLoading={smsThreadsLoading}
-          threadsError={smsThreadsError}
-          activeThread={activeSmsThread}
-          messages={smsMessages}
-          messagesLoading={smsMessagesLoading}
-          messagesError={smsMessagesError}
-          sending={smsSending}
-          sendFeedback={smsSendFeedback}
-          contacts={contacts}
-          contactsLoading={contactsLoading}
-          canSendSms={canUseSmsRelay}
-          onRefreshThreads={handleFetchSmsThreads}
-          onOpenThread={handleOpenSmsThread}
-          onCloseThread={() => setActiveSmsThread(null)}
-          onReply={handleReplySms}
-          onLoadContacts={async (q = '') => {
-            setContactsLoading(true);
-            await controllerRef.current?.requestContacts(q);
-            window.setTimeout(() => setContactsLoading(false), 8000);
-          }}
-        />
-      )}
-
-      {/* ==================== TAB 3: MÉDIAS (PHOTOS & QUARANTAINE + DIRECT) ==================== */}
-      {viewerTab === 'media' && (
         <div className="space-y-3.5">
           <div className="grid grid-cols-2 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
+            <button
+              type="button"
+              onClick={() => {
+                setMessagesSubTab('sms');
+                if (smsThreads.length === 0 && !smsThreadsLoading) {
+                  void handleFetchSmsThreads();
+                }
+              }}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+                messagesSubTab === 'sms'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              <span>Messages SMS</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMessagesSubTab('calls');
+                if (!callLogData && !callLogLoading) {
+                  setCallLogLoading(true);
+                  void controllerRef.current?.requestCallLog();
+                  window.setTimeout(() => setCallLogLoading(false), 10000);
+                }
+              }}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+                messagesSubTab === 'calls'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Phone className="h-3.5 w-3.5" />
+              <span>Appels & Blocage</span>
+            </button>
+          </div>
+
+          {messagesSubTab === 'sms' ? (
+            <SmsMessagesTab
+              threads={smsThreads}
+              threadsLoading={smsThreadsLoading}
+              threadsError={smsThreadsError}
+              activeThread={activeSmsThread}
+              messages={smsMessages}
+              messagesLoading={smsMessagesLoading}
+              messagesError={smsMessagesError}
+              sending={smsSending}
+              sendFeedback={smsSendFeedback}
+              contacts={contacts}
+              contactsLoading={contactsLoading}
+              canSendSms={canUseSmsRelay}
+              onRefreshThreads={handleFetchSmsThreads}
+              onOpenThread={handleOpenSmsThread}
+              onCloseThread={() => setActiveSmsThread(null)}
+              onReply={handleReplySms}
+              onLoadContacts={async (q = '') => {
+                setContactsLoading(true);
+                await controllerRef.current?.requestContacts(q);
+                window.setTimeout(() => setContactsLoading(false), 8000);
+              }}
+            />
+          ) : (
+            <CallsTab
+              data={callLogData}
+              loading={callLogLoading}
+              onRefresh={async () => {
+                setCallLogLoading(true);
+                await controllerRef.current?.requestCallLog();
+                window.setTimeout(() => setCallLogLoading(false), 10000);
+              }}
+              onAddBlock={async (number, label) => {
+                await controllerRef.current?.updateCallBlockRule({
+                  action: 'add_block',
+                  number,
+                  label,
+                });
+              }}
+              onRemoveBlock={async (number) => {
+                await controllerRef.current?.updateCallBlockRule({
+                  action: 'remove_block',
+                  number,
+                });
+              }}
+              onAddAllow={async (number, label) => {
+                await controllerRef.current?.updateCallBlockRule({
+                  action: 'add_allow',
+                  number,
+                  label,
+                });
+              }}
+              onRemoveAllow={async (number) => {
+                await controllerRef.current?.updateCallBlockRule({
+                  action: 'remove_allow',
+                  number,
+                });
+              }}
+              onSetFlags={async (opts) => {
+                await controllerRef.current?.updateCallBlockRule({
+                  action: 'set_flags',
+                  ...opts,
+                });
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* ==================== TAB 3: MÉDIAS (PHOTOS + DIRECT + ENREGISTREMENTS DIFFÉRÉS) ==================== */}
+      {viewerTab === 'media' && (
+        <div className="space-y-3.5">
+          <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
             <button
               type="button"
               onClick={() => {
@@ -1319,28 +1475,100 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   void handleFetchGallery(0, '');
                 }
               }}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
                 mediaSubTab === 'photos'
                   ? 'bg-white text-zinc-950'
                   : 'text-zinc-400 hover:text-white'
               }`}
             >
-              <ImageIcon className="h-3.5 w-3.5" />
-              <span>Photos & Quarantaine</span>
+              <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Photos</span>
             </button>
             <button
               type="button"
               onClick={() => setMediaSubTab('live')}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
                 mediaSubTab === 'live'
                   ? 'bg-white text-zinc-950'
                   : 'text-zinc-400 hover:text-white'
               }`}
             >
-              <Video className="h-3.5 w-3.5" />
-              <span>Caméra & Audio</span>
+              <Video className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Direct</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMediaSubTab('recordings');
+                if (!recordingsData && !recordingsLoading) {
+                  setRecordingsLoading(true);
+                  void controllerRef.current?.performRecordingAction({ action: 'list' });
+                  window.setTimeout(() => setRecordingsLoading(false), 10000);
+                }
+              }}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+                mediaSubTab === 'recordings'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Circle
+                className={`h-3 w-3 shrink-0 ${
+                  telemetry?.offlineRecordingActive || recordingsData?.isRecording
+                    ? 'fill-rose-500 text-rose-500 animate-pulse'
+                    : ''
+                }`}
+              />
+              <span className="truncate">Différé</span>
             </button>
           </div>
+
+          {mediaSubTab === 'recordings' && (
+            <RecordingsTab
+              data={recordingsData}
+              loading={recordingsLoading}
+              downloadProgress={recordingDownloadProgress}
+              activeMedia={activeRecordingMedia}
+              onRefresh={async () => {
+                setRecordingsLoading(true);
+                await controllerRef.current?.performRecordingAction({ action: 'list' });
+                window.setTimeout(() => setRecordingsLoading(false), 10000);
+              }}
+              onStart={async (mode, durationMinutes, facing) => {
+                await controllerRef.current?.performRecordingAction({
+                  action: 'start',
+                  mode,
+                  durationMinutes,
+                  facing,
+                });
+              }}
+              onStop={async () => {
+                await controllerRef.current?.performRecordingAction({ action: 'stop' });
+              }}
+              onOpenFile={async (item) => {
+                setRecordingDownloadProgress(null);
+                setActiveRecordingMedia({
+                  item,
+                  mimeType: item.mimeType || (item.mode === 'video' ? 'video/mp4' : 'audio/mp4'),
+                  loading: true,
+                });
+                await controllerRef.current?.performRecordingAction({
+                  action: 'get_file',
+                  recordingId: item.id,
+                });
+              }}
+              onDelete={async (item) => {
+                await controllerRef.current?.performRecordingAction({
+                  action: 'delete',
+                  recordingId: item.id,
+                });
+              }}
+              onClosePlayer={() => {
+                setActiveRecordingMedia(null);
+                setRecordingDownloadProgress(null);
+              }}
+            />
+          )}
 
           {mediaSubTab === 'photos' && (
             <GalleryTab
@@ -1986,8 +2214,19 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                                   Arrêt {Math.round(pt.dwellSeconds / 60)}m
                                 </span>
                               )}
+                              {pt.speedKmh > 130 && pt.speedKmh < 320 && (
+                                <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-rose-300">
+                                  &gt; 130 km/h
+                                </span>
+                              )}
                             </div>
-                            <span className="shrink-0 font-mono text-[11px] text-zinc-400">
+                            <span
+                              className={`shrink-0 font-mono text-[11px] ${
+                                pt.speedKmh > 130 && pt.speedKmh < 320
+                                  ? 'font-semibold text-rose-300'
+                                  : 'text-zinc-400'
+                              }`}
+                            >
                               {pt.speedKmh.toFixed(0)} km/h · {pt.batteryLevel}%
                             </span>
                           </button>
@@ -2074,50 +2313,93 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       )}
 
-      {/* ==================== TAB 5: RÈGLES ==================== */}
+      {/* ==================== TAB 5: RÈGLES & SYSTÈME ==================== */}
       {viewerTab === 'rules' && (
-        <ParentalRulesTab
-          screenTime={screenTime}
-          screenTimeLoading={screenTimeLoading}
-          telemetry={telemetry}
-          nowMs={nowMs}
-          feedback={controlFeedback}
-          onDismissFeedback={() => setControlFeedback(null)}
-          onRefresh={handleFetchScreenTime}
-          onSetCurfew={async (opts) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteCurfew(opts);
-          }}
-          onSetSchoolMode={async (opts) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteSchoolMode(opts);
-          }}
-          onSetAntiBypass={async (enabled) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteAntiBypass(enabled);
-          }}
-          onSetLostMode={async (opts) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteLostMode(opts);
-          }}
-          onClearSecurityEvents={async () => {
-            setControlFeedback(null);
-            await controllerRef.current?.clearRemoteSecurityEvents();
-          }}
-          onSetAdminPin={async (pin) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteAdminPin(pin, true);
-          }}
-          onSetAiShield={async (opts) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteAiShield(opts);
-          }}
-          onSetRemotePolicy={async (opts) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemotePolicy(opts);
-          }}
-          onRespondUnpair={handleRespondUnpair}
-        />
+        <div className="space-y-3">
+          <ParentalRulesTab
+            screenTime={screenTime}
+            screenTimeLoading={screenTimeLoading}
+            telemetry={telemetry}
+            nowMs={nowMs}
+            feedback={controlFeedback}
+            onDismissFeedback={() => setControlFeedback(null)}
+            onRefresh={handleFetchScreenTime}
+            onSetCurfew={async (opts) => {
+              setControlFeedback(null);
+              await controllerRef.current?.setRemoteCurfew(opts);
+            }}
+            onSetSchoolMode={async (opts) => {
+              setControlFeedback(null);
+              await controllerRef.current?.setRemoteSchoolMode(opts);
+            }}
+            onSetAntiBypass={async (enabled) => {
+              setControlFeedback(null);
+              await controllerRef.current?.setRemoteAntiBypass(enabled);
+            }}
+            onSetLostMode={async (opts) => {
+              setControlFeedback(null);
+              await controllerRef.current?.setRemoteLostMode(opts);
+            }}
+            onClearSecurityEvents={async () => {
+              setControlFeedback(null);
+              await controllerRef.current?.clearRemoteSecurityEvents();
+            }}
+            onSetAdminPin={async (pin) => {
+              setControlFeedback(null);
+              await controllerRef.current?.setRemoteAdminPin(pin, true);
+            }}
+            onSetAiShield={async (opts) => {
+              setControlFeedback(null);
+              await controllerRef.current?.setRemoteAiShield(opts);
+            }}
+            onSetRemotePolicy={async (opts) => {
+              setControlFeedback(null);
+              await controllerRef.current?.setRemotePolicy(opts);
+            }}
+            onRespondUnpair={handleRespondUnpair}
+          />
+
+          <SystemCommandCard
+            data={systemStatus}
+            loading={systemStatusLoading}
+            onRefresh={async () => {
+              setSystemStatusLoading(true);
+              await controllerRef.current?.sendSystemControl({ action: 'get_status' });
+              window.setTimeout(() => setSystemStatusLoading(false), 10000);
+            }}
+            onSetVolume={async (stream, percent) => {
+              await controllerRef.current?.sendSystemControl({
+                action: 'set_volume',
+                stream,
+                percent,
+              });
+            }}
+            onSetRinger={async (mode) => {
+              await controllerRef.current?.sendSystemControl({
+                action: 'set_ringer',
+                mode,
+              });
+            }}
+            onSetBrightness={async (percent) => {
+              await controllerRef.current?.sendSystemControl({
+                action: 'set_brightness',
+                percent,
+              });
+            }}
+            onLaunchApp={async (packageName) => {
+              await controllerRef.current?.sendSystemControl({
+                action: 'launch_app',
+                packageName,
+              });
+            }}
+            onUninstallApp={async (packageName) => {
+              await controllerRef.current?.sendSystemControl({
+                action: 'uninstall_app',
+                packageName,
+              });
+            }}
+          />
+        </div>
       )}
     </div>
   );

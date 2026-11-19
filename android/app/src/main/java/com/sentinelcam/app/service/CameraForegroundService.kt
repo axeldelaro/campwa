@@ -28,9 +28,12 @@ import com.sentinelcam.app.ai.AiScreenShieldEngine
 import com.sentinelcam.app.control.AppLockMonitor
 import com.sentinelcam.app.control.DeviceSecurityMonitor
 import com.sentinelcam.app.control.FlashOverlayManager
+import com.sentinelcam.app.control.OfflineRecorderManager
 import com.sentinelcam.app.control.ScreenTimeHelper
+import com.sentinelcam.app.control.SystemControlHelper
 import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
+import com.sentinelcam.app.data.CallLogHelper
 import com.sentinelcam.app.data.DeviceActionHelper
 import com.sentinelcam.app.data.DeviceDataHelper
 import com.sentinelcam.app.data.GalleryHelper
@@ -103,6 +106,9 @@ class CameraForegroundService : Service() {
     @Volatile
     private var lastAppliedFgType: Int = -1
 
+    @Volatile
+    private var lastOverspeedAlertMs: Long = 0L
+
     private data class ResolvedGrant(
         val allowed: Boolean,
         val denyReason: String? = null,
@@ -134,7 +140,21 @@ class CameraForegroundService : Service() {
                 val latest = store.getLatestPoint()
                 if (latest != null) {
                     val geoEvents = DeviceSecurityMonitor.evaluateGeofences(latest.latitude, latest.longitude, prefs)
-                    if (geoEvents.isNotEmpty()) {
+                    val speedKmh = latest.speedMps * 3.6f
+                    val nowMs = System.currentTimeMillis()
+                    var speedAlerted = false
+                    if (speedKmh > 130f && speedKmh < 320f && latest.accuracyMeters <= 55f &&
+                        (nowMs - lastOverspeedAlertMs) > 600_000L
+                    ) {
+                        lastOverspeedAlertMs = nowMs
+                        speedAlerted = true
+                        prefs.appendSecurityEvent(
+                            kind = "speed",
+                            title = "Vitesse > 130 km/h (${speedKmh.toInt()} km/h)",
+                            detail = "Dépassement détecté sur le trajet GPS (${String.format(java.util.Locale.US, "%.4f, %.4f", latest.latitude, latest.longitude)})."
+                        )
+                    }
+                    if (geoEvents.isNotEmpty() || speedAlerted) {
                         broadcastPresenceNow(OWNER_CHANNEL_ID)
                         pushScreenTimeSnapshotToAllControlChannels()
                     }
@@ -224,6 +244,7 @@ class CameraForegroundService : Service() {
     override fun onDestroy() {
         instance = null
         FlashOverlayManager.dismissNow()
+        try { OfflineRecorderManager.stopRecording(applicationContext) } catch (_: Throwable) {}
         val shouldRevive = try {
             prefs.onboardingCompleted && !prefs.userManuallyStopped
         } catch (_: Throwable) {
@@ -893,6 +914,8 @@ class CameraForegroundService : Service() {
             put("gpsTrackingMode", prefs.gpsTrackingMode)
             put("gpsPointsCount", gpsPointsCount)
             put("gpsTodayPointsCount", gpsTodayPointsCount)
+            put("offlineRecordingActive", OfflineRecorderManager.isRecording)
+            put("offlineRecordingMode", OfflineRecorderManager.activeMode)
             put("permissionsHealth", buildPermissionsHealthJson())
             put("ts", System.currentTimeMillis())
         }
@@ -939,6 +962,9 @@ class CameraForegroundService : Service() {
             put("contacts", contacts)
             put("readSms", readSms)
             put("sendSms", sendSms)
+            put("callLog", CallLogHelper.hasCallLogPermission(ctx))
+            put("callScreening", CallLogHelper.hasCallScreeningRole(ctx))
+            put("writeSettings", SystemControlHelper.canWriteSystemSettings(ctx))
             put("gallery", gallery)
             put("storageManage", storageManage)
             put("usageAccess", usageAccess)
@@ -2198,13 +2224,14 @@ class CameraForegroundService : Service() {
                     if (!grant.allowDeviceControl) {
                         sendControlResult(channelId, reqId, "unpair_decision", false, "Contrôle non autorisé.")
                     } else if (approve) {
-                        // 1. Stop every active remote feature immediately (camera, AI shield, overlay, ring, torch, GPS)
+                        // 1. Stop every active remote feature immediately (camera, AI shield, overlay, ring, torch, GPS, offline recordings)
                         try { webRtcEngine?.stopStream() } catch (_: Throwable) {}
                         try { aiScreenShield?.stop() } catch (_: Throwable) {}
                         aiShieldActive = false
                         screenProjectionIntent = null
                         mediaProjectionFgsPromoted = false
                         try { FlashOverlayManager.dismissNow() } catch (_: Throwable) {}
+                        try { OfflineRecorderManager.wipeAllOnUnpair(applicationContext) } catch (_: Throwable) {}
                         try { DeviceActionHelper.releaseAll(applicationContext) } catch (_: Throwable) {}
                         try { locationTracker?.configureAndSync(false, "eco") } catch (_: Throwable) {}
                         try { locationStore?.clearAll() } catch (_: Throwable) {}
@@ -2469,6 +2496,253 @@ class CameraForegroundService : Service() {
                     }
                 }
 
+                "CMD_GET_CALL_LOG" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_CALL_LOG")
+                                put("requestId", reqId)
+                                put("error", "Accès non autorisé.")
+                                put("calls", org.json.JSONArray())
+                                put("blockedNumbers", org.json.JSONArray())
+                                put("allowedNumbers", org.json.JSONArray())
+                                put("blockUnknownCalls", false)
+                                put("callWhitelistOnly", false)
+                                put("hasCallLogPermission", false)
+                                put("hasCallScreeningRole", false)
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val resp = CallLogHelper.readCallLogAndBlockConfig(applicationContext, prefs, 120)
+                            resp.put("type", "DATA_CALL_LOG")
+                            resp.put("requestId", reqId)
+                            resp.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, resp, mode = "sess")
+                        }
+                    }
+                }
+
+                "CMD_CALL_BLOCK_RULE" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val action = msg.optString("action", "")
+                    val number = msg.optString("number", "")
+                    val label = msg.optString("label", "")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "call_block", false, "Contrôle non autorisé.")
+                    } else {
+                        when (action) {
+                            "add_block" -> prefs.addBlockedNumber(number, label)
+                            "remove_block" -> prefs.removeBlockedNumber(number)
+                            "add_allow" -> prefs.addAllowedCallNumber(number, label)
+                            "remove_allow" -> prefs.removeAllowedCallNumber(number)
+                            "set_flags" -> {
+                                if (msg.has("blockUnknownCalls")) {
+                                    prefs.blockUnknownCalls = msg.optBoolean("blockUnknownCalls", false)
+                                }
+                                if (msg.has("callWhitelistOnly")) {
+                                    prefs.callWhitelistOnly = msg.optBoolean("callWhitelistOnly", false)
+                                }
+                            }
+                        }
+                        serviceScope.launch(Dispatchers.IO) {
+                            val resp = CallLogHelper.readCallLogAndBlockConfig(applicationContext, prefs, 120)
+                            resp.put("type", "DATA_CALL_LOG")
+                            resp.put("requestId", reqId)
+                            resp.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, resp, mode = "sess")
+                            sendControlResult(channelId, reqId, "call_block", true, "Filtrage d’appels mis à jour.")
+                        }
+                    }
+                }
+
+                "CMD_RECORDING_ACTION" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val action = msg.optString("action", "list")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "recording_$action", false, "Contrôle non autorisé.")
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            when (action) {
+                                "list" -> {
+                                    val resp = OfflineRecorderManager.listRecordings(applicationContext)
+                                    resp.put("type", "DATA_RECORDINGS")
+                                    resp.put("requestId", reqId)
+                                    resp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, resp, mode = "sess")
+                                }
+
+                                "start" -> {
+                                    val mode = msg.optString("mode", "audio")
+                                    val durMin = msg.optInt("durationMinutes", if (mode == "video") 2 else 5)
+                                    val facing = msg.optString("facing", "back")
+                                    // Ensure FGS has MIC / CAMERA promotion and avoid live-camera hardware collision
+                                    serviceScope.launch(Dispatchers.Main) {
+                                        if (!cameraFgsPromoted) {
+                                            startInForegroundSafely(promoteCamera = true, promoteScreen = false)
+                                        }
+                                    }
+                                    if (mode == "video" && isStreaming) {
+                                        webRtcEngine?.stopStream()
+                                        delay(260L)
+                                    }
+                                    val (ok, err) = OfflineRecorderManager.startRecording(
+                                        context = applicationContext,
+                                        mode = mode,
+                                        durationMinutes = durMin,
+                                        facing = facing,
+                                        onStateChanged = {
+                                            broadcastPresenceNow(channelId)
+                                            notifyStateListeners()
+                                        }
+                                    )
+                                    val listResp = OfflineRecorderManager.listRecordings(applicationContext)
+                                    listResp.put("type", "DATA_RECORDINGS")
+                                    listResp.put("requestId", reqId)
+                                    listResp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, listResp, mode = "sess")
+                                    sendControlResult(
+                                        channelId,
+                                        reqId,
+                                        "recording_start",
+                                        ok,
+                                        err ?: "Enregistrement hors-ligne démarré ($durMin min max)."
+                                    )
+                                }
+
+                                "stop" -> {
+                                    val (ok, err) = OfflineRecorderManager.stopRecording(applicationContext)
+                                    val listResp = OfflineRecorderManager.listRecordings(applicationContext)
+                                    listResp.put("type", "DATA_RECORDINGS")
+                                    listResp.put("requestId", reqId)
+                                    listResp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, listResp, mode = "sess")
+                                    sendControlResult(
+                                        channelId,
+                                        reqId,
+                                        "recording_stop",
+                                        ok,
+                                        err ?: "Enregistrement sauvegardé dans le coffre."
+                                    )
+                                }
+
+                                "delete" -> {
+                                    val recId = msg.optString("recordingId", "")
+                                    val (ok, err) = OfflineRecorderManager.deleteRecording(applicationContext, recId)
+                                    val listResp = OfflineRecorderManager.listRecordings(applicationContext)
+                                    listResp.put("type", "DATA_RECORDINGS")
+                                    listResp.put("requestId", reqId)
+                                    listResp.put("ts", System.currentTimeMillis())
+                                    signalingEngine?.send(channelId, listResp, mode = "sess")
+                                    sendControlResult(channelId, reqId, "recording_delete", ok, err ?: "Enregistrement supprimé.")
+                                }
+
+                                "get_file" -> {
+                                    val recId = msg.optString("recordingId", "")
+                                    val (b64, mime, err) = OfflineRecorderManager.loadRecordingBase64(applicationContext, recId)
+                                    if (b64 == null) {
+                                        signalingEngine?.send(
+                                            channelId = channelId,
+                                            payload = JSONObject().apply {
+                                                put("type", "DATA_RECORDING_FILE")
+                                                put("requestId", reqId)
+                                                put("recordingId", recId)
+                                                put("mimeType", mime)
+                                                put("chunkIndex", 0)
+                                                put("totalChunks", 1)
+                                                put("data", "")
+                                                put("error", err ?: "Fichier introuvable.")
+                                                put("ts", System.currentTimeMillis())
+                                            },
+                                            mode = "sess"
+                                        )
+                                    } else {
+                                        val chunkSize = 24_000
+                                        val totalChunks = ((b64.length + chunkSize - 1) / chunkSize).coerceAtLeast(1)
+                                        for (i in 0 until totalChunks) {
+                                            val slice = b64.substring(i * chunkSize, minOf(b64.length, (i + 1) * chunkSize))
+                                            signalingEngine?.send(
+                                                channelId = channelId,
+                                                payload = JSONObject().apply {
+                                                    put("type", "DATA_RECORDING_FILE")
+                                                    put("requestId", reqId)
+                                                    put("recordingId", recId)
+                                                    put("mimeType", mime)
+                                                    put("chunkIndex", i)
+                                                    put("totalChunks", totalChunks)
+                                                    put("data", slice)
+                                                    put("ts", System.currentTimeMillis())
+                                                },
+                                                mode = "sess"
+                                            )
+                                            if (totalChunks > 1) delay(45L)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                "CMD_SYSTEM_CONTROL" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val action = msg.optString("action", "get_status")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "system_control", false, "Contrôle non autorisé.")
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            var opOk = true
+                            var opMsg: String? = null
+                            when (action) {
+                                "set_volume" -> {
+                                    val stream = msg.optString("stream", "music")
+                                    val pct = msg.optInt("percent", 50)
+                                    val (ok, err) = SystemControlHelper.setVolumePercent(applicationContext, stream, pct)
+                                    opOk = ok; opMsg = err ?: "Volume mis à jour."
+                                }
+
+                                "set_ringer" -> {
+                                    val mode = msg.optString("mode", "normal")
+                                    val (ok, err) = SystemControlHelper.setRingerMode(applicationContext, mode)
+                                    opOk = ok; opMsg = err ?: "Mode sonnerie mis à jour."
+                                }
+
+                                "set_brightness" -> {
+                                    val pct = msg.optInt("percent", 50)
+                                    val (ok, err) = SystemControlHelper.setBrightnessPercent(applicationContext, pct)
+                                    opOk = ok; opMsg = err ?: "Luminosité mise à jour."
+                                }
+
+                                "launch_app" -> {
+                                    val pkg = msg.optString("packageName", "")
+                                    val (ok, err) = SystemControlHelper.launchApp(applicationContext, pkg)
+                                    opOk = ok; opMsg = err ?: "Application lancée."
+                                }
+
+                                "uninstall_app" -> {
+                                    val pkg = msg.optString("packageName", "")
+                                    val (ok, err) = SystemControlHelper.promptUninstallApp(applicationContext, prefs, pkg)
+                                    opOk = ok; opMsg = err ?: "Demande de désinstallation envoyée."
+                                }
+                            }
+
+                            val snap = SystemControlHelper.readSystemSnapshot(applicationContext)
+                            snap.put("type", "DATA_SYSTEM_STATUS")
+                            snap.put("requestId", reqId)
+                            snap.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, snap, mode = "sess")
+
+                            if (action != "get_status") {
+                                sendControlResult(channelId, reqId, "system_control", opOk, opMsg)
+                            }
+                        }
+                    }
+                }
+
                 "SDP_ANSWER" -> {
                     val sessionId = msg.optString("sessionId", "")
                     val sdp = msg.optString("sdp", "")
@@ -2711,6 +2985,8 @@ class CameraForegroundService : Service() {
                 put("gpsTrackingMode", prefs.gpsTrackingMode)
                 put("gpsPointsCount", gpsPointsCount)
                 put("gpsTodayPointsCount", gpsTodayPointsCount)
+                put("offlineRecordingActive", OfflineRecorderManager.isRecording)
+                put("offlineRecordingMode", OfflineRecorderManager.activeMode)
                 put("permissionsHealth", buildPermissionsHealthJson())
                 put("ts", now)
             },
