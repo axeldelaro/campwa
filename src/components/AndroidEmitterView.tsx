@@ -18,7 +18,6 @@ import {
   Play,
   Plus,
   Power,
-  Radio,
   RefreshCw,
   Share2,
   ShieldAlert,
@@ -48,7 +47,7 @@ interface AndroidEmitterViewProps {
   isNativeAndroid: boolean;
 }
 
-type EmitterSectionTab = 'portal' | 'passes' | 'friends';
+type EmitterSectionTab = 'status' | 'settings' | 'access';
 
 const DURATION_PRESETS = [
   { label: '15 min', ms: 15 * 60 * 1000 },
@@ -77,7 +76,8 @@ function formatRemaining(expiresAt: number | null, nowMs: number): string {
 
 export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNativeAndroid }) => {
   const [portal, setPortal] = useState<NativePortalState | null>(null);
-  const [section, setSection] = useState<EmitterSectionTab>('portal');
+  const [section, setSection] = useState<EmitterSectionTab>('status');
+  const [accessSubTab, setAccessSubTab] = useState<'friends' | 'passes'>('friends');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -1142,122 +1142,122 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         </div>
       )}
 
-      {/* Navigation Tabs */}
-      <div className="mb-4 grid grid-cols-3 gap-1.5 rounded-2xl border border-slate-800 bg-obsidian-900/90 p-1.5">
+      {/* Clean 3-Tab Parental Device Navigation */}
+      <div className="mb-4 grid grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.08] bg-zinc-900/80 p-1.5">
         <button
           type="button"
           onClick={() => {
-            setSection('portal');
+            setSection('status');
             setFormError(null);
           }}
-          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-bold transition ${
-            section === 'portal'
-              ? 'bg-emerald-500 text-obsidian-950 shadow'
-              : 'text-slate-400 hover:text-white'
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition ${
+            section === 'status'
+              ? 'bg-white text-zinc-950'
+              : 'text-zinc-400 hover:text-white'
           }`}
         >
-          <Radio className="h-3.5 w-3.5" />
-          <span>Portail</span>
+          <ShieldCheck className="h-3.5 w-3.5" />
+          <span>Statut</span>
         </button>
 
         <button
           type="button"
           onClick={() => {
-            setSection('passes');
+            setSection('settings');
             setFormError(null);
           }}
-          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-bold transition ${
-            section === 'passes'
-              ? 'bg-emerald-500 text-obsidian-950 shadow'
-              : 'text-slate-400 hover:text-white'
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition ${
+            section === 'settings'
+              ? 'bg-white text-zinc-950'
+              : 'text-zinc-400 hover:text-white'
           }`}
         >
-          <Timer className="h-3.5 w-3.5" />
-          <span>Pass ({timedPasses.length})</span>
+          <Sliders className="h-3.5 w-3.5" />
+          <span>Réglages</span>
         </button>
 
         <button
           type="button"
           onClick={() => {
-            setSection('friends');
+            setSection('access');
             setFormError(null);
           }}
-          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-bold transition ${
-            section === 'friends'
-              ? 'bg-emerald-500 text-obsidian-950 shadow'
-              : 'text-slate-400 hover:text-white'
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition ${
+            section === 'access'
+              ? 'bg-white text-zinc-950'
+              : 'text-zinc-400 hover:text-white'
           }`}
         >
           <Users className="h-3.5 w-3.5" />
-          <span>Parents ({friendProfiles.length})</span>
+          <span>Accès ({allProfiles.length})</span>
         </button>
       </div>
 
-      {/* ==================== TAB 1: MASTER PORTAL + USER SHARE CONTROLS ==================== */}
-      {section === 'portal' && (
+      {/* ==================== TAB 1: STATUS, PAIRING CODE & ADMIN PROTECTION ==================== */}
+      {section === 'status' && (
         <div className="space-y-4">
-          <div className="rounded-3xl border border-slate-800 bg-obsidian-900/95 p-6 shadow-2xl">
+          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <Radio
-                  className={`h-5 w-5 ${
+                <span
+                  className={`h-2 w-2 rounded-full ${
                     portal.portalState === 'streaming'
-                      ? 'text-rose-400 animate-pulse'
+                      ? 'bg-rose-500 animate-pulse'
                       : portal.serviceRunning
-                      ? 'text-emerald-400'
-                      : 'text-slate-500'
+                      ? 'bg-emerald-400'
+                      : 'bg-zinc-600'
                   }`}
                 />
-                <span className="text-sm font-bold text-white">
+                <span className="text-sm font-semibold text-white">
                   {portal.portalState === 'streaming'
                     ? portal.mediaMode === 'screen'
-                      ? 'Écran partagé en direct'
-                      : 'Caméra en direct'
+                      ? 'Écran partagé'
+                      : 'Direct en cours'
                     : portal.serviceRunning
-                    ? 'Éco-Veille active 24h/24'
-                    : 'Serveur en pause'}
+                    ? 'Protection active'
+                    : 'Service en pause'}
                 </span>
               </div>
 
               <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-mono text-[11px] font-semibold ${
+                className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 font-mono text-[11px] ${
                   portal.mqttConnected
                     ? 'bg-emerald-500/15 text-emerald-300'
                     : 'bg-amber-500/15 text-amber-300'
                 }`}
               >
                 <Wifi className="h-3 w-3" />
-                {portal.mqttConnected ? 'Relais Connecté' : 'En attente'}
+                {portal.mqttConnected ? 'Connecté' : 'Hors ligne'}
               </span>
             </div>
 
-            <div className="mt-5 rounded-2xl border border-emerald-500/30 bg-obsidian-950 p-6 text-center shadow-inner">
-              <div className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-slate-400">
-                <KeyRound className="h-3.5 w-3.5 text-emerald-400" />
-                <span>Code Principal (Propriétaire)</span>
+            <div className="mt-4 rounded-xl border border-white/[0.07] bg-zinc-950 p-4 text-center">
+              <div className="flex items-center justify-center gap-1.5 text-[11px] font-medium text-zinc-400">
+                <KeyRound className="h-3.5 w-3.5 text-zinc-400" />
+                <span>Code de connexion Parent</span>
               </div>
 
-              <div className="mt-3 flex justify-center gap-2">
+              <div className="mt-3 flex justify-center gap-1.5">
                 {portal.pairingCode.split('').map((c, idx) => (
                   <span
                     key={idx}
-                    className="flex h-14 w-11 items-center justify-center rounded-xl border border-emerald-500/40 bg-obsidian-900 font-mono text-2xl font-extrabold text-emerald-300 shadow-lg sm:h-16 sm:w-12 sm:text-3xl"
+                    className="flex h-12 w-10 items-center justify-center rounded-lg border border-white/10 bg-zinc-900 font-mono text-xl font-semibold text-white sm:h-14 sm:w-11 sm:text-2xl"
                   >
                     {c}
                   </span>
                 ))}
               </div>
 
-              <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+              <div className="mt-3.5 flex flex-wrap items-center justify-center gap-2">
                 <button
                   type="button"
                   onClick={() => void handleCopyText(portal.pairingCode, 'master')}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-extrabold text-obsidian-950 transition hover:bg-emerald-400"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-1.5 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200"
                 >
                   {copiedId === 'master' ? (
                     <>
                       <Check className="h-3.5 w-3.5" />
-                      <span>Copié !</span>
+                      <span>Copié</span>
                     </>
                   ) : (
                     <>
@@ -1271,62 +1271,101 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                   type="button"
                   disabled={busy}
                   onClick={() => void handleRegenerateCode()}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-900 px-3.5 py-2 text-xs font-semibold text-slate-300 transition hover:text-white"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:text-white"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
-                  <span>Nouveau code</span>
+                  <span>Renouveler</span>
                 </button>
               </div>
             </div>
 
-            {isNativeAndroid && !portal.permissions.batteryOptimizationIgnored && (
-              <button
-                type="button"
-                onClick={() => void handleRequestBatteryDoze()}
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs font-bold text-amber-300 transition hover:bg-amber-500/20"
-              >
-                <BatteryCharging className="h-4 w-4 shrink-0" />
-                <span>Autoriser l’arrière-plan illimité (anti-veille batterie)</span>
-              </button>
-            )}
+            {/* Compact Setup Checklist (ONLY shown if any permission is missing) */}
+            {isNativeAndroid &&
+              (!portal.permissions.batteryOptimizationIgnored ||
+                !portal.permissions.usageAccess ||
+                !portal.permissions.overlay ||
+                !portal.permissions.camera) && (
+                <div className="mt-3.5 space-y-1.5">
+                  {!portal.permissions.usageAccess && (
+                    <button
+                      type="button"
+                      onClick={() => void handleRequestUsageAccess()}
+                      className="flex w-full items-center justify-between rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+                    >
+                      <span>Autoriser le Temps d’écran</span>
+                      <span className="font-semibold">Configurer →</span>
+                    </button>
+                  )}
+                  {!portal.permissions.overlay && (
+                    <button
+                      type="button"
+                      onClick={() => void handleRequestOverlay()}
+                      className="flex w-full items-center justify-between rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+                    >
+                      <span>Autoriser l’écran de blocage</span>
+                      <span className="font-semibold">Configurer →</span>
+                    </button>
+                  )}
+                  {!portal.permissions.batteryOptimizationIgnored && (
+                    <button
+                      type="button"
+                      onClick={() => void handleRequestBatteryDoze()}
+                      className="flex w-full items-center justify-between rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        <BatteryCharging className="h-3.5 w-3.5" />
+                        Arrière-plan illimité
+                      </span>
+                      <span className="font-semibold">Autoriser →</span>
+                    </button>
+                  )}
+                  {!portal.permissions.camera && (
+                    <button
+                      type="button"
+                      onClick={() => void handleOneTapSetupAndStart()}
+                      className="flex w-full items-center justify-between rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        <ShieldAlert className="h-3.5 w-3.5" />
+                        Autorisation caméra
+                      </span>
+                      <span className="font-semibold">Autoriser →</span>
+                    </button>
+                  )}
+                </div>
+              )}
 
-            {isNativeAndroid && !portal.permissions.camera && (
-              <button
-                type="button"
-                onClick={() => void handleOneTapSetupAndStart()}
-                className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs font-bold text-rose-300"
-              >
-                <ShieldAlert className="h-4 w-4 shrink-0" />
-                <span>Autoriser l’accès Caméra manquant</span>
-              </button>
-            )}
-
-            <div className="mt-5">
+            <div className="mt-4">
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => void handleToggleService()}
-                className={`flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-3.5 text-sm font-bold transition ${
+                className={`flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold transition ${
                   portal.serviceRunning
-                    ? 'border border-slate-700 bg-obsidian-950 text-slate-300 hover:border-rose-500/40 hover:text-rose-300'
-                    : 'bg-emerald-500 text-obsidian-950 shadow-lg shadow-emerald-500/25 hover:bg-emerald-400'
+                    ? 'border border-white/10 bg-zinc-950 text-zinc-300 hover:border-rose-500/40 hover:text-rose-300'
+                    : 'bg-white text-zinc-950 hover:bg-zinc-200'
                 }`}
               >
                 {portal.serviceRunning ? (
                   <>
-                    <Power className="h-4 w-4" />
-                    <span>Couper le serveur</span>
+                    <Power className="h-3.5 w-3.5" />
+                    <span>Mettre en pause</span>
                   </>
                 ) : (
                   <>
-                    <Play className="h-4 w-4" />
-                    <span>Allumer le serveur</span>
+                    <Play className="h-3.5 w-3.5" />
+                    <span>Activer la protection</span>
                   </>
                 )}
               </button>
             </div>
           </div>
+        </div>
+      )}
 
+      {/* ==================== TAB 2: SETTINGS (PERMISSIONS & LOGS) ==================== */}
+      {section === 'settings' && (
+        <div className="space-y-4">
           {/* CLEAN COMPACT PERMISSION LIST */}
           <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-4">
             <div className="flex items-center justify-between pb-2">
@@ -1596,9 +1635,13 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             </div>
           </div>
 
-          {/* Parental / Administrator Background Protection Card */}
-          {isNativeAndroid && (
-            <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-5">
+        </div>
+      )}
+
+      {/* ==================== ADMIN PROTECTION (SHOWN ON STATUS TAB FOR INSTANT ACCESS) ==================== */}
+      {section === 'status' && isNativeAndroid && (
+        <div className="mt-4">
+          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <Lock className="h-4 w-4 text-emerald-400" />
@@ -1768,12 +1811,41 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                 </div>
               )}
             </div>
-          )}
         </div>
       )}
 
-      {/* ==================== TAB 2: CUSTOM FIXED TIMED ACCESS CODES ==================== */}
-      {section === 'passes' && (
+      {/* ==================== TAB 3: UNIFIED ACCESS (PARENTS + TIMED PASSES) ==================== */}
+      {section === 'access' && (
+        <div className="mb-3 flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setAccessSubTab('friends')}
+            className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+              accessSubTab === 'friends'
+                ? 'bg-white/[0.12] text-white'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
+            }`}
+          >
+            <Users className="h-3.5 w-3.5" />
+            <span>Parents ({friendProfiles.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setAccessSubTab('passes')}
+            className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+              accessSubTab === 'passes'
+                ? 'bg-white/[0.12] text-white'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
+            }`}
+          >
+            <Timer className="h-3.5 w-3.5" />
+            <span>Pass temporaires ({timedPasses.length})</span>
+          </button>
+        </div>
+      )}
+
+      {/* ==================== ACCESS SUB-VIEW: TIMED PASSES ==================== */}
+      {section === 'access' && accessSubTab === 'passes' && (
         <div className="space-y-4">
           <form
             onSubmit={(e) => void handleCreateProfile('guest', e)}
@@ -1904,8 +1976,8 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         </div>
       )}
 
-      {/* ==================== TAB 3: FRIEND PROFILES ==================== */}
-      {section === 'friends' && (
+      {/* ==================== ACCESS SUB-VIEW: PARENTS & FRIENDS ==================== */}
+      {section === 'access' && accessSubTab === 'friends' && (
         <div className="space-y-4">
           <form
             onSubmit={(e) => void handleCreateProfile('friend', e)}

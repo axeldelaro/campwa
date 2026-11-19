@@ -70,7 +70,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               }`}
             >
               <Monitor className="h-3.5 w-3.5" />
-              <span>Accès</span>
+              <span>Parent</span>
             </button>
             <button
               type="button"

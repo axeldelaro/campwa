@@ -19,6 +19,7 @@ import {
   FlipHorizontal,
   Gauge,
   HardDrive,
+  LayoutDashboard,
   Lock,
   Mail,
   MapPin,
@@ -71,7 +72,7 @@ import type {
   StreamQualityPreset,
   StreamRealtimeStats,
 } from '../types/sentinel';
-import { ControlPanelTab } from './ControlPanelTab';
+import { GeofenceZonesCard, ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
 import { GpsTrailMap } from './GpsTrailMap';
 import { SecuritySasModal } from './SecuritySasModal';
 
@@ -80,7 +81,7 @@ interface ControlStationViewProps {
   initialCode?: string | null;
 }
 
-type ViewerTab = 'media' | 'control' | 'contacts' | 'device';
+type ViewerTab = 'home' | 'rules' | 'location' | 'live';
 
 function formatCountdown(expiresAt: number | null, nowMs: number): string | null {
   if (expiresAt === null) return null;
@@ -111,11 +112,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [stats, setStats] = useState<StreamRealtimeStats | null>(null);
   const [authError, setAuthError] = useState<AuthErrMsg | null>(null);
   const [streamNotice, setStreamNotice] = useState<string | null>(null);
-  const [autoWakeOnConnect, setAutoWakeOnConnect] = useState(true);
   const [pushSentFeedback, setPushSentFeedback] = useState<string | null>(null);
   const [accessGrant, setAccessGrant] = useState<ActiveAccessGrant | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [viewerTab, setViewerTab] = useState<ViewerTab>('media');
+  const [viewerTab, setViewerTab] = useState<ViewerTab>('home');
+  const [liveSubTab, setLiveSubTab] = useState<'media' | 'contacts'>('media');
 
   // Shared remote data (Contacts, GPS, Device Info)
   const [contacts, setContacts] = useState<SharedContactItem[]>([]);
@@ -225,6 +226,14 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           sasSymbols: info.sasSymbols,
         });
         setSavedDevices(listPairedDevices());
+        if (info.accessGrant.allowDeviceControl) {
+          setViewerTab('home');
+          setScreenTimeLoading(true);
+          void ctrl.requestScreenTime();
+          window.setTimeout(() => setScreenTimeLoading(false), 8000);
+        } else {
+          setViewerTab('live');
+        }
       },
       onAuthError: (err) => {
         setAuthError(err);
@@ -361,7 +370,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     if (clean.length === 6) {
       autoConnectedInitialRef.current = true;
       setCodeChars(clean.split(''));
-      void controllerRef.current?.connectToPortal(clean, true);
+      void controllerRef.current?.connectToPortal(clean, false);
     }
   }, [initialCode]);
 
@@ -374,7 +383,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setAuthError(null);
     setStreamNotice(null);
     setPushSentFeedback(null);
-    setViewerTab('media');
+    setViewerTab('home');
+    setLiveSubTab('media');
     setContacts([]);
     setLocationData(null);
     setHistoryBundle(null);
@@ -384,7 +394,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setDeviceInfo(null);
     setCodeChars(normalized.split(''));
     try {
-      await controllerRef.current?.connectToPortal(normalized, autoWakeOnConnect);
+      await controllerRef.current?.connectToPortal(normalized, false);
     } catch {
       // Handled via state callbacks
     }
@@ -579,21 +589,25 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     await controllerRef.current?.requestDeviceInfo();
   };
 
-  const handleOpenContactsTab = () => {
-    setViewerTab('contacts');
-    if (contacts.length === 0 && !contactsLoading) {
+  const handleOpenContactsSubTab = () => {
+    setViewerTab('live');
+    setLiveSubTab('contacts');
+    if (contacts.length === 0 && !contactsLoading && canViewContacts) {
       void handleFetchContacts('');
     }
   };
 
-  const handleOpenDeviceTab = () => {
-    setViewerTab('device');
+  const handleOpenLocationTab = () => {
+    setViewerTab('location');
     if (!deviceInfo && accessGrant?.allowDeviceInfo) {
       void handleFetchDeviceInfo();
     }
     if (!locationData && accessGrant?.allowLocation) {
       void handleFetchLocation();
       void handleFetchLocationHistory(historyRange);
+    }
+    if (!screenTime && accessGrant?.allowDeviceControl) {
+      void handleFetchScreenTime();
     }
   };
 
@@ -710,9 +724,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     window.setTimeout(() => setScreenTimeLoading(false), 8000);
   };
 
-  const handleOpenControlTab = () => {
-    setViewerTab('control');
-    if (canUseDeviceControl) {
+  const handleOpenHomeOrRulesTab = (tab: 'home' | 'rules') => {
+    setViewerTab(tab);
+    if (canUseDeviceControl && !screenTime && !screenTimeLoading) {
       void handleFetchScreenTime();
     }
   };
@@ -895,10 +909,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       <div className="mx-auto flex min-h-[76vh] max-w-md flex-col justify-center px-4 py-10">
         <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-6 sm:p-7">
           <h1 className="text-center text-xl font-semibold tracking-tight text-white">
-            Connexion
+            Contrôle parental
           </h1>
           <p className="mt-1 text-center text-xs text-zinc-400">
-            Code d’accès à 6 caractères
+            Saisissez le code à 6 caractères de l’appareil
           </p>
 
           <div className="mt-6 grid grid-cols-6 gap-2" onPaste={handlePaste}>
@@ -921,16 +935,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               />
             ))}
           </div>
-
-          <label className="mt-4 flex cursor-pointer items-center justify-center gap-2 text-xs text-zinc-400">
-            <input
-              type="checkbox"
-              checked={autoWakeOnConnect}
-              onChange={(e) => setAutoWakeOnConnect(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-zinc-700 bg-zinc-950 text-emerald-500 focus:ring-0"
-            />
-            <span>Ouvrir la vidéo automatiquement</span>
-          </label>
 
           <button
             type="button"
@@ -1140,8 +1144,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       </div>
 
-      {/* Compact Talkie-Walkie Bar (shown on Media tab or while talking to keep other tabs spacious) */}
-      {(viewerTab === 'media' || talkieActive) && (
+      {/* Compact Talkie-Walkie Bar (shown on Direct > Caméra & Écran or while talking) */}
+      {((viewerTab === 'live' && liveSubTab === 'media') || talkieActive) && (
       <div
         className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 transition ${
           talkieActive
@@ -1239,39 +1243,28 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       </div>
       )}
 
-      {/* Clean Navigation Tabs */}
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-white/[0.07] pb-3">
-        <button
-          type="button"
-          onClick={() => setViewerTab('media')}
-          className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition ${
-            viewerTab === 'media'
-              ? 'bg-white text-zinc-950'
-              : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
-          }`}
-        >
-          <Video className="h-3.5 w-3.5" />
-          <span>Caméra & Écran</span>
-        </button>
-
+      {/* Clean 4-Tab Parental-First Navigation */}
+      <div className="grid grid-cols-4 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1.5">
         <button
           type="button"
           disabled={!canUseDeviceControl}
-          onClick={handleOpenControlTab}
-          className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
-            viewerTab === 'control'
+          onClick={() => handleOpenHomeOrRulesTab('home')}
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
+            viewerTab === 'home'
               ? 'bg-white text-zinc-950'
               : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
           }`}
         >
-          <Lock className="h-3.5 w-3.5" />
-          <span>Contrôle</span>
+          <LayoutDashboard className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">Accueil</span>
           {((telemetry?.pendingRequestsCount ?? 0) > 0 || (telemetry?.activeAppLocksCount ?? 0) > 0) && (
             <span
-              className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
-                (telemetry?.pendingRequestsCount ?? 0) > 0
-                  ? 'bg-sky-500/25 text-sky-300'
-                  : 'bg-emerald-500/20 text-emerald-400'
+              className={`rounded px-1 py-0.5 font-mono text-[10px] ${
+                viewerTab === 'home'
+                  ? 'bg-zinc-900 text-white'
+                  : (telemetry?.pendingRequestsCount ?? 0) > 0
+                  ? 'bg-emerald-500/25 text-emerald-300'
+                  : 'bg-rose-500/20 text-rose-300'
               }`}
             >
               {(telemetry?.pendingRequestsCount ?? 0) > 0
@@ -1283,40 +1276,161 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
         <button
           type="button"
-          onClick={() => {
-            if (canViewContacts) {
-              handleOpenContactsTab();
-            } else {
-              setViewerTab('contacts');
-            }
-          }}
-          className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition ${
-            viewerTab === 'contacts'
+          disabled={!canUseDeviceControl}
+          onClick={() => handleOpenHomeOrRulesTab('rules')}
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
+            viewerTab === 'rules'
               ? 'bg-white text-zinc-950'
               : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
           }`}
         >
-          <BookUser className="h-3.5 w-3.5" />
-          <span>{canViewContacts ? 'Contacts & SMS' : 'SMS'}</span>
+          <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">Règles</span>
+          {(telemetry?.securityAlertsCount ?? 0) > 0 && (
+            <span
+              className={`rounded px-1 py-0.5 font-mono text-[10px] ${
+                viewerTab === 'rules' ? 'bg-zinc-900 text-white' : 'bg-white/[0.08] text-zinc-300'
+              }`}
+            >
+              {telemetry?.securityAlertsCount}
+            </span>
+          )}
         </button>
 
         <button
           type="button"
           disabled={!canViewLocation && !canViewDeviceInfo}
-          onClick={handleOpenDeviceTab}
-          className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
-            viewerTab === 'device'
+          onClick={handleOpenLocationTab}
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
+            viewerTab === 'location'
               ? 'bg-white text-zinc-950'
               : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
           }`}
         >
-          <MapPin className="h-3.5 w-3.5" />
-          <span>{canViewLocation ? 'GPS & Infos' : 'Infos'}</span>
+          <MapPin className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">Position</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setViewerTab('live')}
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition ${
+            viewerTab === 'live'
+              ? 'bg-white text-zinc-950'
+              : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
+          }`}
+        >
+          <Video className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">Direct</span>
         </button>
       </div>
 
-      {/* ==================== VIEWER TAB 1: CAMERA & SCREEN SHARE ==================== */}
-      {viewerTab === 'media' && (
+      {/* ==================== TAB 1: PARENTAL CONTROL HOME ==================== */}
+      {viewerTab === 'home' && (
+        <ParentalHomeTab
+          screenTime={screenTime}
+          screenTimeLoading={screenTimeLoading}
+          telemetry={telemetry}
+          nowMs={nowMs}
+          feedback={controlFeedback}
+          onDismissFeedback={() => setControlFeedback(null)}
+          onRefresh={handleFetchScreenTime}
+          onLockScreenNow={handleLockScreenNow}
+          onSetScreenPause={handleSetScreenPause}
+          onApplyAppLock={handleApplyAppLock}
+          onClearAllAppLocks={handleClearAllAppLocks}
+          onSetAppQuota={async (app, dailyLimitMinutes) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteAppQuota({
+              packageName: app.packageName,
+              appName: app.appName,
+              dailyLimitMinutes,
+            });
+          }}
+          onSetSchoolMode={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteSchoolMode(opts);
+          }}
+          onRespondTimeRequest={async (timeRequestId, approve, grantMinutes) => {
+            setControlFeedback(null);
+            await controllerRef.current?.respondTimeRequest({
+              timeRequestId,
+              approve,
+              grantMinutes,
+            });
+          }}
+          onOpenRulesTab={() => handleOpenHomeOrRulesTab('rules')}
+        />
+      )}
+
+      {/* ==================== TAB 2: RULES, ANTI-BYPASS, LOST MODE & JOURNAL ==================== */}
+      {viewerTab === 'rules' && (
+        <ParentalRulesTab
+          screenTime={screenTime}
+          screenTimeLoading={screenTimeLoading}
+          telemetry={telemetry}
+          nowMs={nowMs}
+          feedback={controlFeedback}
+          onDismissFeedback={() => setControlFeedback(null)}
+          onRefresh={handleFetchScreenTime}
+          onSetCurfew={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteCurfew(opts);
+          }}
+          onSetSchoolMode={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteSchoolMode(opts);
+          }}
+          onSetAntiBypass={async (enabled) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteAntiBypass(enabled);
+          }}
+          onSetLostMode={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteLostMode(opts);
+          }}
+          onClearSecurityEvents={async () => {
+            setControlFeedback(null);
+            await controllerRef.current?.clearRemoteSecurityEvents();
+          }}
+          onSetAdminPin={handleSetRemoteAdminPin}
+        />
+      )}
+
+      {/* ==================== TAB 4: DIRECT (CAMERA / SCREEN / TALKIE & CONTACTS / SMS) ==================== */}
+      {viewerTab === 'live' && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setLiveSubTab('media')}
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+                liveSubTab === 'media'
+                  ? 'bg-white/[0.12] text-white'
+                  : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
+              }`}
+            >
+              <Video className="h-3.5 w-3.5" />
+              <span>Caméra & Écran</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenContactsSubTab}
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+                liveSubTab === 'contacts'
+                  ? 'bg-white/[0.12] text-white'
+                  : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
+              }`}
+            >
+              <BookUser className="h-3.5 w-3.5" />
+              <span>{canViewContacts ? 'Contacts & SMS' : 'SMS'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== DIRECT SUB-VIEW 1: CAMERA & SCREEN SHARE ==================== */}
+      {viewerTab === 'live' && liveSubTab === 'media' && (
         <>
           {streamNotice && (
             <div className="flex items-center gap-2.5 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
@@ -1636,76 +1750,14 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </>
       )}
 
-      {/* ==================== VIEWER TAB 2: PARENTAL CONTROL & DEVICE SECURITY ==================== */}
-      {viewerTab === 'control' && (
-        <ControlPanelTab
-          screenTime={screenTime}
-          screenTimeLoading={screenTimeLoading}
-          telemetry={telemetry}
-          locationData={locationData}
-          nowMs={nowMs}
-          feedback={controlFeedback}
-          onDismissFeedback={() => setControlFeedback(null)}
-          onRefresh={handleFetchScreenTime}
-          onLockScreenNow={handleLockScreenNow}
-          onSetScreenPause={handleSetScreenPause}
-          onApplyAppLock={handleApplyAppLock}
-          onClearAllAppLocks={handleClearAllAppLocks}
-          onSetAppQuota={async (app, dailyLimitMinutes) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteAppQuota({
-              packageName: app.packageName,
-              appName: app.appName,
-              dailyLimitMinutes,
-            });
-          }}
-          onSetCurfew={async (opts) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteCurfew(opts);
-          }}
-          onSetSchoolMode={async (opts) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteSchoolMode(opts);
-          }}
-          onSetAntiBypass={async (enabled) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteAntiBypass(enabled);
-          }}
-          onSetLostMode={async (opts) => {
-            setControlFeedback(null);
-            await controllerRef.current?.setRemoteLostMode(opts);
-          }}
-          onRespondTimeRequest={async (timeRequestId, approve, grantMinutes) => {
-            setControlFeedback(null);
-            await controllerRef.current?.respondTimeRequest({
-              timeRequestId,
-              approve,
-              grantMinutes,
-            });
-          }}
-          onSaveGeofence={async (opts) => {
-            setControlFeedback(null);
-            await controllerRef.current?.saveRemoteGeofence(opts);
-          }}
-          onClearSecurityEvents={async () => {
-            setControlFeedback(null);
-            await controllerRef.current?.clearRemoteSecurityEvents();
-          }}
-          onSetAdminPin={handleSetRemoteAdminPin}
-          onRequestLocation={async () => {
-            await controllerRef.current?.requestLocation();
-          }}
-        />
-      )}
-
-      {/* ==================== VIEWER TAB 3: SHARED CONTACTS ==================== */}
-      {viewerTab === 'contacts' && (
-        <div className="rounded-3xl border border-slate-800 bg-obsidian-900/90 p-5 shadow-2xl">
+      {/* ==================== DIRECT SUB-VIEW 2: CONTACTS & SMS ==================== */}
+      {viewerTab === 'live' && liveSubTab === 'contacts' && (
+        <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
-              <BookUser className="h-5 w-5 text-amber-400" />
+              <BookUser className="h-4 w-4 text-zinc-400" />
               <div>
-                <h2 className="text-sm font-semibold text-white">Contacts</h2>
+                <h2 className="text-sm font-semibold text-white">Contacts & SMS</h2>
                 <p className="text-xs text-zinc-400">
                   {contactsTotal > 0 ? `${contacts.length} / ${contactsTotal}` : 'Répertoire partagé'}
                 </p>
@@ -1716,7 +1768,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               <button
                 type="button"
                 onClick={() => openSmsComposer('', '')}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-orange-500 px-3.5 py-2 text-xs font-extrabold text-obsidian-950 shadow-lg hover:bg-orange-400"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
               >
                 <MessageSquare className="h-3.5 w-3.5" />
                 <span>Nouveau SMS</span>
@@ -1726,7 +1778,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   type="button"
                   disabled={contactsLoading}
                   onClick={() => void handleFetchContacts(contactsQuery)}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3.5 py-2 text-xs font-bold text-amber-200 hover:bg-amber-500/25"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-300 hover:text-white"
                 >
                   <RefreshCw className={`h-3.5 w-3.5 ${contactsLoading ? 'animate-spin' : ''}`} />
                   <span>Actualiser</span>
@@ -1839,11 +1891,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       )}
 
-      {/* ==================== VIEWER TAB 3: GPS TRAIL HISTORY & DEVICE INFO ==================== */}
-      {viewerTab === 'device' && (
+      {/* ==================== TAB 3: POSITION, SAFE ZONES & DEVICE INFO ==================== */}
+      {viewerTab === 'location' && (
         <div className="space-y-4">
           {/* GPS Continuous Offline History & Interactive Map Card */}
-          <div className="rounded-3xl border border-slate-800 bg-obsidian-900/90 p-5 shadow-2xl">
+          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-rose-500/35 bg-rose-500/15 text-rose-400">
@@ -2099,8 +2151,23 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             )}
           </div>
 
+          {/* Geofencing Safe Zones (Right alongside GPS Map!) */}
+          {canUseDeviceControl && (
+            <GeofenceZonesCard
+              screenTime={screenTime}
+              locationData={locationData}
+              onSaveGeofence={async (opts) => {
+                setControlFeedback(null);
+                await controllerRef.current?.saveRemoteGeofence(opts);
+              }}
+              onRequestLocation={async () => {
+                await handleFetchLocation();
+              }}
+            />
+          )}
+
           {/* Device Info Card */}
-          <div className="rounded-3xl border border-slate-800 bg-obsidian-900/90 p-5 shadow-2xl">
+          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Cpu className="h-5 w-5 text-cyan-400" />

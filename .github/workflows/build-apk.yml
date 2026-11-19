@@ -122,16 +122,16 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v13.0.${{ github.run_number }}
-          name: "SentinelCam v13.0.${{ github.run_number }} (Contrôle Parental Complet • Anti-Contournement • Mode Perdu • Interface Épurée)"
+          tag_name: v14.0.${{ github.run_number }}
+          name: "SentinelCam v14.0.${{ github.run_number }} (Refonte Contrôle Parental Principal • Navigation Épurée Web & Android)"
           body: |
-            ### SentinelCam v13.0 (`v13.0.${{ github.run_number }}`)
+            ### SentinelCam v14.0 (`v14.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Contrôle parental autonome hors-ligne** : Couvre-feu / Mode Nuit planifié par jours et horaires, Quotas quotidiens par application (réinitialisés à minuit), Mode École / Devoirs (liste blanche d’applis autorisées), historique temps d’écran sur 7 jours et bouton *« Demander +15 min »* depuis l’écran bloqué avec validation en 1 clic côté Parent.
-            - **Sécurité anti-contournement & anti-vol** : Verrouillage des *Paramètres Android* et du *Play Store* par code administrateur, **Mode Perdu** avec message personnalisé + bouton d’appel direct + sirène, **Zones de sécurité GPS (Géofencing)** locales, détection de retrait/changement de carte SIM, alerte batterie critique (<10 %) et capture photo anti-intrusion en cas d’échecs répétés de code.
-            - **Interface Web & Android épurée** : sous-onglets structurés dans *Contrôle* (*Applis & Écran*, *Planning & 7j*, *Sécurité*, *Journal*) et panneau Android compact sans surcharge visuelle, avec préréglage *Parent* en 1 clic.
+            - **Contrôle parental en écran principal** : la connexion sur le site ouvre directement le **Tableau de bord parental** (temps d’écran du jour + graphique 7 jours + application ouverte + demandes *« +15 min »* + 4 actions rapides + limites par application), sans allumer la caméra inutilement.
+            - **Navigation plate en 4 onglets clairs (sans sous-menus empilés)** : **Accueil**, **Règles** (Couvre-feu, Mode École, Paramètres/Play Store, Code administrateur, Mode Perdu, Journal), **Position** (carte GPS + trajets + Zones de sécurité réunies au même endroit + infos appareil) et **Direct** (Caméra, Écran, Talkie, Contacts & SMS).
+            - **Application Android unifiée & sobre** : palette sombre homogène sans surcharge, écran **Statut** centré sur la protection et la checklist de configuration, onglet **Réglages** épuré et onglet **Accès** regroupant Parents & Pass temporaires.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false
