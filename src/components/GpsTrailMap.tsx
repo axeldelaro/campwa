@@ -10,6 +10,15 @@ interface GpsTrailMapProps {
   focusedPoint?: GpsTrackPoint | null;
 }
 
+function escapeHtml(raw: string): string {
+  return raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function formatDwell(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const mins = Math.round(seconds / 60);
@@ -177,7 +186,7 @@ export const GpsTrailMap: React.FC<GpsTrailMapProps> = ({
             `<div style="font-size:12px;line-height:1.4">
               <strong>Passage</strong> • ${formatTime(p.timestamp)}<br/>
               Vitesse : ${p.speedKmh.toFixed(1)} km/h • ±${p.accuracyMeters} m<br/>
-              Batterie : ${p.batteryLevel}% (${p.provider.toUpperCase()})
+              Batterie : ${p.batteryLevel}% (${escapeHtml(p.provider.toUpperCase())})
             </div>`
           )
           .addTo(group);

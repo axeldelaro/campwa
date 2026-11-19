@@ -25,6 +25,7 @@ export interface GlobalShareSettings {
   gpsTrackingMode: GpsTrackingMode;
   allowDeviceInfo: boolean;
   allowIntercom: boolean;
+  allowSmsRelay?: boolean;
   screenShareReady: boolean;
 }
 
@@ -43,6 +44,7 @@ export interface AccessProfile {
   allowLocation: boolean;
   allowDeviceInfo: boolean;
   allowIntercom: boolean;
+  allowSmsRelay?: boolean;
   lastAccessAt: number | null;
 }
 
@@ -60,6 +62,7 @@ export interface AccessProfileInput {
   allowLocation: boolean;
   allowDeviceInfo: boolean;
   allowIntercom: boolean;
+  allowSmsRelay?: boolean;
 }
 
 export interface SharedContactItem {
@@ -121,6 +124,7 @@ export interface SharedDeviceInfoData {
 
 export interface EncryptedEnvelope {
   v: 1;
+  aad?: 1;
   id: string;
   mode: 'boot' | 'sess';
   sender: string;
@@ -162,6 +166,7 @@ export interface ActiveAccessGrant {
   allowLocation: boolean;
   allowDeviceInfo: boolean;
   allowIntercom: boolean;
+  allowSmsRelay: boolean;
 }
 
 export interface DeviceTelemetry {
@@ -191,6 +196,8 @@ export interface DeviceTelemetry {
   allowLocation?: boolean;
   allowDeviceInfo?: boolean;
   allowIntercom?: boolean;
+  allowSmsRelay?: boolean;
+  pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
@@ -234,6 +241,7 @@ export interface HelloWakeMsg {
   tokenId: string;
   clientNonce: string;
   proofHex: string;
+  clientEcdhPub?: string;
   autoStartStream: boolean;
   sessionId: string;
   mediaMode?: MediaSourceMode;
@@ -250,6 +258,8 @@ export interface HelloAckMsg {
   echoClientNonce: string;
   serverNonce: string;
   serverProofHex: string;
+  serverEcdhPub?: string;
+  pfsEnabled?: boolean;
   sasCode: string;
   sasSymbols: string;
   portalState: 'standby' | 'streaming';
@@ -271,6 +281,7 @@ export interface HelloAckMsg {
   allowLocation?: boolean;
   allowDeviceInfo?: boolean;
   allowIntercom?: boolean;
+  allowSmsRelay?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
@@ -313,6 +324,8 @@ export interface PortalStatusMsg {
   allowLocation?: boolean;
   allowDeviceInfo?: boolean;
   allowIntercom?: boolean;
+  allowSmsRelay?: boolean;
+  pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
@@ -443,6 +456,27 @@ export interface DataDeviceInfoMsg {
   ts: number;
 }
 
+export interface CmdSendSmsMsg {
+  type: 'CMD_SEND_SMS';
+  requestId: string;
+  phoneNumber: string;
+  contactName?: string;
+  message: string;
+  includeGpsLink?: boolean;
+  ts: number;
+}
+
+export interface DataSmsResultMsg {
+  type: 'DATA_SMS_RESULT';
+  requestId: string;
+  success: boolean;
+  phoneNumber: string;
+  sentText?: string;
+  error?: string;
+  remainingQuota: number;
+  ts: number;
+}
+
 export interface SdpOfferMsg {
   type: 'SDP_OFFER';
   sessionId: string;
@@ -498,6 +532,8 @@ export type SignalMessage =
   | DataLocationHistoryMsg
   | CmdGetDeviceInfoMsg
   | DataDeviceInfoMsg
+  | CmdSendSmsMsg
+  | DataSmsResultMsg
   | SdpOfferMsg
   | SdpAnswerMsg
   | IceCandidateMsg
@@ -513,6 +549,7 @@ export interface NativePermissionStatus {
   contacts: boolean;
   location: boolean;
   backgroundLocation?: boolean;
+  sms?: boolean;
   screenShareReady: boolean;
 }
 
@@ -545,6 +582,8 @@ export interface NativePortalState {
   gpsPointsCount?: number;
   gpsTodayPointsCount?: number;
   gpsLastFixTs?: number;
+  hardwareKeystoreReady?: boolean;
+  pfsEnabled?: boolean;
   autoStartOnBoot: boolean;
   failedAttempts: number;
   lockoutRemainingMs: number;

@@ -14,6 +14,11 @@ const decoder = new TextDecoder();
 // In-memory cache so reconnecting to a code takes 0.0ms
 const bootstrapCache = new Map<string, DerivedBootstrapKeys>();
 
+export interface EphemeralEcdhPair {
+  privateKey: CryptoKey;
+  publicRawBase64: string;
+}
+
 export function normalizePairingCode(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
 }
@@ -106,7 +111,7 @@ export async function deriveBootstrapKeys(code: string): Promise<DerivedBootstra
   const master = new Uint8Array(bits);
   const topicId = bytesToHex(master.slice(0, 16));
   const bootstrapEncRaw = master.slice(16, 48); // 32 bytes
-  const bootstrapAuthRaw = master.slice(48, 64);// 16 bytes
+  const bootstrapAuthRaw = master.slice(48, 64); // 16 bytes
   const wakePushTopic = `sc_wake_${topicId.slice(0, 20)}`;
 
   const bootstrapEncKey = await importAesGcmKey(bootstrapEncRaw);
@@ -121,6 +126,50 @@ export async function deriveBootstrapKeys(code: string): Promise<DerivedBootstra
   };
   bootstrapCache.set(normalizedCode, result);
   return result;
+}
+
+/* ==================== EPHEMERAL ECDH P-256 (PERFECT FORWARD SECRECY) ==================== */
+
+export async function generateEphemeralEcdh(): Promise<EphemeralEcdhPair | null> {
+  try {
+    const kp = await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveBits']
+    );
+    const rawPub = await crypto.subtle.exportKey('raw', kp.publicKey);
+    return {
+      privateKey: kp.privateKey,
+      publicRawBase64: bytesToBase64(new Uint8Array(rawPub)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function computeEcdhSharedSecret(
+  localPrivateKey: CryptoKey,
+  peerRawBase64: string
+): Promise<Uint8Array | null> {
+  try {
+    const raw = base64ToBytes(peerRawBase64);
+    if (raw.length !== 65 || raw[0] !== 0x04) return null;
+    const peerPub = await crypto.subtle.importKey(
+      'raw',
+      raw as BufferSource,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      []
+    );
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'ECDH', public: peerPub },
+      localPrivateKey,
+      256
+    );
+    return new Uint8Array(bits);
+  } catch {
+    return null;
+  }
 }
 
 export async function importAesGcmKey(rawKeyBytes: Uint8Array): Promise<CryptoKey> {
@@ -176,30 +225,45 @@ export async function hmacSha256Hex(keyBytes: Uint8Array, message: string): Prom
 export async function computeHelloWakeProof(
   bootstrapAuthRaw: Uint8Array,
   clientNonce: string,
-  tokenId: string
+  tokenId: string,
+  clientEcdhPub = ''
 ): Promise<string> {
-  return hmacSha256Hex(bootstrapAuthRaw, `hello-wake-v3:${clientNonce}:${tokenId}`);
+  const suffix = clientEcdhPub ? `:${clientEcdhPub}` : '';
+  return hmacSha256Hex(bootstrapAuthRaw, `hello-wake-v3:${clientNonce}:${tokenId}${suffix}`);
 }
 
 export async function computeHelloAckProof(
   bootstrapAuthRaw: Uint8Array,
   clientNonce: string,
   serverNonce: string,
-  deviceId: string
+  deviceId: string,
+  serverEcdhPub = ''
 ): Promise<string> {
-  return hmacSha256Hex(bootstrapAuthRaw, `hello-ack-v3:${clientNonce}:${serverNonce}:${deviceId}`);
+  const suffix = serverEcdhPub ? `:${serverEcdhPub}` : '';
+  return hmacSha256Hex(
+    bootstrapAuthRaw,
+    `hello-ack-v3:${clientNonce}:${serverNonce}:${deviceId}${suffix}`
+  );
 }
 
 /**
- * Stateless 1-RTT Ephemeral Session Key (HKDF-SHA256) with per-connection Forward Secrecy.
+ * 1-RTT Ephemeral Session Key (HKDF-SHA256) with True ECDH P-256 Perfect Forward Secrecy (v8.0).
  */
 export async function deriveFastSessionKey(
   bootstrapAuthRaw: Uint8Array,
   clientNonce: string,
   serverNonce: string,
-  deviceId: string
+  deviceId: string,
+  ecdhSharedSecret: Uint8Array | null = null
 ): Promise<CryptoKey> {
   const salt = encoder.encode(`${clientNonce}:${serverNonce}:${deviceId}`);
+  if (ecdhSharedSecret && ecdhSharedSecret.length > 0) {
+    const combinedIkm = new Uint8Array(bootstrapAuthRaw.length + ecdhSharedSecret.length);
+    combinedIkm.set(bootstrapAuthRaw, 0);
+    combinedIkm.set(ecdhSharedSecret, bootstrapAuthRaw.length);
+    const raw = await hkdfSha256(combinedIkm, salt, 'sentinelcam-v8-pfs-session', 32);
+    return importAesGcmKey(raw);
+  }
   const raw = await hkdfSha256(bootstrapAuthRaw, salt, 'sentinelcam-v3-fast-session', 32);
   return importAesGcmKey(raw);
 }
@@ -211,7 +275,9 @@ export async function computeSas(
   bootstrapAuthRaw: Uint8Array
 ): Promise<{ sasCode: string; sasSymbols: string }> {
   const authHex = bytesToHex(bootstrapAuthRaw);
-  const payload = encoder.encode(`sentinelcam-sas-v3:${normalizedCode}:${tokenId}:${deviceId}:${authHex}`);
+  const payload = encoder.encode(
+    `sentinelcam-sas-v3:${normalizedCode}:${tokenId}:${deviceId}:${authHex}`
+  );
   const digestBuf = await crypto.subtle.digest('SHA-256', payload);
   const digest = new Uint8Array(digestBuf);
 
@@ -245,6 +311,10 @@ export function extractSdpFingerprint(sdp: string): string {
   return match ? match[1].toUpperCase() : '';
 }
 
+function buildEnvelopeAad(id: string, mode: string, sender: string, ts: number): Uint8Array {
+  return encoder.encode(`v1:${id}:${mode}:${sender}:${ts}`);
+}
+
 export async function encryptEnvelope(
   msg: SignalMessage,
   aesKey: CryptoKey,
@@ -253,20 +323,24 @@ export async function encryptEnvelope(
 ): Promise<EncryptedEnvelope> {
   const iv = new Uint8Array(12);
   crypto.getRandomValues(iv);
+  const id = randomHex(12);
+  const ts = Date.now();
+  const aad = buildEnvelopeAad(id, mode, senderId, ts);
   const plaintext = encoder.encode(JSON.stringify(msg));
 
   const ciphertextBuf = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv, tagLength: 128 },
+    { name: 'AES-GCM', iv, additionalData: aad as BufferSource, tagLength: 128 },
     aesKey,
     plaintext
   );
 
   return {
     v: 1,
-    id: randomHex(12),
+    aad: 1,
+    id,
     mode,
     sender: senderId,
-    ts: Date.now(),
+    ts,
     iv: bytesToBase64(iv),
     ct: bytesToBase64(new Uint8Array(ciphertextBuf)),
   };
@@ -275,9 +349,9 @@ export async function encryptEnvelope(
 export async function decryptEnvelope(
   envelope: EncryptedEnvelope,
   aesKey: CryptoKey,
-  maxSkewMs = 180_000
+  maxSkewMs = 120_000
 ): Promise<SignalMessage | null> {
-  if (envelope.v !== 1 || !envelope.iv || !envelope.ct) {
+  if (envelope.v !== 1 || !envelope.id || !envelope.iv || !envelope.ct) {
     return null;
   }
 
@@ -287,12 +361,28 @@ export async function decryptEnvelope(
 
   try {
     const iv = base64ToBytes(envelope.iv);
+    if (iv.length !== 12) return null;
     const ct = base64ToBytes(envelope.ct);
-    const plainBuf = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: iv as BufferSource, tagLength: 128 },
-      aesKey,
-      ct as BufferSource
-    );
+    const params: AesGcmParams =
+      envelope.aad === 1
+        ? {
+            name: 'AES-GCM',
+            iv: iv as BufferSource,
+            additionalData: buildEnvelopeAad(
+              envelope.id,
+              envelope.mode,
+              envelope.sender,
+              envelope.ts
+            ) as BufferSource,
+            tagLength: 128,
+          }
+        : {
+            name: 'AES-GCM',
+            iv: iv as BufferSource,
+            tagLength: 128,
+          };
+
+    const plainBuf = await crypto.subtle.decrypt(params, aesKey, ct as BufferSource);
     return JSON.parse(decoder.decode(plainBuf)) as SignalMessage;
   } catch {
     return null;

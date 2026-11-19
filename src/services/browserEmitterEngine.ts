@@ -1,5 +1,6 @@
 import {
   calculateLockoutDurationMs,
+  computeEcdhSharedSecret,
   computeHelloAckProof,
   computeHelloWakeProof,
   computeSas,
@@ -7,6 +8,7 @@ import {
   deriveBootstrapKeys,
   deriveFastSessionKey,
   extractSdpFingerprint,
+  generateEphemeralEcdh,
   generateSecurePairingCode,
   normalizePairingCode,
   randomHex,
@@ -55,6 +57,7 @@ interface PersistedWebEmitterConfig {
     gpsTrackingMode: 'eco' | 'balanced' | 'precision';
     allowDeviceInfo: boolean;
     allowIntercom: boolean;
+    allowSmsRelay?: boolean;
   };
   accessProfiles: AccessProfile[];
 }
@@ -739,6 +742,21 @@ export class BrowserEmitterEngine {
         await this.handleGetDeviceInfo(handle, msg, grant.allowDeviceInfo);
         break;
 
+      case 'CMD_SEND_SMS':
+        await handle.signaling.send(
+          {
+            type: 'DATA_SMS_RESULT',
+            requestId: msg.requestId,
+            success: false,
+            phoneNumber: msg.phoneNumber,
+            error: 'Le Relais SMS via carte SIM est disponible uniquement sur l’application Android native (APK).',
+            remainingQuota: 0,
+            ts: Date.now(),
+          },
+          'sess'
+        );
+        break;
+
       case 'SDP_ANSWER':
         await this.handleSdpAnswer(msg);
         break;
@@ -888,10 +906,12 @@ export class BrowserEmitterEngine {
       return;
     }
 
+    const clientEcdhPub = msg.clientEcdhPub ?? '';
     const expectedProof = await computeHelloWakeProof(
       handle.keys.bootstrapAuthRaw,
       msg.clientNonce,
-      msg.tokenId
+      msg.tokenId,
+      clientEcdhPub
     );
 
     if (!constantTimeEqualHex(expectedProof, msg.proofHex)) {
@@ -903,11 +923,25 @@ export class BrowserEmitterEngine {
     }
 
     const serverNonce = randomHex(20);
+    let serverEcdhPub = '';
+    let ecdhSecret: Uint8Array | null = null;
+    if (clientEcdhPub) {
+      const serverEcdh = await generateEphemeralEcdh();
+      if (serverEcdh) {
+        const derived = await computeEcdhSharedSecret(serverEcdh.privateKey, clientEcdhPub);
+        if (derived) {
+          ecdhSecret = derived;
+          serverEcdhPub = serverEcdh.publicRawBase64;
+        }
+      }
+    }
+
     const sessionKey = await deriveFastSessionKey(
       handle.keys.bootstrapAuthRaw,
       msg.clientNonce,
       serverNonce,
-      this.config.deviceId
+      this.config.deviceId,
+      ecdhSecret
     );
     handle.signaling.setSessionKey(sessionKey);
 
@@ -915,7 +949,8 @@ export class BrowserEmitterEngine {
       handle.keys.bootstrapAuthRaw,
       msg.clientNonce,
       serverNonce,
-      this.config.deviceId
+      this.config.deviceId,
+      serverEcdhPub
     );
 
     const sas = await computeSas(
@@ -946,6 +981,8 @@ export class BrowserEmitterEngine {
         echoClientNonce: msg.clientNonce,
         serverNonce,
         serverProofHex,
+        serverEcdhPub: serverEcdhPub || undefined,
+        pfsEnabled: Boolean(ecdhSecret),
         sasCode: sas.sasCode,
         sasSymbols: sas.sasSymbols,
         portalState: this.mediaStream || this.intercomActive ? 'streaming' : 'standby',

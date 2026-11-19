@@ -10,7 +10,9 @@ import {
   Cpu,
   Eye,
   KeyRound,
+  Lock,
   MapPin,
+  MessageSquare,
   Mic,
   Monitor,
   Play,
@@ -95,6 +97,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const [allowLocation, setAllowLocation] = useState(false);
   const [allowDeviceInfo, setAllowDeviceInfo] = useState(true);
   const [allowIntercom, setAllowIntercom] = useState(true);
+  const [allowSmsRelay, setAllowSmsRelay] = useState(false);
 
   const webEngineRef = useRef<BrowserEmitterEngine | null>(null);
 
@@ -338,6 +341,28 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     }
   };
 
+  const handleToggleSmsRelay = async () => {
+    if (!portal) return;
+    setBusy(true);
+    try {
+      const targetVal = !(portal.globalShares.allowSmsRelay ?? false);
+      if (isNativeAndroid) {
+        if (targetVal && !portal.permissions.sms) {
+          const afterPerm = await SentinelNative.requestSmsPermission();
+          setPortal(afterPerm);
+        } else {
+          const next = await SentinelNative.setGlobalShareSettings({ allowSmsRelay: targetVal });
+          setPortal(next);
+        }
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.setGlobalShareSettings({ allowSmsRelay: targetVal });
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleToggleService = async () => {
     if (!portal) return;
     setBusy(true);
@@ -426,6 +451,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       allowLocation,
       allowDeviceInfo,
       allowIntercom,
+      allowSmsRelay,
     };
 
     setBusy(true);
@@ -701,6 +727,17 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         <Volume2 className="h-3.5 w-3.5 text-emerald-300" />
         <span>Talkie HP</span>
       </label>
+
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowSmsRelay}
+          onChange={(e) => setAllowSmsRelay(e.target.checked)}
+          className="h-4 w-4 rounded border-slate-700 bg-obsidian-900 text-emerald-500"
+        />
+        <MessageSquare className="h-3.5 w-3.5 text-orange-400" />
+        <span>Relais SMS</span>
+      </label>
     </div>
   );
 
@@ -772,6 +809,11 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               {prof.allowIntercom && (
                 <span className="rounded-md bg-teal-500/15 px-1.5 py-0.5 text-teal-300">
                   Talkie HP
+                </span>
+              )}
+              {prof.allowSmsRelay && (
+                <span className="rounded-md bg-orange-500/15 px-1.5 py-0.5 text-orange-300">
+                  SMS Urgence
                 </span>
               )}
             </div>
@@ -1337,6 +1379,37 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                 )}
               </div>
 
+              {/* Lost-Phone Emergency SMS Relay Control (Strictly Opt-In) */}
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
+                <div className="flex items-start gap-3">
+                  <MessageSquare className="mt-0.5 h-5 w-5 shrink-0 text-orange-400" />
+                  <div>
+                    <div className="text-xs font-bold text-white">
+                      Relais SMS d’Urgence (Téléphone perdu)
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      {shares.allowSmsRelay && (portal.permissions.sms || !isNativeAndroid)
+                        ? 'Activé — vous pouvez envoyer un SMS d’urgence depuis la carte SIM (max 5 / 10 min, notifié & journalisé).'
+                        : 'Désactivé — aucun SMS ne peut être envoyé à distance.'}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleToggleSmsRelay()}
+                  className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                    shares.allowSmsRelay && (portal.permissions.sms || !isNativeAndroid)
+                      ? 'border-orange-500/40 bg-orange-500/20 text-orange-200'
+                      : 'border-slate-700 bg-obsidian-900 text-slate-300 hover:border-orange-400'
+                  }`}
+                >
+                  {shares.allowSmsRelay && (portal.permissions.sms || !isNativeAndroid)
+                    ? 'Activé'
+                    : 'Activer'}
+                </button>
+              </div>
+
               {/* System Device Info Control */}
               <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
                 <div className="flex items-start gap-3">
@@ -1362,6 +1435,77 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* Cybersecurity Shield & Live Audit Log Card */}
+          <div className="rounded-3xl border border-emerald-500/25 bg-obsidian-900/95 p-5 shadow-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Lock className="h-4 w-4 text-emerald-400" />
+                <h2 className="text-sm font-extrabold text-white">
+                  Bouclier Cybersécurité v8.0
+                </h2>
+              </div>
+              <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
+                ZERO-SERVER E2EE
+              </span>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
+              <div className="rounded-xl border border-slate-800 bg-obsidian-950 p-2.5">
+                <div className="font-bold text-emerald-300">ECDH P-256 (PFS)</div>
+                <div className="text-slate-400">Clés éphémères par session</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-obsidian-950 p-2.5">
+                <div className="font-bold text-cyan-300">AES-256-GCM + AAD</div>
+                <div className="text-slate-400">Anti-rejeu 120s & intégrité</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-obsidian-950 p-2.5">
+                <div className="font-bold text-violet-300">
+                  {portal.hardwareKeystoreReady !== false ? 'Keystore Matériel' : 'Stockage Privé'}
+                </div>
+                <div className="text-slate-400">Codes chiffrés au repos</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-obsidian-950 p-2.5">
+                <div className="font-bold text-amber-300">Anti-Brute-Force</div>
+                <div className="text-slate-400">
+                  {portal.failedAttempts > 0
+                    ? `${portal.failedAttempts} rejet(s) récent(s)`
+                    : '0 tentative suspecte'}
+                </div>
+              </div>
+            </div>
+
+            {portal.logs.length > 0 && (
+              <div className="mt-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3">
+                <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  Journal d’audit récent
+                </div>
+                <div className="max-h-28 space-y-1 overflow-y-auto font-mono text-[10px]">
+                  {portal.logs.slice(0, 8).map((entry, idx) => (
+                    <div key={`${entry.timestamp}-${idx}`} className="flex items-start gap-2">
+                      <span className="shrink-0 text-slate-500">
+                        {new Date(entry.timestamp).toLocaleTimeString('fr-FR', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                      <span
+                        className={
+                          entry.level === 'warn'
+                            ? 'text-amber-300'
+                            : entry.level === 'security'
+                            ? 'text-emerald-300'
+                            : 'text-slate-300'
+                        }
+                      >
+                        {entry.message}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

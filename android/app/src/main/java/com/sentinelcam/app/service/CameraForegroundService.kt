@@ -25,6 +25,7 @@ import com.sentinelcam.app.MainActivity
 import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.data.DeviceDataHelper
+import com.sentinelcam.app.data.SmsRelayHelper
 import com.sentinelcam.app.location.LocationHistoryStore
 import com.sentinelcam.app.location.SmartLocationTracker
 import com.sentinelcam.app.receiver.KeepAliveReceiver
@@ -85,7 +86,8 @@ class CameraForegroundService : Service() {
         val allowContacts: Boolean = false,
         val allowLocation: Boolean = false,
         val allowDeviceInfo: Boolean = true,
-        val allowIntercom: Boolean = true
+        val allowIntercom: Boolean = true,
+        val allowSmsRelay: Boolean = false
     )
 
     override fun onCreate() {
@@ -474,7 +476,8 @@ class CameraForegroundService : Service() {
     }
 
     private fun isScreenReadyNow(): Boolean {
-        return prefs.globalAllowScreenShare && screenProjectionIntent != null
+        val activeScreen = isStreaming && currentMediaMode == "screen"
+        return prefs.globalAllowScreenShare && (screenProjectionIntent != null || activeScreen)
     }
 
     private fun resolveGrant(channelId: String): ResolvedGrant {
@@ -483,6 +486,7 @@ class CameraForegroundService : Service() {
         val globalLocation = prefs.globalAllowLocation
         val globalDevInfo = prefs.globalAllowDeviceInfo
         val globalIntercom = prefs.globalAllowIntercom
+        val globalSms = prefs.globalAllowSmsRelay
 
         if (channelId == OWNER_CHANNEL_ID) {
             return ResolvedGrant(
@@ -496,7 +500,8 @@ class CameraForegroundService : Service() {
                 allowContacts = globalContacts,
                 allowLocation = globalLocation,
                 allowDeviceInfo = globalDevInfo,
-                allowIntercom = globalIntercom
+                allowIntercom = globalIntercom,
+                allowSmsRelay = globalSms
             )
         }
 
@@ -541,7 +546,8 @@ class CameraForegroundService : Service() {
             allowContacts = globalContacts && prof.allowContacts,
             allowLocation = globalLocation && prof.allowLocation,
             allowDeviceInfo = globalDevInfo && prof.allowDeviceInfo,
-            allowIntercom = globalIntercom && prof.allowIntercom
+            allowIntercom = globalIntercom && prof.allowIntercom,
+            allowSmsRelay = globalSms && prof.allowSmsRelay
         )
     }
 
@@ -687,7 +693,9 @@ class CameraForegroundService : Service() {
             put("allowLocation", grant.allowLocation)
             put("allowDeviceInfo", grant.allowDeviceInfo)
             put("allowIntercom", grant.allowIntercom)
+            put("allowSmsRelay", grant.allowSmsRelay)
             put("intercomActive", intercomActive)
+            put("pfsEnabled", lastSessionPfs)
             put("gpsTrackerState", gpsTrackerState)
             put("gpsTrackingMode", prefs.gpsTrackingMode)
             put("gpsPointsCount", gpsPointsCount)
@@ -765,8 +773,13 @@ class CameraForegroundService : Service() {
                 return
             }
 
-            // On Android 14+, MediaProjection token is single-use: consume cleanly on launch
-            val intentCopy = Intent(projIntent)
+            // Ensure FGS is promoted with FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION before MediaProjection init!
+            if (!mediaProjectionFgsPromoted) {
+                startInForegroundSafely(promoteCamera = false, promoteScreen = true)
+            }
+
+            // Pass the original system consent Intent directly (avoids losing Binder extras on Android 14+)
+            val intentToUse = projIntent
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 screenProjectionIntent = null
             }
@@ -784,7 +797,7 @@ class CameraForegroundService : Service() {
             acquireStreamingLocks()
             ensureWebRtcInitialized().startScreenStream(
                 sessionId = sessionId,
-                projectionIntent = intentCopy,
+                projectionIntent = intentToUse,
                 enableAudio = effectiveAudio,
                 quality = quality,
                 allowIntercom = grant.allowIntercom
@@ -1130,6 +1143,64 @@ class CameraForegroundService : Service() {
                     }
                 }
 
+                "CMD_SEND_SMS" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val phone = msg.optString("phoneNumber", "")
+                    val contactName = msg.optString("contactName", "").takeIf { it.isNotBlank() }
+                    val bodyText = msg.optString("message", "")
+                    val includeGps = msg.optBoolean("includeGpsLink", false)
+
+                    if (!grant.allowSmsRelay) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_SMS_RESULT")
+                                put("requestId", reqId)
+                                put("success", false)
+                                put("phoneNumber", phone)
+                                put("error", "Le propriétaire n’a pas activé le Relais SMS d’urgence sur son smartphone.")
+                                put("remainingQuota", SmsRelayHelper.getRemainingQuota())
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val res = SmsRelayHelper.sendEmergencySms(
+                                context = applicationContext,
+                                rawPhoneNumber = phone,
+                                contactName = contactName,
+                                rawMessage = bodyText,
+                                includeGpsLink = includeGps && grant.allowLocation,
+                                locationStore = locationStore
+                            )
+                            if (res.success) {
+                                prefs.appendLog(
+                                    "security",
+                                    "SMS relais envoyé par ${grant.name} vers ${contactName ?: res.phoneNumber}"
+                                )
+                            } else {
+                                prefs.appendLog("warn", "SMS relais refusé : ${res.error}")
+                            }
+                            signalingEngine?.send(
+                                channelId = channelId,
+                                payload = JSONObject().apply {
+                                    put("type", "DATA_SMS_RESULT")
+                                    put("requestId", reqId)
+                                    put("success", res.success)
+                                    put("phoneNumber", res.phoneNumber)
+                                    if (res.sentText != null) put("sentText", res.sentText)
+                                    if (res.error != null) put("error", res.error)
+                                    put("remainingQuota", res.remainingQuota)
+                                    put("ts", System.currentTimeMillis())
+                                },
+                                mode = "sess"
+                            )
+                            notifyStateListeners()
+                        }
+                    }
+                }
+
                 "SDP_ANSWER" -> {
                     val sessionId = msg.optString("sessionId", "")
                     val sdp = msg.optString("sdp", "")
@@ -1175,12 +1246,14 @@ class CameraForegroundService : Service() {
         val tokenId = msg.optString("tokenId", "")
         val clientNonce = msg.optString("clientNonce", "")
         val proofHex = msg.optString("proofHex", "")
+        val clientEcdhPub = msg.optString("clientEcdhPub", "")
         if (tokenId.isEmpty() || clientNonce.isEmpty() || proofHex.isEmpty()) return
 
         val expectedProof = CryptoProtocol.computeHelloWakeProof(
             bootstrapAuthRaw = keys.bootstrapAuthKey,
             clientNonce = clientNonce,
-            tokenId = tokenId
+            tokenId = tokenId,
+            clientEcdhPub = clientEcdhPub
         )
 
         if (!CryptoProtocol.constantTimeEqualHex(expectedProof, proofHex)) {
@@ -1188,15 +1261,32 @@ class CameraForegroundService : Service() {
             prefs.failedAttempts = count
             val lockMs = CryptoProtocol.calculateLockoutDurationMs(count)
             if (lockMs > 0L) prefs.lockoutUntil = now + lockMs
+            prefs.appendLog("warn", "Tentative d’authentification rejetée (#$count).")
+            notifyStateListeners()
             return
         }
 
         val serverNonce = CryptoProtocol.randomHex(20)
+        var serverEcdhPub = ""
+        var ecdhSecret: ByteArray? = null
+        if (clientEcdhPub.isNotEmpty()) {
+            val serverEcdh = CryptoProtocol.generateEphemeralEcdh()
+            if (serverEcdh != null) {
+                val derivedSecret = CryptoProtocol.computeEcdhSharedSecret(serverEcdh.keyPair, clientEcdhPub)
+                if (derivedSecret != null) {
+                    ecdhSecret = derivedSecret
+                    serverEcdhPub = serverEcdh.publicRawBase64
+                }
+            }
+        }
+        lastSessionPfs = ecdhSecret != null
+
         val sessionKey = CryptoProtocol.deriveFastSessionKey(
             bootstrapAuthRaw = keys.bootstrapAuthKey,
             clientNonce = clientNonce,
             serverNonce = serverNonce,
-            deviceId = prefs.deviceId
+            deviceId = prefs.deviceId,
+            ecdhSharedSecret = ecdhSecret
         )
         signalingEngine?.registerSessionKey(channelId, clientNonce, sessionKey)
 
@@ -1204,7 +1294,8 @@ class CameraForegroundService : Service() {
             bootstrapAuthRaw = keys.bootstrapAuthKey,
             clientNonce = clientNonce,
             serverNonce = serverNonce,
-            deviceId = prefs.deviceId
+            deviceId = prefs.deviceId,
+            serverEcdhPub = serverEcdhPub
         )
 
         val sas = CryptoProtocol.computeSas(
@@ -1234,6 +1325,8 @@ class CameraForegroundService : Service() {
                 put("echoClientNonce", clientNonce)
                 put("serverNonce", serverNonce)
                 put("serverProofHex", serverProof)
+                if (serverEcdhPub.isNotEmpty()) put("serverEcdhPub", serverEcdhPub)
+                put("pfsEnabled", lastSessionPfs)
                 put("sasCode", sas.sasCode)
                 put("sasSymbols", sas.sasSymbols)
                 put("portalState", if (isStreaming) "streaming" else "standby")
@@ -1254,6 +1347,7 @@ class CameraForegroundService : Service() {
                 put("allowLocation", grant.allowLocation)
                 put("allowDeviceInfo", grant.allowDeviceInfo)
                 put("allowIntercom", grant.allowIntercom)
+                put("allowSmsRelay", grant.allowSmsRelay)
                 put("intercomActive", intercomActive)
                 put("gpsTrackerState", gpsTrackerState)
                 put("gpsTrackingMode", prefs.gpsTrackingMode)
@@ -1431,6 +1525,21 @@ class CameraForegroundService : Service() {
             }
         }
 
+        // Dedicated retry for MediaProjection alone so a restricted Camera/Location type never blocks Screen Share!
+        if (hasScreenConsent) {
+            try {
+                val mpOnly = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                }
+                startForeground(NOTIFICATION_ID, notification, mpOnly)
+                mediaProjectionFgsPromoted = true
+                return true
+            } catch (_: Throwable) {
+            }
+        }
+
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
@@ -1566,6 +1675,13 @@ class CameraForegroundService : Service() {
         var gpsLastFixTs: Long = 0L
             private set
 
+        @Volatile
+        var lastSessionPfs: Boolean = false
+            private set
+
+        fun hasActiveScreenProjectionConsent(): Boolean =
+            screenProjectionIntent != null || (isStreaming && currentMediaMode == "screen")
+
         fun clearLocationHistory(context: Context) {
             try {
                 val running = instance
@@ -1584,8 +1700,6 @@ class CameraForegroundService : Service() {
             } catch (_: Throwable) {
             }
         }
-
-        fun hasActiveScreenProjectionConsent(): Boolean = screenProjectionIntent != null
 
         fun addStateListener(listener: () -> Unit) {
             listeners.add(listener)
@@ -1615,7 +1729,8 @@ class CameraForegroundService : Service() {
         }
 
         fun grantScreenShareConsent(context: Context, projectionData: Intent) {
-            screenProjectionIntent = Intent(projectionData)
+            // Keep the system consent Intent untouched so MediaProjection binder token stays intact on Android 14+
+            screenProjectionIntent = projectionData
             try {
                 val appCtx = context.applicationContext
                 val intent = Intent(appCtx, CameraForegroundService::class.java).apply {

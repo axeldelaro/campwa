@@ -530,7 +530,7 @@ class MqttSignalingEngine(
     private fun markSeen(id: String): Boolean {
         if (seenIds.contains(id)) return false
         seenIds.add(id)
-        if (seenIds.size > 500) {
+        if (seenIds.size > 2000) {
             val first = seenIds.iterator().next()
             seenIds.remove(first)
         }

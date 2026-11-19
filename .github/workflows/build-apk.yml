@@ -122,18 +122,22 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v7.0.${{ github.run_number }}
-          name: "SentinelCam v7.0.${{ github.run_number }} (Historique GPS Continu Hors-Ligne & Ultra-Éco Batterie)"
+          tag_name: v8.0.${{ github.run_number }}
+          name: "SentinelCam v8.0.${{ github.run_number }} (Partage d’Écran Fixé • Cybersécurité Max PFS • Relais SMS Urgence)"
           body: |
-            ### 🛰️ SentinelCam v7.0 — Historique GPS Précis Hors-Ligne & Optimisation Batterie Ultra-Éco (`v7.0.${{ github.run_number }}`)
+            ### 🛡️ SentinelCam v8.0 — Partage d’Écran Corrigé, Cybersécurité Maximale (PFS ECDH P-256 + Keystore) & Relais SMS Urgence (`v8.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Historique GPS Continu 100 % Hors-Ligne (SQLite local)** : Enregistre chaque trajet avec précision (virages, vitesse, altitude, arrêts & durée de stationnement) même sans réseau ni serveur MQTT (rétention glissante 30 jours / 25 000 points), synchronisé en E2EE dès reconnexion.
-            - **Moteur GPS Anti-Drain Batterie (Veille 0 % à l’arrêt)** : Coupe automatiquement la puce GPS dès que le téléphone est immobile, passe sur le coprocesseur matériel `TYPE_SIGNIFICANT_MOTION` + capteur passif gratuit, et inclut un **bouclier batterie < 15 %** + 3 profils réglables (*Ultra-Éco*, *Équilibré*, *Précis*).
-            - **Optimisation Batterie Globale du Portail** : Suppression des réveils CPU inutiles en veille (boucle adaptative 30s, KeepAlive 15 min, pause complète des reconnexions sans réseau).
-            - **Carte Interactive OpenStreetMap (Leaflet) & Export GPX / CSV** : Tracé complet par période (*Aujourd’hui*, *24 h*, *7 j*, *30 j*), statistiques trajet (km, vitesse max, arrêts), journal cliquable et export `.gpx` / `.csv` en 1 clic.
-            - **Toutes les fonctions v6.0 incluses** : Talkie-Walkie Haut-Parleur 1-Sens, Caméra HD, Partage d’Écran, Contacts, Pass temporaires & Profils Amis.
+            - **Partage d’Écran 100 % Corrigé (Android 10 à 15+)** : Correction du bug Android 14+ qui coupait le flux après 3 s, promotion dédiée `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION`, préservation du token Binder système, alignement matériel 16 px (`MAINTAIN_RESOLUTION` + 1,8 Mbps) pour un affichage ultra-net.
+            - **Cybersécurité Renforcée au Maximum** :
+              - **Perfect Forward Secrecy (PFS)** par échange éphémère **ECDH P-256 (secp256r1)** intégré en 1-RTT.
+              - **AES-256-GCM + AAD** authentifiant les métadonnées d’enveloppe (`id`, `mode`, `sender`, `ts`), fenêtre anti-rejeu resserrée à **120 s** et cache anti-rejeu porté à 2 000 paquets.
+              - **Chiffrement au repos par Android Keystore Matériel** (`KeystoreVault` AES-256-GCM) pour les codes d’accès, `network_security_config` (zéro HTTP clair), durcissement WebView, CSP strict sur le site Web et journal d’audit visible.
+            - **Relais SMS d’Urgence (Téléphone Perdu — Opt-In) & Redirections Gratuites** :
+              - Si autorisé par le propriétaire (`SEND_SMS` + bouton dédié OFF par défaut), envoi de SMS directement depuis la carte SIM du smartphone perdu (avec lien GPS Google Maps optionnel, anti-abus 5 SMS / 10 min, notification + audit).
+              - Redirections 100 % gratuites (`sms:`, `WhatsApp`, copie 1 clic) disponibles même si le téléphone est hors-ligne.
+            - **Toutes les fonctions v7.0 incluses** : Historique GPS continu hors-ligne (SQLite + Carte Leaflet + GPX/CSV), Optimisation Batterie Ultra-Éco & Talkie-Walkie Haut-Parleur 1-Sens.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

@@ -1,5 +1,6 @@
 import {
   computeDtlsMediaSas,
+  computeEcdhSharedSecret,
   computeHelloAckProof,
   computeHelloWakeProof,
   computeSas,
@@ -7,8 +8,10 @@ import {
   deriveBootstrapKeys,
   deriveFastSessionKey,
   extractSdpFingerprint,
+  generateEphemeralEcdh,
   normalizePairingCode,
   randomHex,
+  type EphemeralEcdhPair,
 } from '../crypto/cryptoEngine';
 import type {
   ActiveAccessGrant,
@@ -18,6 +21,7 @@ import type {
   DataDeviceInfoMsg,
   DataLocationHistoryMsg,
   DataLocationMsg,
+  DataSmsResultMsg,
   DerivedBootstrapKeys,
   DeviceTelemetry,
   GpsTrackPoint,
@@ -60,6 +64,7 @@ export interface ControllerCallbacks {
   onLocationData?: (data: DataLocationMsg) => void;
   onLocationHistoryData?: (data: LocationHistoryBundle) => void;
   onDeviceInfoData?: (data: DataDeviceInfoMsg) => void;
+  onSmsResult?: (data: DataSmsResultMsg) => void;
   onStreamError?: (message: string) => void;
   onTalkieStateChange?: (active: boolean) => void;
   onTalkieLevel?: (level: number) => void;
@@ -97,6 +102,7 @@ export class SentinelWebRtcController {
   private localSdpFingerprint = '';
   private remoteSdpFingerprint = '';
   private pendingCandidates: IceCandidateMsg[] = [];
+  private ecdhPairsByNonce = new Map<string, EphemeralEcdhPair>();
   private historyReassembly = new Map<
     string,
     {
@@ -187,10 +193,21 @@ export class SentinelWebRtcController {
     if (!this.signaling || !this.bootstrapKeys || this.authenticated) return;
 
     const clientNonce = randomHex(20);
+    const ecdhPair = await generateEphemeralEcdh();
+    if (ecdhPair) {
+      if (this.ecdhPairsByNonce.size > 8) {
+        const firstKey = this.ecdhPairsByNonce.keys().next().value;
+        if (firstKey) this.ecdhPairsByNonce.delete(firstKey);
+      }
+      this.ecdhPairsByNonce.set(clientNonce, ecdhPair);
+    }
+
+    const clientEcdhPub = ecdhPair?.publicRawBase64 ?? '';
     const proofHex = await computeHelloWakeProof(
       this.bootstrapKeys.bootstrapAuthRaw,
       clientNonce,
-      this.tokenId
+      this.tokenId,
+      clientEcdhPub
     );
 
     if (this.desiredStreaming && !this.pc) {
@@ -206,6 +223,7 @@ export class SentinelWebRtcController {
         tokenId: this.tokenId,
         clientNonce,
         proofHex,
+        clientEcdhPub: clientEcdhPub || undefined,
         autoStartStream: this.desiredStreaming,
         sessionId: this.activeSessionId || randomHex(10),
         mediaMode: this.desiredMediaMode,
@@ -486,6 +504,27 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async sendRemoteSms(options: {
+    phoneNumber: string;
+    contactName?: string;
+    message: string;
+    includeGpsLink?: boolean;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SEND_SMS',
+        requestId: randomHex(8),
+        phoneNumber: options.phoneNumber,
+        contactName: options.contactName,
+        message: options.message,
+        includeGpsLink: Boolean(options.includeGpsLink),
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -528,6 +567,10 @@ export class SentinelWebRtcController {
         this.callbacks.onDeviceInfoData?.(msg);
         break;
 
+      case 'DATA_SMS_RESULT':
+        this.callbacks.onSmsResult?.(msg);
+        break;
+
       default:
         break;
     }
@@ -536,22 +579,35 @@ export class SentinelWebRtcController {
   private async handleHelloAck(msg: HelloAckMsg): Promise<void> {
     if (!this.signaling || !this.bootstrapKeys) return;
 
+    const serverEcdhPub = msg.serverEcdhPub ?? '';
     const expectedServerProof = await computeHelloAckProof(
       this.bootstrapKeys.bootstrapAuthRaw,
       msg.echoClientNonce,
       msg.serverNonce,
-      msg.deviceId
+      msg.deviceId,
+      serverEcdhPub
     );
 
     if (!constantTimeEqualHex(expectedServerProof, msg.serverProofHex)) {
       return;
     }
 
+    let ecdhSharedSecret: Uint8Array | null = null;
+    if (serverEcdhPub) {
+      const matchingPair = this.ecdhPairsByNonce.get(msg.echoClientNonce);
+      if (!matchingPair) return; // Reject unsolicited or mismatched PFS handshake
+      ecdhSharedSecret = await computeEcdhSharedSecret(matchingPair.privateKey, serverEcdhPub);
+      if (!ecdhSharedSecret) return;
+    }
+    // Zero ephemeral private keys immediately after deriving the session key
+    this.ecdhPairsByNonce.clear();
+
     const sessionKey = await deriveFastSessionKey(
       this.bootstrapKeys.bootstrapAuthRaw,
       msg.echoClientNonce,
       msg.serverNonce,
-      msg.deviceId
+      msg.deviceId,
+      ecdhSharedSecret
     );
     this.signaling.setSessionKey(sessionKey);
 
@@ -573,6 +629,7 @@ export class SentinelWebRtcController {
       allowLocation: msg.allowLocation ?? false,
       allowDeviceInfo: msg.allowDeviceInfo ?? true,
       allowIntercom: msg.allowIntercom ?? true,
+      allowSmsRelay: msg.allowSmsRelay ?? false,
     };
     this.allowIntercomGranted = accessGrant.allowIntercom;
 
@@ -617,6 +674,8 @@ export class SentinelWebRtcController {
       allowLocation: accessGrant.allowLocation,
       allowDeviceInfo: accessGrant.allowDeviceInfo,
       allowIntercom: accessGrant.allowIntercom,
+      allowSmsRelay: accessGrant.allowSmsRelay,
+      pfsEnabled: Boolean(ecdhSharedSecret) || Boolean(msg.pfsEnabled),
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,
       gpsPointsCount: msg.gpsPointsCount,
@@ -672,6 +731,8 @@ export class SentinelWebRtcController {
       allowLocation: msg.allowLocation,
       allowDeviceInfo: msg.allowDeviceInfo,
       allowIntercom: msg.allowIntercom,
+      allowSmsRelay: msg.allowSmsRelay,
+      pfsEnabled: msg.pfsEnabled,
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,
       gpsPointsCount: msg.gpsPointsCount,

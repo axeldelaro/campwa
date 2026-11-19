@@ -29,6 +29,7 @@ import org.webrtc.MediaStream
 import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.RtpParameters
 import org.webrtc.RtpTransceiver
 import org.webrtc.ScreenCapturerAndroid
 import org.webrtc.SdpObserver
@@ -295,13 +296,20 @@ class NativeWebRtcEngine(
         stopStreamOnWorker()
 
         val metrics = appContext.resources.displayMetrics
-        val targetW = if (quality == "sd") 540 else 720
-        val ratio = if (metrics.widthPixels > 0) {
-            metrics.heightPixels.toFloat() / metrics.widthPixels.toFloat()
+        val rawW = metrics.widthPixels.coerceAtLeast(360)
+        val rawH = metrics.heightPixels.coerceAtLeast(640)
+        val isLandscape = rawW > rawH
+
+        // Hardware H.264/VP8 encoders on Samsung/Xiaomi/Pixel require 16-pixel aligned dimensions
+        val maxShortEdge = if (quality == "sd") 544 else 720
+        val scale = if (isLandscape) {
+            (maxShortEdge.toFloat() / rawH.toFloat()).coerceAtMost(1.0f)
         } else {
-            16f / 9f
+            (maxShortEdge.toFloat() / rawW.toFloat()).coerceAtMost(1.0f)
         }
-        val targetH = ((targetW * ratio).toInt() / 2) * 2
+
+        val alignedW = (((rawW * scale).toInt() / 16) * 16).coerceIn(320, 1280)
+        val alignedH = (((rawH * scale).toInt() / 16) * 16).coerceIn(320, 1600)
 
         val screenCapturer = ScreenCapturerAndroid(
             projectionIntent,
@@ -318,7 +326,7 @@ class NativeWebRtcEngine(
         )
 
         currentMediaMode = "screen"
-        launchSession(sessionId, screenCapturer, targetW, targetH.coerceIn(480, 1600), 20, enableAudio, allowIntercom)
+        launchSession(sessionId, screenCapturer, alignedW, alignedH, 24, enableAudio, allowIntercom)
     }
 
     private fun startIntercomOnlyOnWorker(sessionId: String) {
@@ -437,7 +445,22 @@ class NativeWebRtcEngine(
             }
             peerConnection = pc
 
-            createdVideoTrack?.let { pc.addTrack(it, listOf("ARDAMS")) }
+            createdVideoTrack?.let { vTrack ->
+                val sender = pc.addTrack(vTrack, listOf("ARDAMS"))
+                if (currentMediaMode == "screen" && sender != null) {
+                    try {
+                        val params = sender.parameters
+                        params.degradationPreference =
+                            RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
+                        for (enc in params.encodings) {
+                            enc.maxBitrateBps = 1_800_000
+                            enc.maxFramerate = 24
+                        }
+                        sender.parameters = params
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
 
             val localAudio = audioTrack
             if (localAudio != null) {

@@ -21,6 +21,7 @@ import {
   Mail,
   MapPin,
   Maximize2,
+  MessageSquare,
   Mic,
   MicOff,
   Monitor,
@@ -30,6 +31,7 @@ import {
   RefreshCw,
   Route,
   Search,
+  Send,
   Share2,
   ShieldAlert,
   ShieldCheck,
@@ -40,6 +42,7 @@ import {
   Video,
   Volume2,
   VolumeX,
+  X,
   Zap,
 } from 'lucide-react';
 import { normalizePairingCode } from '../crypto/cryptoEngine';
@@ -127,6 +130,15 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [deviceInfoLoading, setDeviceInfoLoading] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
+  // Emergency / Lost-Phone SMS Relay & Free Redirect Composer
+  const [smsOpen, setSmsOpen] = useState(false);
+  const [smsPhone, setSmsPhone] = useState('');
+  const [smsContactName, setSmsContactName] = useState('');
+  const [smsBody, setSmsBody] = useState('');
+  const [smsIncludeGps, setSmsIncludeGps] = useState(true);
+  const [smsSending, setSmsSending] = useState(false);
+  const [smsResultMsg, setSmsResultMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
   const [sasInfo, setSasInfo] = useState<{
     deviceName: string;
     sasCode: string;
@@ -179,6 +191,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             allowLocation: t.allowLocation ?? prev?.allowLocation ?? false,
             allowDeviceInfo: t.allowDeviceInfo ?? prev?.allowDeviceInfo ?? true,
             allowIntercom: t.allowIntercom ?? prev?.allowIntercom ?? true,
+            allowSmsRelay: t.allowSmsRelay ?? prev?.allowSmsRelay ?? false,
           }));
         }
       },
@@ -259,6 +272,20 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         setDeviceInfoLoading(false);
         if (data.info) {
           setDeviceInfo(data.info);
+        }
+      },
+      onSmsResult: (res) => {
+        setSmsSending(false);
+        if (res.success) {
+          setSmsResultMsg({
+            ok: true,
+            text: `SMS envoyé depuis le smartphone vers ${res.phoneNumber} ! (Quota restant : ${res.remainingQuota}/5)`,
+          });
+        } else {
+          setSmsResultMsg({
+            ok: false,
+            text: res.error || 'Échec de l’envoi SMS.',
+          });
         }
       },
       onStreamError: (msg) => {
@@ -622,6 +649,49 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const canViewLocation = accessGrant ? accessGrant.allowLocation : false;
   const canViewDeviceInfo = accessGrant ? accessGrant.allowDeviceInfo : true;
   const canUseIntercom = accessGrant ? accessGrant.allowIntercom : true;
+  const canUseSmsRelay = accessGrant ? accessGrant.allowSmsRelay : false;
+
+  const openSmsComposer = (phone = '', name = '') => {
+    setSmsPhone(phone);
+    setSmsContactName(name);
+    setSmsResultMsg(null);
+    if (!smsBody) {
+      setSmsBody('Bonjour, je n’ai plus accès à mon téléphone. Merci de me contacter dès que possible.');
+    }
+    setSmsOpen(true);
+  };
+
+  const buildComposedSmsText = () => {
+    let text = smsBody.trim();
+    if (smsIncludeGps && locationData) {
+      const gpsUrl = `https://maps.google.com/?q=${locationData.latitude.toFixed(5)},${locationData.longitude.toFixed(5)}`;
+      if (!text.includes('maps.google.com')) {
+        text = `${text}\nGPS: ${gpsUrl}`;
+      }
+    }
+    return text;
+  };
+
+  const handleSendRemoteSms = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!smsPhone.trim() || !smsBody.trim()) return;
+    setSmsSending(true);
+    setSmsResultMsg(null);
+    await controllerRef.current?.sendRemoteSms({
+      phoneNumber: smsPhone.trim(),
+      contactName: smsContactName.trim() || undefined,
+      message: smsBody.trim(),
+      includeGpsLink: smsIncludeGps && canViewLocation,
+    });
+    window.setTimeout(() => setSmsSending(false), 12000);
+  };
+
+  const cleanWaDigits = smsPhone.replace(/[^0-9]/g, '');
+  const composedPreviewText = buildComposedSmsText();
+  const smsSchemeHref = `sms:${encodeURIComponent(smsPhone.trim())}?body=${encodeURIComponent(composedPreviewText)}`;
+  const whatsappHref = cleanWaDigits
+    ? `https://wa.me/${cleanWaDigits}?text=${encodeURIComponent(composedPreviewText)}`
+    : `https://wa.me/?text=${encodeURIComponent(composedPreviewText)}`;
 
   /* ==================== SCREEN 1: INSTANT 6-CHAR CODE ENTRY ==================== */
   if (!isSessionOpen) {
@@ -855,7 +925,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 font-mono text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/20"
             >
               <Lock className="h-3.5 w-3.5" />
-              <span>E2EE {sasInfo.sasCode}</span>
+              <span>
+                {telemetry?.pfsEnabled ? 'PFS P-256 • ' : 'E2EE '}
+                {sasInfo.sasCode}
+              </span>
             </button>
           )}
 
@@ -971,17 +1044,21 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
         <button
           type="button"
-          disabled={!canViewContacts}
-          onClick={handleOpenContactsTab}
-          title={!canViewContacts ? 'Le propriétaire n’a pas activé le partage des contacts' : undefined}
-          className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+          onClick={() => {
+            if (canViewContacts) {
+              handleOpenContactsTab();
+            } else {
+              setViewerTab('contacts');
+            }
+          }}
+          className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-bold transition ${
             viewerTab === 'contacts'
               ? 'border-amber-400 bg-amber-400 text-obsidian-950'
               : 'border-slate-800 bg-obsidian-900 text-slate-300 hover:text-white'
           }`}
         >
           <BookUser className="h-4 w-4" />
-          <span>{canViewContacts ? 'Contacts partagés' : 'Contacts (Privé)'}</span>
+          <span>{canViewContacts ? 'Contacts & SMS' : 'SMS Urgence'}</span>
         </button>
 
         <button
@@ -1283,15 +1360,27 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               </div>
             </div>
 
-            <button
-              type="button"
-              disabled={contactsLoading}
-              onClick={() => void handleFetchContacts(contactsQuery)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3.5 py-2 text-xs font-bold text-amber-200 hover:bg-amber-500/25"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${contactsLoading ? 'animate-spin' : ''}`} />
-              <span>Actualiser</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => openSmsComposer('', '')}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-orange-500 px-3.5 py-2 text-xs font-extrabold text-obsidian-950 shadow-lg hover:bg-orange-400"
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                <span>Envoyer un SMS d’urgence</span>
+              </button>
+              {canViewContacts && (
+                <button
+                  type="button"
+                  disabled={contactsLoading}
+                  onClick={() => void handleFetchContacts(contactsQuery)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3.5 py-2 text-xs font-bold text-amber-200 hover:bg-amber-500/25"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${contactsLoading ? 'animate-spin' : ''}`} />
+                  <span>Actualiser</span>
+                </button>
+              )}
+            </div>
           </div>
 
           <form
@@ -1356,18 +1445,29 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                           <Phone className="h-3 w-3" />
                           <span>{ph}</span>
                         </a>
-                        <button
-                          type="button"
-                          onClick={() => void handleCopySmall(ph, `${c.id}-p-${idx}`)}
-                          className="rounded p-1 text-slate-500 hover:text-white"
-                          title="Copier le numéro"
-                        >
-                          {copiedKey === `${c.id}-p-${idx}` ? (
-                            <Check className="h-3 w-3 text-emerald-400" />
-                          ) : (
-                            <Copy className="h-3 w-3" />
-                          )}
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openSmsComposer(ph, c.name)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-orange-500/35 bg-orange-500/15 px-2 py-0.5 text-[10px] font-bold text-orange-200 hover:bg-orange-500/30"
+                            title="Envoyer un SMS à ce contact"
+                          >
+                            <MessageSquare className="h-3 w-3" />
+                            <span>SMS</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleCopySmall(ph, `${c.id}-p-${idx}`)}
+                            className="rounded p-1 text-slate-500 hover:text-white"
+                            title="Copier le numéro"
+                          >
+                            {copiedKey === `${c.id}-p-${idx}` ? (
+                              <Check className="h-3 w-3 text-emerald-400" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
+                          </button>
+                        </div>
                       </div>
                     ))}
                     {c.emails.map((em, idx) => (
@@ -1729,6 +1829,168 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 Cliquez sur « Actualiser » pour lire l’état du smartphone.
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== EMERGENCY SMS RELAY & FREE REDIRECT MODAL ==================== */}
+      {smsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-3xl border border-slate-700 bg-obsidian-900 p-5 shadow-2xl">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-orange-500/40 bg-orange-500/15 text-orange-300">
+                  <MessageSquare className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-white">
+                    Envoyer un SMS {smsContactName ? `à ${smsContactName}` : 'd’urgence'}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Relais SIM depuis le smartphone perdu ou redirection gratuite directe.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSmsOpen(false)}
+                className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form onSubmit={(e) => void handleSendRemoteSms(e)} className="mt-4 space-y-3">
+              <div>
+                <label className="mb-1 block text-[11px] font-bold text-slate-300">
+                  Numéro du destinataire
+                </label>
+                <input
+                  type="tel"
+                  required
+                  value={smsPhone}
+                  onChange={(e) => setSmsPhone(e.target.value)}
+                  placeholder="+33 6 12 34 56 78"
+                  className="w-full rounded-xl border border-slate-700 bg-obsidian-950 px-3.5 py-2.5 font-mono text-sm text-white placeholder-slate-500 focus:border-orange-400 focus:outline-none"
+                />
+              </div>
+
+              {/* Quick Lost-Phone Templates */}
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  'Téléphone égaré : merci de me contacter si vous le trouvez.',
+                  'Urgence : je n’ai plus accès à mon téléphone, appelle-moi sur un autre numéro.',
+                  'Voici la dernière position connue de mon smartphone.',
+                ].map((tpl, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setSmsBody(tpl)}
+                    className="rounded-lg border border-slate-700 bg-obsidian-950 px-2.5 py-1 text-[10px] font-semibold text-slate-300 hover:border-orange-400/50 hover:text-white"
+                  >
+                    Modèle {i + 1}
+                  </button>
+                ))}
+              </div>
+
+              <div>
+                <div className="mb-1 flex items-center justify-between text-[11px]">
+                  <label className="font-bold text-slate-300">Message</label>
+                  <span className="font-mono text-[10px] text-slate-500">
+                    {smsBody.length}/320 car.
+                  </span>
+                </div>
+                <textarea
+                  rows={3}
+                  maxLength={320}
+                  required
+                  value={smsBody}
+                  onChange={(e) => setSmsBody(e.target.value)}
+                  placeholder="Tapez votre message..."
+                  className="w-full rounded-xl border border-slate-700 bg-obsidian-950 p-3 text-xs text-white placeholder-slate-500 focus:border-orange-400 focus:outline-none"
+                />
+              </div>
+
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={smsIncludeGps}
+                  onChange={(e) => setSmsIncludeGps(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-obsidian-950 text-orange-500"
+                />
+                <span>Joindre automatiquement le lien Google Maps GPS (si disponible)</span>
+              </label>
+
+              {smsResultMsg && (
+                <div
+                  className={`rounded-xl border p-3 text-xs ${
+                    smsResultMsg.ok
+                      ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                      : 'border-rose-500/40 bg-rose-500/15 text-rose-200'
+                  }`}
+                >
+                  {smsResultMsg.text}
+                </div>
+              )}
+
+              {/* Option 1: Direct E2EE SIM Relay from the Smartphone */}
+              <div className="rounded-2xl border border-orange-500/30 bg-orange-500/10 p-3">
+                <button
+                  type="submit"
+                  disabled={!canUseSmsRelay || smsSending || !smsPhone.trim() || !smsBody.trim()}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 py-2.5 text-xs font-extrabold text-obsidian-950 shadow-lg transition hover:bg-orange-400 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <Send className="h-4 w-4" />
+                  <span>
+                    {smsSending
+                      ? 'Envoi chiffré vers le smartphone...'
+                      : 'Envoyer depuis le smartphone (Relais SIM gratuit)'}
+                  </span>
+                </button>
+                <p className="mt-1.5 text-center text-[10px] text-orange-200/80">
+                  {canUseSmsRelay
+                    ? 'Autorisé par le propriétaire • Envoi direct via la carte SIM du smartphone (chiffré E2EE).'
+                    : 'Relais SIM non activé sur le smartphone (utilisez les redirections gratuites ci-dessous).'}
+                </p>
+              </div>
+
+              {/* Option 2: 100% Free Direct Redirects from Current Device */}
+              <div className="space-y-2 border-t border-slate-800 pt-3">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  Redirections gratuites depuis votre appareil actuel
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <a
+                    href={smsSchemeHref}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-2.5 py-2 text-[11px] font-bold text-slate-200 hover:border-cyan-400/50 hover:text-cyan-200"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5 text-cyan-400" />
+                    <span>Appli SMS</span>
+                  </a>
+                  <a
+                    href={whatsappHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-2.5 py-2 text-[11px] font-bold text-slate-200 hover:border-emerald-400/50 hover:text-emerald-200"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>WhatsApp</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopySmall(composedPreviewText, 'sms-copy')}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-2.5 py-2 text-[11px] font-bold text-slate-200 hover:border-amber-400/50 hover:text-amber-200"
+                  >
+                    {copiedKey === 'sms-copy' ? (
+                      <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5 text-amber-400" />
+                    )}
+                    <span>{copiedKey === 'sms-copy' ? 'Copié' : 'Copier'}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}

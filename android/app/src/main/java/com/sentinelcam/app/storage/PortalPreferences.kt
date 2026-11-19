@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
 import com.sentinelcam.app.crypto.CryptoProtocol
+import com.sentinelcam.app.crypto.KeystoreVault
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -28,6 +29,7 @@ data class AccessProfileRecord(
     val allowLocation: Boolean,
     val allowDeviceInfo: Boolean,
     val allowIntercom: Boolean,
+    val allowSmsRelay: Boolean = false,
     val lastAccessAt: Long?
 )
 
@@ -45,9 +47,9 @@ class PortalPreferences(context: Context) {
         synchronized(LOCK) {
             if (prefs.getString(KEY_PAIRING_CODE, null).isNullOrEmpty()) {
                 prefs.edit()
-                    .putString(KEY_PAIRING_CODE, CryptoProtocol.generateSecurePairingCode())
+                    .putString(KEY_PAIRING_CODE, KeystoreVault.encrypt(CryptoProtocol.generateSecurePairingCode()))
                     .putString(KEY_DEVICE_ID, "and-${CryptoProtocol.randomHex(6)}")
-                    .putString(KEY_DEVICE_SALT, CryptoProtocol.randomHex(32))
+                    .putString(KEY_DEVICE_SALT, KeystoreVault.encrypt(CryptoProtocol.randomHex(32)))
                     .commit()
             }
         }
@@ -117,14 +119,27 @@ class PortalPreferences(context: Context) {
             prefs.edit().putBoolean(KEY_GLOBAL_INTERCOM, value).commit()
         }
 
+    /** Strictly opt-in (OFF by default): Lost-Phone Emergency SMS Relay via native SIM */
+    var globalAllowSmsRelay: Boolean
+        get() = prefs.getBoolean(KEY_GLOBAL_SMS_RELAY, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GLOBAL_SMS_RELAY, value).commit()
+        }
+
     val pairingCode: String
-        get() = prefs.getString(KEY_PAIRING_CODE, null) ?: CryptoProtocol.generateSecurePairingCode()
+        get() {
+            val raw = prefs.getString(KEY_PAIRING_CODE, null)
+            return KeystoreVault.decrypt(raw) ?: CryptoProtocol.generateSecurePairingCode()
+        }
 
     val deviceId: String
         get() = prefs.getString(KEY_DEVICE_ID, null) ?: "and-default"
 
     val deviceSalt: String
-        get() = prefs.getString(KEY_DEVICE_SALT, null) ?: CryptoProtocol.randomHex(32)
+        get() {
+            val raw = prefs.getString(KEY_DEVICE_SALT, null)
+            return KeystoreVault.decrypt(raw) ?: CryptoProtocol.randomHex(32)
+        }
 
     val deviceName: String
         get() {
@@ -185,8 +200,8 @@ class PortalPreferences(context: Context) {
                 tries++
             }
             prefs.edit()
-                .putString(KEY_PAIRING_CODE, nextCode)
-                .putString(KEY_DEVICE_SALT, CryptoProtocol.randomHex(32))
+                .putString(KEY_PAIRING_CODE, KeystoreVault.encrypt(nextCode))
+                .putString(KEY_DEVICE_SALT, KeystoreVault.encrypt(CryptoProtocol.randomHex(32)))
                 .remove(KEY_PAIRED_TOKEN_ID)
                 .remove(KEY_PAIRED_KEY_HEX)
                 .remove(KEY_SAS_CODE)
@@ -217,7 +232,8 @@ class PortalPreferences(context: Context) {
 
     fun getAccessProfiles(): List<AccessProfileRecord> {
         synchronized(LOCK) {
-            val raw = prefs.getString(KEY_ACCESS_PROFILES, null) ?: return emptyList()
+            val stored = prefs.getString(KEY_ACCESS_PROFILES, null) ?: return emptyList()
+            val raw = KeystoreVault.decrypt(stored) ?: return emptyList()
             return try {
                 val arr = JSONArray(raw)
                 val out = ArrayList<AccessProfileRecord>(arr.length())
@@ -241,6 +257,7 @@ class PortalPreferences(context: Context) {
                             allowLocation = o.optBoolean("allowLocation", false),
                             allowDeviceInfo = o.optBoolean("allowDeviceInfo", true),
                             allowIntercom = o.optBoolean("allowIntercom", true),
+                            allowSmsRelay = o.optBoolean("allowSmsRelay", false),
                             lastAccessAt = lastVal
                         )
                     )
@@ -269,7 +286,8 @@ class PortalPreferences(context: Context) {
         allowContacts: Boolean,
         allowLocation: Boolean,
         allowDeviceInfo: Boolean,
-        allowIntercom: Boolean
+        allowIntercom: Boolean,
+        allowSmsRelay: Boolean = false
     ): AccessProfileRecord {
         synchronized(LOCK) {
             val cleanCode = CryptoProtocol.normalizePairingCode(rawCode)
@@ -303,6 +321,7 @@ class PortalPreferences(context: Context) {
                 allowLocation = allowLocation,
                 allowDeviceInfo = allowDeviceInfo,
                 allowIntercom = allowIntercom,
+                allowSmsRelay = allowSmsRelay,
                 lastAccessAt = existing?.lastAccessAt
             )
 
@@ -364,11 +383,12 @@ class PortalPreferences(context: Context) {
                     put("allowLocation", p.allowLocation)
                     put("allowDeviceInfo", p.allowDeviceInfo)
                     put("allowIntercom", p.allowIntercom)
+                    put("allowSmsRelay", p.allowSmsRelay)
                     put("lastAccessAt", p.lastAccessAt ?: JSONObject.NULL)
                 }
             )
         }
-        prefs.edit().putString(KEY_ACCESS_PROFILES, arr.toString()).commit()
+        prefs.edit().putString(KEY_ACCESS_PROFILES, KeystoreVault.encrypt(arr.toString())).commit()
     }
 
     fun appendLog(level: String, message: String) {
@@ -429,6 +449,7 @@ class PortalPreferences(context: Context) {
         private const val KEY_GPS_TRACKING_MODE = "gps_tracking_mode"
         private const val KEY_GLOBAL_DEVICE_INFO = "global_allow_device_info"
         private const val KEY_GLOBAL_INTERCOM = "global_allow_intercom"
+        private const val KEY_GLOBAL_SMS_RELAY = "global_allow_sms_relay"
         private const val KEY_PAIRING_CODE = "pairing_code"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_DEVICE_SALT = "device_salt"

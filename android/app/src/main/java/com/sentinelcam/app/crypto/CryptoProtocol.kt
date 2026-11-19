@@ -2,10 +2,20 @@ package com.sentinelcam.app.crypto
 
 import android.util.Base64
 import org.json.JSONObject
+import java.math.BigInteger
+import java.security.KeyFactory
+import java.security.KeyPair
+import java.security.KeyPairGenerator
 import java.security.MessageDigest
+import java.security.PrivateKey
 import java.security.SecureRandom
+import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
+import java.security.spec.ECPoint
+import java.security.spec.ECPublicKeySpec
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
+import javax.crypto.KeyAgreement
 import javax.crypto.Mac
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
@@ -28,9 +38,19 @@ data class SasPair(
     val sasSymbols: String
 )
 
+data class EphemeralEcdhPair(
+    val keyPair: KeyPair,
+    val publicRawBase64: String
+)
+
 /**
- * SentinelCam v3.0 Cryptographic Engine — 100% byte-identical with WebCrypto (`cryptoEngine.ts`).
- * Memoizes PBKDF2 keys for 0ms reconnects and uses stateless 1-RTT HKDF session derivation.
+ * SentinelCam v8.0 Hardened Cryptographic Engine — 100% byte-identical with WebCrypto (`cryptoEngine.ts`).
+ *
+ * Security Guarantees:
+ * - 100,000-round PBKDF2-HMAC-SHA256 key stretching (memoized in RAM for 0ms reconnects)
+ * - True 1-RTT Ephemeral ECDH P-256 (secp256r1) Perfect Forward Secrecy (PFS) mixed into HKDF-SHA256
+ * - AES-256-GCM with 96-bit CSPRNG IV and Additional Authenticated Data (AAD) binding envelope metadata
+ * - Constant-time HMAC verification & ±120s anti-replay timestamp window
  */
 object CryptoProtocol {
     private const val PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -104,6 +124,73 @@ object CryptoProtocol {
         return derived
     }
 
+    /* ==================== EPHEMERAL ECDH P-256 (PERFECT FORWARD SECRECY) ==================== */
+
+    fun generateEphemeralEcdh(): EphemeralEcdhPair? {
+        return try {
+            val kpg = KeyPairGenerator.getInstance("EC")
+            kpg.initialize(ECGenParameterSpec("secp256r1"), secureRandom)
+            val kp = kpg.generateKeyPair()
+            val ecPub = kp.public as ECPublicKey
+            val raw65 = encodeUncompressedP256Point(ecPub.w)
+            EphemeralEcdhPair(
+                keyPair = kp,
+                publicRawBase64 = Base64.encodeToString(raw65, Base64.NO_WRAP)
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    fun computeEcdhSharedSecret(localKeyPair: KeyPair, peerRawBase64: String): ByteArray? {
+        return try {
+            val raw = Base64.decode(peerRawBase64, Base64.NO_WRAP)
+            if (raw.size != 65 || raw[0] != 0x04.toByte()) return null
+            val x = BigInteger(1, raw.copyOfRange(1, 33))
+            val y = BigInteger(1, raw.copyOfRange(33, 65))
+            val ecParams = (localKeyPair.public as ECPublicKey).params
+            val peerSpec = ECPublicKeySpec(ECPoint(x, y), ecParams)
+            val peerPub = KeyFactory.getInstance("EC").generatePublic(peerSpec)
+
+            val ka = KeyAgreement.getInstance("ECDH")
+            ka.init(localKeyPair.private as PrivateKey)
+            ka.doPhase(peerPub, true)
+            val secret = ka.generateSecret()
+            if (secret.size == 32) secret else normalize32Bytes(secret)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun encodeUncompressedP256Point(point: ECPoint): ByteArray {
+        val x = bigIntToFixed32(point.affineX)
+        val y = bigIntToFixed32(point.affineY)
+        val out = ByteArray(65)
+        out[0] = 0x04
+        System.arraycopy(x, 0, out, 1, 32)
+        System.arraycopy(y, 0, out, 33, 32)
+        return out
+    }
+
+    private fun bigIntToFixed32(v: BigInteger): ByteArray {
+        val raw = v.toByteArray()
+        return normalize32Bytes(raw)
+    }
+
+    private fun normalize32Bytes(raw: ByteArray): ByteArray {
+        val out = ByteArray(32)
+        if (raw.size == 32) {
+            System.arraycopy(raw, 0, out, 0, 32)
+        } else if (raw.size > 32) {
+            System.arraycopy(raw, raw.size - 32, out, 0, 32)
+        } else {
+            System.arraycopy(raw, 0, out, 32 - raw.size, raw.size)
+        }
+        return out
+    }
+
+    /* ==================== HKDF / HMAC / SESSION KEYS ==================== */
+
     fun hkdfSha256(ikm: ByteArray, salt: ByteArray, infoStr: String, lengthBytes: Int = 32): ByteArray {
         val actualSalt = if (salt.isEmpty()) ByteArray(32) else salt
         val prk = hmacSha256Raw(actualSalt, ikm)
@@ -143,27 +230,38 @@ object CryptoProtocol {
     fun computeHelloWakeProof(
         bootstrapAuthRaw: ByteArray,
         clientNonce: String,
-        tokenId: String
+        tokenId: String,
+        clientEcdhPub: String = ""
     ): String {
-        return hmacSha256Hex(bootstrapAuthRaw, "hello-wake-v3:$clientNonce:$tokenId")
+        val suffix = if (clientEcdhPub.isNotEmpty()) ":$clientEcdhPub" else ""
+        return hmacSha256Hex(bootstrapAuthRaw, "hello-wake-v3:$clientNonce:$tokenId$suffix")
     }
 
     fun computeHelloAckProof(
         bootstrapAuthRaw: ByteArray,
         clientNonce: String,
         serverNonce: String,
-        deviceId: String
+        deviceId: String,
+        serverEcdhPub: String = ""
     ): String {
-        return hmacSha256Hex(bootstrapAuthRaw, "hello-ack-v3:$clientNonce:$serverNonce:$deviceId")
+        val suffix = if (serverEcdhPub.isNotEmpty()) ":$serverEcdhPub" else ""
+        return hmacSha256Hex(bootstrapAuthRaw, "hello-ack-v3:$clientNonce:$serverNonce:$deviceId$suffix")
     }
 
     fun deriveFastSessionKey(
         bootstrapAuthRaw: ByteArray,
         clientNonce: String,
         serverNonce: String,
-        deviceId: String
+        deviceId: String,
+        ecdhSharedSecret: ByteArray? = null
     ): ByteArray {
         val salt = "$clientNonce:$serverNonce:$deviceId".toByteArray(Charsets.UTF_8)
+        if (ecdhSharedSecret != null && ecdhSharedSecret.isNotEmpty()) {
+            val combinedIkm = ByteArray(bootstrapAuthRaw.size + ecdhSharedSecret.size)
+            System.arraycopy(bootstrapAuthRaw, 0, combinedIkm, 0, bootstrapAuthRaw.size)
+            System.arraycopy(ecdhSharedSecret, 0, combinedIkm, bootstrapAuthRaw.size, ecdhSharedSecret.size)
+            return hkdfSha256(combinedIkm, salt, "sentinelcam-v8-pfs-session", 32)
+        }
         return hkdfSha256(bootstrapAuthRaw, salt, "sentinelcam-v3-fast-session", 32)
     }
 
@@ -197,6 +295,12 @@ object CryptoProtocol {
         return match.groupValues[1].uppercase()
     }
 
+    /* ==================== AES-256-GCM + AAD METADATA BINDING ==================== */
+
+    private fun buildEnvelopeAad(id: String, mode: String, sender: String, ts: Long): ByteArray {
+        return "v1:$id:$mode:$sender:$ts".toByteArray(Charsets.UTF_8)
+    }
+
     fun encryptEnvelope(
         payload: JSONObject,
         aesKeyBytes: ByteArray,
@@ -205,17 +309,22 @@ object CryptoProtocol {
     ): String {
         val iv = ByteArray(12)
         secureRandom.nextBytes(iv)
+        val id = randomHex(12)
+        val ts = System.currentTimeMillis()
+        val aad = buildEnvelopeAad(id, mode, senderId, ts)
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKeyBytes, "AES"), GCMParameterSpec(128, iv))
+        cipher.updateAAD(aad)
         val ciphertext = cipher.doFinal(payload.toString().toByteArray(Charsets.UTF_8))
 
         val envelope = JSONObject().apply {
             put("v", 1)
-            put("id", randomHex(12))
+            put("aad", 1)
+            put("id", id)
             put("mode", mode)
             put("sender", senderId)
-            put("ts", System.currentTimeMillis())
+            put("ts", ts)
             put("iv", Base64.encodeToString(iv, Base64.NO_WRAP))
             put("ct", Base64.encodeToString(ciphertext, Base64.NO_WRAP))
         }
@@ -225,21 +334,28 @@ object CryptoProtocol {
     fun decryptEnvelope(
         envelope: JSONObject,
         aesKeyBytes: ByteArray,
-        maxSkewMs: Long = 180_000L
+        maxSkewMs: Long = 120_000L
     ): JSONObject? {
         if (envelope.optInt("v", 0) != 1) return null
         val ts = envelope.optLong("ts", 0L)
         if (abs(System.currentTimeMillis() - ts) > maxSkewMs) return null
 
+        val id = envelope.optString("id", "")
+        val mode = envelope.optString("mode", "")
+        val sender = envelope.optString("sender", "")
         val ivB64 = envelope.optString("iv", "")
         val ctB64 = envelope.optString("ct", "")
-        if (ivB64.isEmpty() || ctB64.isEmpty()) return null
+        if (id.isEmpty() || ivB64.isEmpty() || ctB64.isEmpty()) return null
 
         return try {
             val iv = Base64.decode(ivB64, Base64.NO_WRAP)
+            if (iv.size != 12) return null
             val ct = Base64.decode(ctB64, Base64.NO_WRAP)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKeyBytes, "AES"), GCMParameterSpec(128, iv))
+            if (envelope.optInt("aad", 0) == 1) {
+                cipher.updateAAD(buildEnvelopeAad(id, mode, sender, ts))
+            }
             val plainBytes = cipher.doFinal(ct)
             JSONObject(String(plainBytes, Charsets.UTF_8))
         } catch (_: Throwable) {
