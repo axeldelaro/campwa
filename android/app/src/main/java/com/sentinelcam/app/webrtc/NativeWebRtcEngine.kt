@@ -19,6 +19,7 @@ import org.webrtc.Camera1Enumerator
 import org.webrtc.Camera2Enumerator
 import org.webrtc.CameraEnumerator
 import org.webrtc.CameraVideoCapturer
+import org.webrtc.CapturerObserver
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
@@ -36,11 +37,14 @@ import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoCapturer
+import org.webrtc.VideoFrame
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 
 private object SharedWebRtcRuntime {
     private var initialized = false
@@ -103,9 +107,17 @@ class NativeWebRtcEngine(
     private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
 
-    private val rtcExecutor = Executors.newSingleThreadExecutor { r ->
+    private val rtcExecutor = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "SentinelWebRtcWorker").apply { isDaemon = true }
     }
+
+    private var frameWatchdogTask: ScheduledFuture<*>? = null
+    private var iceDisconnectedGraceTask: ScheduledFuture<*>? = null
+    @Volatile
+    private var lastCameraFrameMs: Long = 0L
+    @Volatile
+    private var cameraSelfHealing: Boolean = false
+    private var lastQualityPreset: String = "hd"
 
     private var peerConnection: PeerConnection? = null
     private var dataChannel: DataChannel? = null
@@ -292,9 +304,11 @@ class NativeWebRtcEngine(
         currentFacing = facing
         currentMediaMode = "camera"
         cameraRecoveryAttempts = 0
+        cameraSelfHealing = false
+        lastQualityPreset = quality
         lastCamWidth = if (quality == "sd") 640 else 1280
         lastCamHeight = if (quality == "sd") 480 else 720
-        lastCamFps = 30
+        lastCamFps = if (quality == "sd") 20 else 24
         launchSession(sessionId, capturer, lastCamWidth, lastCamHeight, lastCamFps, enableAudio, allowIntercom)
     }
 
@@ -376,7 +390,25 @@ class NativeWebRtcEngine(
 
                 val vSource = factory.createVideoSource(capturer.isScreencast)
                 videoSource = vSource
-                capturer.initialize(texHelper, appContext, vSource.capturerObserver)
+                lastCameraFrameMs = System.currentTimeMillis()
+                val rawObserver = vSource.capturerObserver
+                val monitoredObserver = object : CapturerObserver {
+                    override fun onCapturerStarted(success: Boolean) {
+                        if (success) lastCameraFrameMs = System.currentTimeMillis()
+                        rawObserver.onCapturerStarted(success)
+                    }
+
+                    override fun onCapturerStopped() {
+                        rawObserver.onCapturerStopped()
+                    }
+
+                    override fun onFrameCaptured(frame: VideoFrame?) {
+                        lastCameraFrameMs = System.currentTimeMillis()
+                        cameraRecoveryAttempts = 0
+                        rawObserver.onFrameCaptured(frame)
+                    }
+                }
+                capturer.initialize(texHelper, appContext, monitoredObserver)
                 capturer.startCapture(width, height, fps)
 
                 val vTrack = factory.createVideoTrack("ARDAMSv0", vSource)
@@ -408,7 +440,10 @@ class NativeWebRtcEngine(
                 PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
                 PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
                 PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
-                PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer()
+                PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
+                PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
+                PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+                PeerConnection.IceServer.builder("stun:stun.nextcloud.com:443").createIceServer()
             )
 
             val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
@@ -422,12 +457,42 @@ class NativeWebRtcEngine(
                 override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
 
                 override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                    if (state == PeerConnection.IceConnectionState.FAILED) {
-                        rtcExecutor.execute {
-                            if (currentSessionId == sessionId) {
-                                stopStreamOnWorker()
+                    when (state) {
+                        PeerConnection.IceConnectionState.CONNECTED,
+                        PeerConnection.IceConnectionState.COMPLETED -> {
+                            rtcExecutor.execute {
+                                iceDisconnectedGraceTask?.cancel(false)
+                                iceDisconnectedGraceTask = null
                             }
                         }
+
+                        PeerConnection.IceConnectionState.DISCONNECTED -> {
+                            // Give mobile Wi-Fi <-> 4G/5G handoffs 6 seconds to heal naturally before restarting
+                            rtcExecutor.execute {
+                                iceDisconnectedGraceTask?.cancel(false)
+                                iceDisconnectedGraceTask = rtcExecutor.schedule({
+                                    if (currentSessionId == sessionId && isStreamingActive &&
+                                        peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.DISCONNECTED
+                                    ) {
+                                        stopStreamOnWorker()
+                                        onStreamStateChanged(false, "Reconnexion réseau en cours…")
+                                    }
+                                }, 6_000L, TimeUnit.MILLISECONDS)
+                            }
+                        }
+
+                        PeerConnection.IceConnectionState.FAILED -> {
+                            rtcExecutor.execute {
+                                iceDisconnectedGraceTask?.cancel(false)
+                                iceDisconnectedGraceTask = null
+                                if (currentSessionId == sessionId) {
+                                    stopStreamOnWorker()
+                                    onStreamStateChanged(false, "Reconnexion réseau en cours…")
+                                }
+                            }
+                        }
+
+                        else -> {}
                     }
                 }
 
@@ -459,14 +524,26 @@ class NativeWebRtcEngine(
 
             createdVideoTrack?.let { vTrack ->
                 val sender = pc.addTrack(vTrack, listOf("ARDAMS"))
-                if (currentMediaMode == "screen" && sender != null) {
+                if (sender != null) {
                     try {
                         val params = sender.parameters
-                        params.degradationPreference =
-                            RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
-                        for (enc in params.encodings) {
-                            enc.maxBitrateBps = 1_800_000
-                            enc.maxFramerate = 24
+                        if (currentMediaMode == "screen") {
+                            params.degradationPreference =
+                                RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
+                            for (enc in params.encodings) {
+                                enc.maxBitrateBps = 1_600_000
+                                enc.maxFramerate = 24
+                            }
+                        } else {
+                            // Smooth adaptive bitrate cap prevents weak 4G/5G uplinks from choking ICE!
+                            params.degradationPreference =
+                                RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
+                            val capBps = if (lastQualityPreset == "sd") 650_000 else 1_400_000
+                            val capFps = if (lastQualityPreset == "sd") 20 else 24
+                            for (enc in params.encodings) {
+                                enc.maxBitrateBps = capBps
+                                enc.maxFramerate = capFps
+                            }
                         }
                         sender.parameters = params
                     } catch (_: Throwable) {
@@ -490,6 +567,10 @@ class NativeWebRtcEngine(
 
             isStreamingActive = true
             onStreamStateChanged(true, null)
+
+            if (currentMediaMode == "camera") {
+                startCameraFrameWatchdog(sessionId)
+            }
 
             val offerConstraints = MediaConstraints().apply {
                 mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
@@ -622,10 +703,29 @@ class NativeWebRtcEngine(
         }
     }
 
+    private fun startCameraFrameWatchdog(sessionId: String) {
+        frameWatchdogTask?.cancel(false)
+        frameWatchdogTask = rtcExecutor.scheduleWithFixedDelay({
+            if (shuttingDown || !isStreamingActive || currentSessionId != sessionId || currentMediaMode != "camera") {
+                return@scheduleWithFixedDelay
+            }
+            val stallMs = System.currentTimeMillis() - lastCameraFrameMs
+            if (stallMs > 8_500L && !cameraSelfHealing) {
+                attemptCameraSelfHeal("Capteur caméra figé")
+            }
+        }, 4_000L, 3_000L, TimeUnit.MILLISECONDS)
+    }
+
     private fun stopStreamOnWorker() {
         val wasStreaming = isStreamingActive
         isStreamingActive = false
+        cameraSelfHealing = false
         currentSessionId = ""
+
+        frameWatchdogTask?.cancel(false)
+        frameWatchdogTask = null
+        iceDisconnectedGraceTask?.cancel(false)
+        iceDisconnectedGraceTask = null
 
         if (intercomSpeakerActive) {
             applyLoudspeakerMode(false)
@@ -745,28 +845,75 @@ class NativeWebRtcEngine(
     private fun attemptCameraSelfHeal(reason: String) {
         rtcExecutor.execute {
             if (shuttingDown || !isStreamingActive || currentMediaMode != "camera") return@execute
-            val cam = videoCapturer as? CameraVideoCapturer ?: return@execute
-            if (cameraRecoveryAttempts < 3) {
-                cameraRecoveryAttempts++
-                try {
-                    cam.stopCapture()
-                } catch (_: Throwable) {
-                }
-                try {
-                    Thread.sleep(450L)
-                } catch (_: Throwable) {
-                }
-                if (!shuttingDown && isStreamingActive && currentMediaMode == "camera") {
-                    try {
-                        cam.startCapture(lastCamWidth, lastCamHeight, lastCamFps)
+            if (cameraSelfHealing) return@execute
+            cameraSelfHealing = true
+            val targetSession = currentSessionId
+            val backoffDelays = longArrayOf(1_000L, 1_800L, 2_500L, 3_500L, 5_000L, 6_500L)
+
+            try {
+                while (cameraRecoveryAttempts < backoffDelays.size &&
+                    !shuttingDown && isStreamingActive && currentSessionId == targetSession &&
+                    currentMediaMode == "camera"
+                ) {
+                    val waitMs = backoffDelays[cameraRecoveryAttempts]
+                    cameraRecoveryAttempts++
+
+                    val cam = videoCapturer as? CameraVideoCapturer
+                    try { cam?.stopCapture() } catch (_: Throwable) {}
+                    try { Thread.sleep(waitMs) } catch (_: Throwable) {}
+
+                    if (shuttingDown || !isStreamingActive || currentSessionId != targetSession || currentMediaMode != "camera") {
                         return@execute
+                    }
+
+                    // 1. Try restarting existing capturer first
+                    if (cam != null && cameraRecoveryAttempts <= 2) {
+                        try {
+                            lastCameraFrameMs = System.currentTimeMillis()
+                            cam.startCapture(lastCamWidth, lastCamHeight, lastCamFps)
+                            return@execute
+                        } catch (_: Throwable) {
+                        }
+                    }
+
+                    // 2. Rebuild a fresh CameraVideoCapturer if HAL invalidated the old session (e.g. after WhatsApp/Camera app)
+                    try {
+                        try { cam?.dispose() } catch (_: Throwable) {}
+                        val fresh = createCameraCapturer(currentFacing)
+                        val tex = surfaceTextureHelper
+                        val vSrc = videoSource
+                        if (fresh != null && tex != null && vSrc != null) {
+                            videoCapturer = fresh
+                            val rawObs = vSrc.capturerObserver
+                            val obs = object : CapturerObserver {
+                                override fun onCapturerStarted(success: Boolean) {
+                                    if (success) lastCameraFrameMs = System.currentTimeMillis()
+                                    rawObs.onCapturerStarted(success)
+                                }
+                                override fun onCapturerStopped() { rawObs.onCapturerStopped() }
+                                override fun onFrameCaptured(frame: VideoFrame?) {
+                                    lastCameraFrameMs = System.currentTimeMillis()
+                                    cameraRecoveryAttempts = 0
+                                    rawObs.onFrameCaptured(frame)
+                                }
+                            }
+                            fresh.initialize(tex, appContext, obs)
+                            lastCameraFrameMs = System.currentTimeMillis()
+                            fresh.startCapture(lastCamWidth, lastCamHeight, lastCamFps)
+                            return@execute
+                        }
                     } catch (_: Throwable) {
                     }
                 }
+
+                // If all local retries failed (e.g. another app kept camera open >20s), emit recoverable error so Web auto-retries cleanly
+                if (!shuttingDown && currentSessionId == targetSession) {
+                    stopStreamOnWorker()
+                    onStreamStateChanged(false, reason)
+                }
+            } finally {
+                cameraSelfHealing = false
             }
-            // If local capturer couldn't recover, signal clean stop so Web auto-recovers a fresh session
-            stopStreamOnWorker()
-            onStreamStateChanged(false, reason)
         }
     }
 }

@@ -3,6 +3,8 @@ package com.sentinelcam.app
 import android.app.Application
 import android.os.Looper
 import android.util.Log
+import com.sentinelcam.app.receiver.KeepAliveReceiver
+import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.service.PortalWatchdogJobService
 import com.sentinelcam.app.storage.PortalPreferences
 
@@ -16,6 +18,8 @@ class SentinelApplication : Application() {
             val prefs = PortalPreferences(this)
             if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
                 PortalWatchdogJobService.scheduleWatchdog(this)
+                KeepAliveReceiver.scheduleNextPulse(this)
+                CameraForegroundService.ensureRunningSafely(this)
             }
         } catch (t: Throwable) {
             Log.e(TAG, "Init watchdog error", t)
@@ -27,10 +31,15 @@ class SentinelApplication : Application() {
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             try {
                 Log.e(TAG, "Uncaught exception on thread ${thread.name}", throwable)
-                PortalPreferences(this@SentinelApplication).appendLog(
+                val prefs = PortalPreferences(this@SentinelApplication)
+                prefs.appendLog(
                     "warn",
                     "Récupération automatique (${thread.name}): ${throwable.javaClass.simpleName}"
                 )
+                if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
+                    KeepAliveReceiver.scheduleImmediateRevive(this@SentinelApplication, 2_000L)
+                    PortalWatchdogJobService.scheduleImmediateRevive(this@SentinelApplication)
+                }
             } catch (_: Throwable) {
             }
 

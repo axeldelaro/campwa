@@ -1,12 +1,17 @@
 package com.sentinelcam.app
 
+import android.app.ActivityManager
+import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.webkit.WebSettings
 import android.webkit.WebView
 import com.getcapacitor.BridgeActivity
 import com.sentinelcam.app.plugin.SentinelNativePlugin
+import com.sentinelcam.app.receiver.KeepAliveReceiver
 import com.sentinelcam.app.service.CameraForegroundService
+import com.sentinelcam.app.service.PortalWatchdogJobService
 import com.sentinelcam.app.storage.PortalPreferences
 
 class MainActivity : BridgeActivity() {
@@ -42,9 +47,39 @@ class MainActivity : BridgeActivity() {
         super.onResume()
         try {
             val prefs = PortalPreferences(this)
-            // Only start service if not already running — avoids redundant FGS re-promotions that could interrupt camera!
-            if (prefs.onboardingCompleted && !prefs.userManuallyStopped && !CameraForegroundService.isRunning) {
-                CameraForegroundService.startFromUi(this)
+            // Keep app out of swipeable Recents carousel once paired with Parent so it can NEVER be swiped closed accidentally
+            applyExcludeFromRecents(prefs.parentManaged)
+
+            if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
+                if (!CameraForegroundService.isRunning || !CameraForegroundService.hasCameraFgsPromoted()) {
+                    CameraForegroundService.startFromUi(this)
+                }
+                KeepAliveReceiver.scheduleNextPulse(this)
+                PortalWatchdogJobService.scheduleWatchdog(this)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    override fun onDestroy() {
+        try {
+            val prefs = PortalPreferences(this)
+            if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
+                KeepAliveReceiver.scheduleImmediateRevive(applicationContext, 2_000L)
+                PortalWatchdogJobService.scheduleImmediateRevive(applicationContext)
+                CameraForegroundService.ensureRunningSafely(applicationContext)
+            }
+        } catch (_: Throwable) {
+        }
+        super.onDestroy()
+    }
+
+    private fun applyExcludeFromRecents(exclude: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return
+        try {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            for (task in am.appTasks) {
+                task.setExcludeFromRecents(exclude)
             }
         } catch (_: Throwable) {
         }

@@ -123,7 +123,7 @@ class PortalWatchdogJobService : JobService() {
                 val component = ComponentName(context, PortalWatchdogJobService::class.java)
                 val jobInfo = JobInfo.Builder(JOB_ID, component)
                     .setPeriodic(15 * 60 * 1000L)
-                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_NONE)
                     .setPersisted(true)
                     .build()
                 scheduler.schedule(jobInfo)
@@ -136,9 +136,9 @@ class PortalWatchdogJobService : JobService() {
                 val scheduler = context.getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
                 val component = ComponentName(context, PortalWatchdogJobService::class.java)
                 val jobInfo = JobInfo.Builder(JOB_ID + 1, component)
-                    .setMinimumLatency(1500L)
-                    .setOverrideDeadline(4000L)
-                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .setMinimumLatency(1_200L)
+                    .setOverrideDeadline(3_000L)
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_NONE)
                     .build()
                 scheduler.schedule(jobInfo)
             } catch (_: Throwable) {

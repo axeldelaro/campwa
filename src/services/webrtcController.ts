@@ -143,6 +143,9 @@ export class SentinelWebRtcController {
   private streamRecoverTimer: number | null = null;
   private lastBytesReceived = 0;
   private lastStatsTimestamp = 0;
+  private stalledVideoSeconds = 0;
+  private transientRetryCount = 0;
+  private visibilityListener: (() => void) | null = null;
 
   constructor(callbacks: ControllerCallbacks) {
     this.callbacks = callbacks;
@@ -161,6 +164,28 @@ export class SentinelWebRtcController {
     this.authenticated = false;
     this.desiredStreaming = autoStartCamera;
     this.desiredMediaMode = 'camera';
+    this.transientRetryCount = 0;
+    this.stalledVideoSeconds = 0;
+
+    if (typeof document !== 'undefined' && !this.visibilityListener) {
+      this.visibilityListener = () => {
+        if (document.visibilityState === 'visible') {
+          if (this.desiredStreaming && this.desiredMediaMode === 'camera') {
+            if (!this.authenticated) {
+              void this.sendHelloWake();
+            } else if (!this.pc || this.pc.connectionState !== 'connected') {
+              void this.startCameraStream(
+                this.desiredFacing,
+                this.desiredAudio,
+                this.desiredQuality,
+                'camera'
+              );
+            }
+          }
+        }
+      };
+      document.addEventListener('visibilitychange', this.visibilityListener);
+    }
 
     this.callbacks.onStateChange('connecting');
 
@@ -1377,7 +1402,12 @@ export class SentinelWebRtcController {
     this.closePeerConnectionOnly();
 
     if (msg.reason === 'ACCESS_EXPIRED' || msg.reason === 'ACCESS_REVOKED') {
-      if (this.retryTimer !== null) {
+      if (this.visibilityListener && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityListener);
+      this.visibilityListener = null;
+    }
+
+    if (this.retryTimer !== null) {
         window.clearInterval(this.retryTimer);
         this.retryTimer = null;
       }
@@ -1733,6 +1763,35 @@ export class SentinelWebRtcController {
     }
 
     if (msg.state === 'error') {
+      const errText = (msg.error || '').toLowerCase();
+      const isPermanent =
+        this.desiredMediaMode !== 'camera' ||
+        errText.includes('permission') ||
+        errText.includes('autoriser') ||
+        errText.includes('autorisé') ||
+        errText.includes('aucun capteur');
+
+      if (!isPermanent && this.desiredStreaming && this.authenticated && this.transientRetryCount < 12) {
+        this.transientRetryCount += 1;
+        this.closePeerConnectionOnly();
+        this.callbacks.onStateChange('connecting');
+        this.callbacks.onStreamError?.('Reconnexion automatique de la caméra…');
+        const delayMs = Math.min(8000, 1800 + this.transientRetryCount * 900);
+        if (this.streamRecoverTimer) window.clearTimeout(this.streamRecoverTimer);
+        this.streamRecoverTimer = window.setTimeout(() => {
+          this.streamRecoverTimer = null;
+          if (this.desiredStreaming && this.authenticated && this.desiredMediaMode === 'camera') {
+            void this.startCameraStream(
+              this.desiredFacing,
+              this.desiredAudio,
+              this.desiredQuality,
+              'camera'
+            );
+          }
+        }, delayMs);
+        return;
+      }
+
       this.desiredStreaming = false;
       this.talkieActive = false;
       this.stopMicVuMeter();
@@ -1764,6 +1823,7 @@ export class SentinelWebRtcController {
     this.stopStatsMonitor();
     this.lastBytesReceived = 0;
     this.lastStatsTimestamp = performance.now();
+    this.stalledVideoSeconds = 0;
 
     this.statsTimer = window.setInterval(async () => {
       if (!this.pc) return;
@@ -1778,6 +1838,7 @@ export class SentinelWebRtcController {
         let codecId = '';
         let codec = 'H264';
         let dtlsState = 'connected';
+        let videoBytesDelta = 0;
 
         report.forEach((stat) => {
           if (stat.type === 'candidate-pair' && stat.state === 'succeeded' && stat.nominated) {
@@ -1788,9 +1849,10 @@ export class SentinelWebRtcController {
           if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
             const now = performance.now();
             const bytes = stat.bytesReceived ?? 0;
+            videoBytesDelta = bytes - this.lastBytesReceived;
             if (this.lastBytesReceived > 0 && now > this.lastStatsTimestamp) {
               const deltaSec = (now - this.lastStatsTimestamp) / 1000;
-              bitrateKbps = Math.round(((bytes - this.lastBytesReceived) * 8) / 1000 / deltaSec);
+              bitrateKbps = Math.round((videoBytesDelta * 8) / 1000 / deltaSec);
             }
             this.lastBytesReceived = bytes;
             this.lastStatsTimestamp = now;
@@ -1805,6 +1867,29 @@ export class SentinelWebRtcController {
             dtlsState = stat.dtlsState;
           }
         });
+
+        // Frozen-stream watchdog: if video stops delivering bytes for 7s, silently restart camera stream!
+        if (this.desiredStreaming && this.desiredMediaMode === 'camera') {
+          if (videoBytesDelta > 0) {
+            this.stalledVideoSeconds = 0;
+            this.transientRetryCount = 0;
+          } else {
+            this.stalledVideoSeconds += 1;
+            if (this.stalledVideoSeconds >= 7) {
+              this.stalledVideoSeconds = 0;
+              this.closePeerConnectionOnly();
+              if (this.authenticated) {
+                void this.startCameraStream(
+                  this.desiredFacing,
+                  this.desiredAudio,
+                  this.desiredQuality,
+                  'camera'
+                );
+              }
+              return;
+            }
+          }
+        }
 
         if (codecId) {
           const codecStat = report.get(codecId);
@@ -1920,6 +2005,11 @@ export class SentinelWebRtcController {
     if (this.silentAudioCtx) {
       void this.silentAudioCtx.close().catch(() => {});
       this.silentAudioCtx = null;
+    }
+
+    if (this.visibilityListener && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityListener);
+      this.visibilityListener = null;
     }
 
     if (this.retryTimer !== null) {

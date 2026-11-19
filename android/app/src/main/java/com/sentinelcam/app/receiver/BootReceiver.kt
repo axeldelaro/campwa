@@ -14,14 +14,21 @@ class BootReceiver : BroadcastReceiver() {
             action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
             action == Intent.ACTION_USER_PRESENT ||
             action == Intent.ACTION_MY_PACKAGE_REPLACED ||
-            action == "android.intent.action.QUICKBOOT_POWERON"
+            action == Intent.ACTION_POWER_CONNECTED ||
+            action == Intent.ACTION_POWER_DISCONNECTED ||
+            action == "android.intent.action.QUICKBOOT_POWERON" ||
+            action == "com.htc.intent.action.QUICKBOOT_POWERON"
         ) {
             try {
                 val prefs = PortalPreferences(context)
                 if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
                     PortalWatchdogJobService.scheduleWatchdog(context)
                     KeepAliveReceiver.scheduleNextPulse(context)
-                    if (prefs.autoStartOnBoot || action == Intent.ACTION_USER_PRESENT) {
+                    if (prefs.autoStartOnBoot ||
+                        prefs.parentManaged ||
+                        action == Intent.ACTION_USER_PRESENT ||
+                        action == Intent.ACTION_MY_PACKAGE_REPLACED
+                    ) {
                         CameraForegroundService.ensureRunningSafely(context)
                     }
                 }

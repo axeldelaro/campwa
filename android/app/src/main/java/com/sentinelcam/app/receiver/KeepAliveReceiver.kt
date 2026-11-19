@@ -8,12 +8,13 @@ import android.content.Intent
 import android.os.Build
 import android.os.SystemClock
 import com.sentinelcam.app.service.CameraForegroundService
+import com.sentinelcam.app.service.PortalWatchdogJobService
 import com.sentinelcam.app.storage.PortalPreferences
 
 /**
- * Periodic Doze-piercing Keep-Alive Receiver.
- * Wakes the radio every 2 minutes when screen is locked to ensure WebSocket connections
- * never go stale and revives CameraForegroundService if an OEM battery cleaner stopped it.
+ * Doze-Piercing Self-Healing Keep-Alive & Instant Revival Receiver (v21):
+ * - Revives CameraForegroundService within 2 seconds if the app is swiped away or killed by OEM.
+ * - Keeps cellular/Wi-Fi signaling sockets alive with a lightweight 3-minute heartbeat (45s during recovery).
  */
 class KeepAliveReceiver : BroadcastReceiver() {
 
@@ -22,6 +23,7 @@ class KeepAliveReceiver : BroadcastReceiver() {
             val prefs = PortalPreferences(context)
             if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
                 CameraForegroundService.ensureRunningSafely(context)
+                PortalWatchdogJobService.scheduleWatchdog(context)
                 scheduleNextPulse(context)
             }
         } catch (_: Throwable) {
@@ -30,8 +32,30 @@ class KeepAliveReceiver : BroadcastReceiver() {
 
     companion object {
         private const val REQ_CODE = 8402
-        private const val ECO_CONNECTED_INTERVAL_MS = 900_000L // 15 min when healthy (zero Doze drain)
-        private const val RECOVERY_INTERVAL_MS = 300_000L // 5 min if disconnected or stopped
+        private const val REQ_CODE_REVIVE = 8403
+        private const val ECO_CONNECTED_INTERVAL_MS = 180_000L // 3 min doze-safe heartbeat
+        private const val RECOVERY_INTERVAL_MS = 45_000L // 45 s rapid recovery if offline/stopped
+
+        fun scheduleImmediateRevive(context: Context, delayMs: Long = 2_000L) {
+            try {
+                val appCtx = context.applicationContext
+                val am = appCtx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                val intent = Intent(appCtx, KeepAliveReceiver::class.java)
+                val pi = PendingIntent.getBroadcast(
+                    appCtx,
+                    REQ_CODE_REVIVE,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val triggerAt = SystemClock.elapsedRealtime() + delayMs.coerceIn(1_200L, 15_000L)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+                } else {
+                    am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+                }
+            } catch (_: Throwable) {
+            }
+        }
 
         fun scheduleNextPulse(context: Context) {
             try {
@@ -48,12 +72,7 @@ class KeepAliveReceiver : BroadcastReceiver() {
                 val intervalMs = if (healthy) ECO_CONNECTED_INTERVAL_MS else RECOVERY_INTERVAL_MS
                 val triggerAt = SystemClock.elapsedRealtime() + intervalMs
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    if (healthy) {
-                        // Inexact/eco wakeup lets Android batch alarms for maximum battery life
-                        am.setWindow(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, 120_000L, pi)
-                    } else {
-                        am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
-                    }
+                    am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
                 } else {
                     am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
                 }
@@ -65,14 +84,16 @@ class KeepAliveReceiver : BroadcastReceiver() {
             try {
                 val appCtx = context.applicationContext
                 val am = appCtx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-                val intent = Intent(appCtx, KeepAliveReceiver::class.java)
-                val pi = PendingIntent.getBroadcast(
-                    appCtx,
-                    REQ_CODE,
-                    intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-                am.cancel(pi)
+                for (code in intArrayOf(REQ_CODE, REQ_CODE_REVIVE)) {
+                    val intent = Intent(appCtx, KeepAliveReceiver::class.java)
+                    val pi = PendingIntent.getBroadcast(
+                        appCtx,
+                        code,
+                        intent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    am.cancel(pi)
+                }
             } catch (_: Throwable) {
             }
         }

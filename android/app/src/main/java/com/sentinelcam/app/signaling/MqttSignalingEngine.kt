@@ -140,9 +140,14 @@ class MqttSignalingEngine(
         }
     }
 
-    private val primaryNode = MqttWsConnection("EMQX Eco", "wss://broker.emqx.io:8084/mqtt")
-    private val failoverNode = MqttWsConnection("HiveMQ Eco", "wss://broker.hivemq.com:8884/mqtt")
+    private val primaryNode = MqttWsConnection("EMQX", "wss://broker.emqx.io:8084/mqtt")
+    private val failoverNode = MqttWsConnection("HiveMQ", "wss://broker.hivemq.com:8884/mqtt")
+    @Volatile
     private var pushWs: WebSocket? = null
+    @Volatile
+    private var pushConnecting: Boolean = false
+    @Volatile
+    private var lastPushAttemptMs: Long = 0L
 
     private val seenIds = LinkedHashSet<String>()
     private val connectivityManager =
@@ -250,25 +255,24 @@ class MqttSignalingEngine(
         scope.launch {
             var lastPingMs = System.currentTimeMillis()
             while (isActive && !destroyed) {
-                var nextSleepMs = 30_000L
+                var nextSleepMs = 15_000L
                 try {
                     if (!hasInternetConnectivity()) {
-                        // Zero battery drain when offline / airplane mode: wait for NetworkCallback.onAvailable
-                        nextSleepMs = 60_000L
+                        // Wait cleanly for NetworkCallback.onAvailable when completely offline
+                        nextSleepMs = 20_000L
                     } else {
                         maintainEcoSockets()
                         val now = System.currentTimeMillis()
                         if (primaryNode.mqttReady || failoverNode.mqttReady) {
-                            reconnectBackoffMs = 5_000L
-                            if (now - lastPingMs >= 60_000L) {
+                            reconnectBackoffMs = 2_000L
+                            if (now - lastPingMs >= 32_000L) {
                                 sendMqttPingActive()
                                 lastPingMs = now
                             }
-                            nextSleepMs = 30_000L
+                            nextSleepMs = 15_000L
                         } else {
-                            // Exponential backoff avoids radio wake storms on weak signal
                             nextSleepMs = reconnectBackoffMs
-                            reconnectBackoffMs = (reconnectBackoffMs * 2L).coerceAtMost(45_000L)
+                            reconnectBackoffMs = (reconnectBackoffMs * 2L).coerceAtMost(20_000L)
                         }
                     }
                 } catch (_: Throwable) {
@@ -279,19 +283,45 @@ class MqttSignalingEngine(
     }
 
     private fun connectPushWakeStream() {
-        if (destroyed) return
+        if (destroyed || pushConnecting || pushWs != null) return
+        val now = System.currentTimeMillis()
+        if (now - lastPushAttemptMs < 10_000L) return
+        lastPushAttemptMs = now
+        pushConnecting = true
         try {
             val req = Request.Builder()
                 .url("wss://ntfy.sh/$primaryWakePushTopic/ws")
                 .build()
             pushWs = SharedOkHttpPool.client.newWebSocket(req, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    pushConnecting = false
+                }
+
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     if (!destroyed && text.contains("WAKE_INVITE")) {
                         nudgeReconnect()
                     }
                 }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    pushConnecting = false
+                    pushWs = null
+                    try { webSocket.close(1000, null) } catch (_: Throwable) {}
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    pushConnecting = false
+                    pushWs = null
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    pushConnecting = false
+                    pushWs = null
+                }
             })
         } catch (_: Throwable) {
+            pushConnecting = false
+            pushWs = null
         }
     }
 
@@ -306,25 +336,32 @@ class MqttSignalingEngine(
         }
     }
 
+    private fun scheduleFastNodeReconnect() {
+        if (destroyed) return
+        scope.launch {
+            delay(1_800L)
+            if (!destroyed && hasInternetConnectivity()) {
+                maintainEcoSockets()
+            }
+        }
+    }
+
     private fun maintainEcoSockets() {
         if (destroyed) return
         val now = System.currentTimeMillis()
 
-        if (primaryNode.mqttReady && primaryNode.lastActivityMs > 0L && (now - primaryNode.lastActivityMs) > 140_000L) {
-            closeNodeQuietly(primaryNode)
+        // Active/Active Dual-Broker Redundancy (EMQX + HiveMQ) -> 0ms failover on mobile NAT/broker drops!
+        for (node in listOf(primaryNode, failoverNode)) {
+            if (node.mqttReady && node.lastActivityMs > 0L && (now - node.lastActivityMs) > 78_000L) {
+                closeNodeQuietly(node)
+            }
+            if (!node.mqttReady && (!node.connecting || (now - node.lastActivityMs) > 10_000L)) {
+                connectNode(node)
+            }
         }
 
-        if (!primaryNode.mqttReady) {
-            if (!primaryNode.connecting || (now - primaryNode.lastActivityMs) > 10_000L) {
-                connectNode(primaryNode)
-            }
-            if (!failoverNode.mqttReady && (!failoverNode.connecting || (now - failoverNode.lastActivityMs) > 10_000L)) {
-                connectNode(failoverNode)
-            }
-        } else {
-            if (failoverNode.ws != null) {
-                closeNodeQuietly(failoverNode)
-            }
+        if (pushWs == null && !pushConnecting) {
+            connectPushWakeStream()
         }
     }
 
@@ -349,7 +386,7 @@ class MqttSignalingEngine(
                     }
                     node.lastActivityMs = System.currentTimeMillis()
                     val clientId = "sc_d_${CryptoProtocol.randomHex(5)}"
-                    val connectPacket = buildMqttConnectPacket(clientId, keepAliveSec = 90)
+                    val connectPacket = buildMqttConnectPacket(clientId, keepAliveSec = 50)
                     webSocket.send(connectPacket.toByteString())
                 }
 
@@ -370,19 +407,28 @@ class MqttSignalingEngine(
                     node.mqttReady = false
                     node.connecting = false
                     try { webSocket.close(1000, null) } catch (_: Throwable) {}
-                    if (!destroyed) emitHealth()
+                    if (!destroyed) {
+                        emitHealth()
+                        scheduleFastNodeReconnect()
+                    }
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     node.mqttReady = false
                     node.connecting = false
-                    if (!destroyed) emitHealth()
+                    if (!destroyed) {
+                        emitHealth()
+                        scheduleFastNodeReconnect()
+                    }
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     node.mqttReady = false
                     node.connecting = false
-                    if (!destroyed) emitHealth()
+                    if (!destroyed) {
+                        emitHealth()
+                        scheduleFastNodeReconnect()
+                    }
                 }
             })
 

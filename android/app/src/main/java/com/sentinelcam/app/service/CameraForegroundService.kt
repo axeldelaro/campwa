@@ -209,9 +209,13 @@ class CameraForegroundService : Service() {
         super.onTaskRemoved(rootIntent)
         try {
             if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
-                PortalWatchdogJobService.scheduleImmediateRevive(applicationContext)
+                KeepAliveReceiver.scheduleImmediateRevive(applicationContext, 2_000L)
                 KeepAliveReceiver.scheduleNextPulse(applicationContext)
+                PortalWatchdogJobService.scheduleImmediateRevive(applicationContext)
+                PortalWatchdogJobService.scheduleWatchdog(applicationContext)
                 signalingEngine?.nudgeReconnect()
+                // Re-bind FGS immediately so aggressive OEM task killers do not suspend camera/signaling
+                startInForegroundSafely(promoteCamera = cameraFgsPromoted, promoteScreen = false)
             }
         } catch (_: Throwable) {
         }
@@ -273,8 +277,10 @@ class CameraForegroundService : Service() {
         notifyStateListeners()
 
         if (shouldRevive) {
-            PortalWatchdogJobService.scheduleImmediateRevive(applicationContext)
+            KeepAliveReceiver.scheduleImmediateRevive(applicationContext, 2_000L)
             KeepAliveReceiver.scheduleNextPulse(applicationContext)
+            PortalWatchdogJobService.scheduleImmediateRevive(applicationContext)
+            PortalWatchdogJobService.scheduleWatchdog(applicationContext)
         }
 
         super.onDestroy()
@@ -502,9 +508,14 @@ class CameraForegroundService : Service() {
                             handleDecryptedSignal(channelId, json)
                         },
                         onConnectionStateChanged = { connected, brokerLabel ->
+                            val wasConnected = mqttConnected
                             mqttConnected = connected
                             activeBrokerLabel = brokerLabel
                             notifyStateListeners()
+                            if (connected && !wasConnected) {
+                                broadcastPresenceNow(OWNER_CHANNEL_ID)
+                                broadcastFamilyAnnounce()
+                            }
                         }
                     )
                     signalingEngine = engine
@@ -775,11 +786,42 @@ class CameraForegroundService : Service() {
     }
 
     private fun dropMediaProjectionFgsIfUnused() {
+        if (!(isStreaming && currentMediaMode == "screen") && (prefs.aiBlurFaces || prefs.aiBlurNsfw)) {
+            aiScreenShield?.resumeAfterWebRtcScreenShare()
+        }
         val screenActive = (isStreaming && currentMediaMode == "screen") || (aiScreenShield?.isActive == true)
         if (!screenActive && mediaProjectionFgsPromoted) {
             mediaProjectionFgsPromoted = false
             lastAppliedFgType = -1
             startInForegroundSafely(promoteCamera = false, promoteScreen = false)
+        }
+    }
+
+    private fun broadcastFamilyAnnounce() {
+        try {
+            if (!channelKeysById.containsKey(FAMILY_CHANNEL_ID)) return
+            val bat = readBatteryInfo()
+            val now = System.currentTimeMillis()
+            signalingEngine?.send(
+                channelId = FAMILY_CHANNEL_ID,
+                payload = JSONObject().apply {
+                    put("type", "FAMILY_ANNOUNCE")
+                    put("deviceId", prefs.deviceId)
+                    put("deviceName", prefs.deviceName)
+                    put("deviceCode", prefs.pairingCode)
+                    put("batteryLevel", bat.first)
+                    put("isCharging", bat.second)
+                    put("portalState", if (isStreaming) "streaming" else "standby")
+                    put("pendingRequestsCount", prefs.getPendingTimeRequests().size)
+                    put("unpairRequestPending", prefs.unpairRequestPending)
+                    put("activeAppLocksCount", prefs.getActiveAppLockRules(now).size)
+                    put("screenPausedUntilMs", prefs.screenPausedUntilMs.takeIf { it > now } ?: 0L)
+                    put("lostModeEnabled", prefs.lostModeEnabled)
+                    put("ts", now)
+                },
+                mode = "boot"
+            )
+        } catch (_: Throwable) {
         }
     }
 
@@ -924,6 +966,9 @@ class CameraForegroundService : Service() {
                 return
             }
 
+            // Pause AI Screen Shield while WebRTC Screen Share uses MediaProjection
+            aiScreenShield?.pauseForWebRtcScreenShare()
+
             // Ensure FGS is promoted with FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION before MediaProjection init!
             if (!mediaProjectionFgsPromoted) {
                 startInForegroundSafely(promoteCamera = false, promoteScreen = true)
@@ -955,6 +1000,10 @@ class CameraForegroundService : Service() {
             )
             serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
         } else {
+            // Always guarantee CAMERA + MICROPHONE FGS types are active before opening Camera2!
+            if (!cameraFgsPromoted) {
+                startInForegroundSafely(promoteCamera = true, promoteScreen = false)
+            }
             val effectiveFacing = if (grant.allowSwitchCamera) reqFacing else "front"
             val effectiveAudio = if (grant.allowAudio) reqAudio else false
             activeStreamChannelId = channelId
@@ -2732,6 +2781,16 @@ class CameraForegroundService : Service() {
         }
 
         val appVisible = promoteCamera || promoteScreen || isAppInForeground() || cameraFgsPromoted
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        // Android 12-15 grants background CAMERA/MIC FGS exemptions when Battery Exemption, Overlay, or Device Admin is active!
+        val hasBgExemption = try {
+            pm.isIgnoringBatteryOptimizations(packageName) ||
+                ScreenTimeHelper.hasOverlayPermission(this) ||
+                ScreenTimeHelper.isDeviceAdminActive(this)
+        } catch (_: Throwable) {
+            false
+        }
+        val canPromoteCam = appVisible || hasBgExemption
         val hasCam = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
         val hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -2760,8 +2819,8 @@ class CameraForegroundService : Service() {
             0
         }
 
-        val camBits = (if (appVisible && hasCam) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else 0) or
-            (if (appVisible && hasMic) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
+        val camBits = (if (canPromoteCam && hasCam) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else 0) or
+            (if (canPromoteCam && hasMic) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
         val screenBits = if (hasScreenConsent) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0
         val locBits = if (hasLoc && prefs.globalAllowLocation && prefs.globalAllowLocationHistory && (appVisible || hasBgLoc)) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
@@ -2995,6 +3054,8 @@ class CameraForegroundService : Service() {
         fun hasActiveScreenProjectionConsent(): Boolean =
             screenProjectionIntent != null || (isStreaming && currentMediaMode == "screen")
 
+        fun hasCameraFgsPromoted(): Boolean = instance?.cameraFgsPromoted == true
+
         fun clearLocationHistory(context: Context) {
             try {
                 val running = instance
@@ -3085,14 +3146,22 @@ class CameraForegroundService : Service() {
             try {
                 val appCtx = context.applicationContext
                 if (isRunning) {
-                    instance?.signalingEngine?.nudgeReconnect()
+                    val running = instance
+                    running?.signalingEngine?.nudgeReconnect()
+                    if (running != null && !running.cameraFgsPromoted) {
+                        running.serviceScope.launch(Dispatchers.Main) {
+                            running.startInForegroundSafely(promoteCamera = false, promoteScreen = false)
+                        }
+                    }
                     return
                 }
 
                 val pm = appCtx.getSystemService(Context.POWER_SERVICE) as PowerManager
                 val canStartBg = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
                     isAppInForeground() ||
-                    pm.isIgnoringBatteryOptimizations(appCtx.packageName)
+                    pm.isIgnoringBatteryOptimizations(appCtx.packageName) ||
+                    ScreenTimeHelper.hasOverlayPermission(appCtx) ||
+                    ScreenTimeHelper.isDeviceAdminActive(appCtx)
 
                 if (canStartBg) {
                     val intent = Intent(appCtx, CameraForegroundService::class.java)
