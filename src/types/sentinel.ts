@@ -206,6 +206,9 @@ export interface DeviceTelemetry {
   allowDeviceControl?: boolean;
   activeAppLocksCount?: number;
   screenPausedUntilMs?: number;
+  adminProtectionEnabled?: boolean;
+  hasAdminPin?: boolean;
+  deviceAdminActive?: boolean;
   pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
@@ -296,6 +299,9 @@ export interface HelloAckMsg {
   allowDeviceControl?: boolean;
   activeAppLocksCount?: number;
   screenPausedUntilMs?: number;
+  adminProtectionEnabled?: boolean;
+  hasAdminPin?: boolean;
+  deviceAdminActive?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
@@ -344,6 +350,9 @@ export interface PortalStatusMsg {
   allowDeviceControl?: boolean;
   activeAppLocksCount?: number;
   screenPausedUntilMs?: number;
+  adminProtectionEnabled?: boolean;
+  hasAdminPin?: boolean;
+  deviceAdminActive?: boolean;
   pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
@@ -535,7 +544,7 @@ export interface DataScreenTimeMsg {
 export interface DataControlResultMsg {
   type: 'DATA_CONTROL_RESULT';
   requestId: string;
-  action: 'lock_screen' | 'app_lock' | 'screen_pause';
+  action: 'lock_screen' | 'app_lock' | 'screen_pause' | 'clear_locks' | 'set_admin_pin';
   success: boolean;
   error?: string;
   ts: number;
@@ -568,6 +577,20 @@ export interface CmdSetScreenPauseMsg {
   requestId: string;
   durationMinutes: number;
   lockImmediately?: boolean;
+  ts: number;
+}
+
+export interface CmdClearAllAppLocksMsg {
+  type: 'CMD_CLEAR_ALL_APP_LOCKS';
+  requestId: string;
+  ts: number;
+}
+
+export interface CmdSetAdminPinMsg {
+  type: 'CMD_SET_ADMIN_PIN';
+  requestId: string;
+  newPin: string;
+  enableProtection?: boolean;
   ts: number;
 }
 
@@ -641,6 +664,8 @@ export type SignalMessage =
   | CmdGetScreenTimeMsg
   | CmdSetAppLockMsg
   | CmdSetScreenPauseMsg
+  | CmdClearAllAppLocksMsg
+  | CmdSetAdminPinMsg
   | DataScreenTimeMsg
   | DataControlResultMsg
   | SdpOfferMsg

@@ -595,6 +595,32 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async clearAllRemoteAppLocks(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_CLEAR_ALL_APP_LOCKS',
+        requestId: randomHex(8),
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async setRemoteAdminPin(newPin: string, enableProtection = true): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SET_ADMIN_PIN',
+        requestId: randomHex(8),
+        newPin: newPin.trim(),
+        enableProtection,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -759,6 +785,9 @@ export class SentinelWebRtcController {
       allowDeviceControl: accessGrant.allowDeviceControl,
       activeAppLocksCount: msg.activeAppLocksCount,
       screenPausedUntilMs: msg.screenPausedUntilMs,
+      adminProtectionEnabled: msg.adminProtectionEnabled,
+      hasAdminPin: msg.hasAdminPin,
+      deviceAdminActive: msg.deviceAdminActive,
       pfsEnabled: Boolean(ecdhSharedSecret) || Boolean(msg.pfsEnabled),
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,
@@ -821,6 +850,9 @@ export class SentinelWebRtcController {
       allowDeviceControl: msg.allowDeviceControl,
       activeAppLocksCount: msg.activeAppLocksCount,
       screenPausedUntilMs: msg.screenPausedUntilMs,
+      adminProtectionEnabled: msg.adminProtectionEnabled,
+      hasAdminPin: msg.hasAdminPin,
+      deviceAdminActive: msg.deviceAdminActive,
       pfsEnabled: msg.pfsEnabled,
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,

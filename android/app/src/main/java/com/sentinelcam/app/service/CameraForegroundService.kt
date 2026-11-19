@@ -717,6 +717,9 @@ class CameraForegroundService : Service() {
             put("ringingActive", DeviceActionHelper.ringingActive)
             put("activeAppLocksCount", prefs.getActiveAppLockRules().size)
             put("screenPausedUntilMs", prefs.screenPausedUntilMs.takeIf { it > System.currentTimeMillis() } ?: 0L)
+            put("adminProtectionEnabled", prefs.adminProtectionEnabled)
+            put("hasAdminPin", prefs.hasAdminPin())
+            put("deviceAdminActive", ScreenTimeHelper.isDeviceAdminActive(applicationContext))
             put("pfsEnabled", lastSessionPfs)
             put("gpsTrackerState", gpsTrackerState)
             put("gpsTrackingMode", prefs.gpsTrackingMode)
@@ -1421,6 +1424,116 @@ class CameraForegroundService : Service() {
                     }
                 }
 
+                "CMD_CLEAR_ALL_APP_LOCKS" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_CONTROL_RESULT")
+                                put("requestId", reqId)
+                                put("action", "clear_locks")
+                                put("success", false)
+                                put("error", "Le contrôle d’écran n’est pas autorisé pour cet accès.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        prefs.clearAllAppLocks()
+                        appLockMonitor?.refreshSchedule()
+                        prefs.appendLog("security", "Tous les blocages d’applis levés par ${grant.name}.")
+                        serviceScope.launch(Dispatchers.IO) {
+                            val report = ScreenTimeHelper.readScreenTimeReport(applicationContext, prefs)
+                            report.put("type", "DATA_SCREEN_TIME")
+                            report.put("requestId", reqId)
+                            report.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, report, mode = "sess")
+
+                            signalingEngine?.send(
+                                channelId = channelId,
+                                payload = JSONObject().apply {
+                                    put("type", "DATA_CONTROL_RESULT")
+                                    put("requestId", reqId)
+                                    put("action", "clear_locks")
+                                    put("success", true)
+                                    put("ts", System.currentTimeMillis())
+                                },
+                                mode = "sess"
+                            )
+                            broadcastPresenceNow(channelId)
+                            notifyStateListeners()
+                        }
+                    }
+                }
+
+                "CMD_SET_ADMIN_PIN" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val newPin = msg.optString("newPin", "").trim()
+                    val enableProtection = msg.optBoolean("enableProtection", true)
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_CONTROL_RESULT")
+                                put("requestId", reqId)
+                                put("action", "set_admin_pin")
+                                put("success", false)
+                                put("error", "Seul un accès Parent / Propriétaire autorisé peut modifier le code administrateur.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else if (newPin.length < 4 || newPin.length > 12) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_CONTROL_RESULT")
+                                put("requestId", reqId)
+                                put("action", "set_admin_pin")
+                                put("success", false)
+                                put("error", "Le code administrateur doit contenir entre 4 et 12 caractères.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        try {
+                            prefs.setAdminPin(newPin)
+                            if (enableProtection) {
+                                prefs.adminProtectionEnabled = true
+                            }
+                            prefs.appendLog("security", "Code administrateur modifié à distance par ${grant.name}.")
+                            signalingEngine?.send(
+                                channelId = channelId,
+                                payload = JSONObject().apply {
+                                    put("type", "DATA_CONTROL_RESULT")
+                                    put("requestId", reqId)
+                                    put("action", "set_admin_pin")
+                                    put("success", true)
+                                    put("ts", System.currentTimeMillis())
+                                },
+                                mode = "sess"
+                            )
+                            broadcastPresenceNow(channelId)
+                            notifyStateListeners()
+                        } catch (t: Throwable) {
+                            signalingEngine?.send(
+                                channelId = channelId,
+                                payload = JSONObject().apply {
+                                    put("type", "DATA_CONTROL_RESULT")
+                                    put("requestId", reqId)
+                                    put("action", "set_admin_pin")
+                                    put("success", false)
+                                    put("error", t.message ?: "Impossible de modifier le code administrateur.")
+                                    put("ts", System.currentTimeMillis())
+                                },
+                                mode = "sess"
+                            )
+                        }
+                    }
+                }
+
                 "SDP_ANSWER" -> {
                     val sessionId = msg.optString("sessionId", "")
                     val sdp = msg.optString("sdp", "")
@@ -1574,6 +1687,9 @@ class CameraForegroundService : Service() {
                 put("ringingActive", DeviceActionHelper.ringingActive)
                 put("activeAppLocksCount", prefs.getActiveAppLockRules().size)
                 put("screenPausedUntilMs", prefs.screenPausedUntilMs.takeIf { it > System.currentTimeMillis() } ?: 0L)
+                put("adminProtectionEnabled", prefs.adminProtectionEnabled)
+                put("hasAdminPin", prefs.hasAdminPin())
+                put("deviceAdminActive", ScreenTimeHelper.isDeviceAdminActive(applicationContext))
                 put("gpsTrackerState", gpsTrackerState)
                 put("gpsTrackingMode", prefs.gpsTrackingMode)
                 put("gpsPointsCount", gpsPointsCount)

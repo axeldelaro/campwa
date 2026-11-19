@@ -15,10 +15,13 @@ import {
   Cpu,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   Flashlight,
   FlipHorizontal,
   Gauge,
   HardDrive,
+  KeyRound,
   Lock,
   Mail,
   MapPin,
@@ -169,6 +172,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [lockingPkg, setLockingPkg] = useState<string | null>(null);
   const [customLockMins, setCustomLockMins] = useState('45');
   const [customPauseMins, setCustomPauseMins] = useState('30');
+  const [remoteAdminPin, setRemoteAdminPin] = useState('');
+  const [remoteAdminPinConfirm, setRemoteAdminPinConfirm] = useState('');
+  const [remoteAdminPinShow, setRemoteAdminPinShow] = useState(false);
+  const [remoteAdminPinBusy, setRemoteAdminPinBusy] = useState(false);
 
   const [sasInfo, setSasInfo] = useState<{
     deviceName: string;
@@ -329,13 +336,24 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         }
       },
       onControlResult: (res) => {
+        if (res.action === 'set_admin_pin') {
+          setRemoteAdminPinBusy(false);
+        }
         if (res.success) {
           const msg =
             res.action === 'lock_screen'
               ? 'Écran verrouillé.'
               : res.action === 'screen_pause'
               ? 'État de pause mis à jour.'
+              : res.action === 'clear_locks'
+              ? 'Tous les blocages d’applications ont été levés.'
+              : res.action === 'set_admin_pin'
+              ? 'Code administrateur mis à jour sur l’appareil.'
               : 'Règle d’application mise à jour.';
+          if (res.action === 'set_admin_pin') {
+            setRemoteAdminPin('');
+            setRemoteAdminPinConfirm('');
+          }
           setControlFeedback({ ok: true, text: msg });
         } else {
           setControlFeedback({ ok: false, text: res.error || 'Action refusée.' });
@@ -741,6 +759,67 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       untilMs: explicitUntilMs,
     });
   };
+
+  const handleClearAllAppLocks = async () => {
+    setControlFeedback(null);
+    await controllerRef.current?.clearAllRemoteAppLocks();
+  };
+
+  const handleSetRemoteAdminPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const pin = remoteAdminPin.trim();
+    if (pin.length < 4 || pin.length > 12) {
+      setControlFeedback({ ok: false, text: 'Le code administrateur doit contenir entre 4 et 12 caractères.' });
+      return;
+    }
+    if (pin !== remoteAdminPinConfirm.trim()) {
+      setControlFeedback({ ok: false, text: 'Les deux codes ne correspondent pas.' });
+      return;
+    }
+    setControlFeedback(null);
+    setRemoteAdminPinBusy(true);
+    await controllerRef.current?.setRemoteAdminPin(pin, true);
+    window.setTimeout(() => setRemoteAdminPinBusy(false), 8000);
+  };
+
+  useEffect(() => {
+    if (!isSessionOpen) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        setSasModalOpen(false);
+        setSmsOpen(false);
+        setTtsOpen(false);
+        setLockingPkg(null);
+        return;
+      }
+      const tag = (ev.target as HTMLElement | null)?.tagName;
+      if (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        (ev.target as HTMLElement | null)?.isContentEditable ||
+        ev.ctrlKey ||
+        ev.metaKey ||
+        ev.altKey
+      ) {
+        return;
+      }
+      if (!isStreaming) return;
+      const key = ev.key.toLowerCase();
+      if (key === 'f') {
+        ev.preventDefault();
+        handleFullscreen();
+      } else if (key === 'p') {
+        ev.preventDefault();
+        handleCaptureSnapshot();
+      } else if (key === 'r') {
+        ev.preventDefault();
+        handleToggleRecording();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  });
 
   const getUntilMidnightMs = (): number => {
     const d = new Date();
@@ -1330,11 +1409,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                       <CameraOff className="h-8 w-8 text-emerald-400" />
                     </div>
                     <h3 className="mt-4 text-lg font-bold text-white">
-                      Mode Éco-Veille Actif (0% conso caméra)
+                      Caméra en veille
                     </h3>
                     <p className="mt-1 max-w-md text-xs text-slate-400">
-                      Choisissez d’allumer la caméra ou de visionner l’écran si le propriétaire l’a
-                      autorisé.
+                      Démarrez la caméra ou l’écran à la demande.
                     </p>
                     <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
                       <button
@@ -1382,7 +1460,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   className="inline-flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 px-5 py-2.5 text-sm font-bold text-amber-300 transition hover:bg-amber-500/25"
                 >
                   <Power className="h-4 w-4" />
-                  <span>Couper le flux (Éco-Veille)</span>
+                  <span>Couper le flux</span>
                 </button>
               )}
 
@@ -1746,6 +1824,50 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               </button>
             </div>
 
+            {/* Active locked apps quick summary + 1-click unlock all */}
+            {(() => {
+              const blockedApps = (screenTime?.apps ?? []).filter((a) => a.blockedUntilMs > nowMs);
+              if (blockedApps.length === 0) return null;
+              return (
+                <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/[0.07] p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-rose-200">
+                      {blockedApps.length} application{blockedApps.length > 1 ? 's' : ''} verrouillée
+                      {blockedApps.length > 1 ? 's' : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleClearAllAppLocks()}
+                      className="rounded-lg bg-white px-2.5 py-1 text-[11px] font-semibold text-zinc-950 transition hover:bg-zinc-200"
+                    >
+                      Tout débloquer
+                    </button>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {blockedApps.map((app) => (
+                      <span
+                        key={app.packageName}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-zinc-950/80 px-2 py-1 text-[11px] text-rose-100"
+                      >
+                        <span className="font-medium">{app.appName}</span>
+                        <span className="font-mono text-[10px] text-rose-300">
+                          {formatCountdown(app.blockedUntilMs, nowMs)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void handleApplyAppLock(app, 0)}
+                          className="ml-0.5 text-rose-300 hover:text-white"
+                          title={`Débloquer ${app.appName}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Search installed apps */}
             <div className="relative mt-4">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
@@ -1893,6 +2015,92 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 )}
               </div>
             )}
+          </div>
+
+          {/* Remote Administrator PIN Management (Owner / Parent Access) */}
+          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <KeyRound className="h-4 w-4 text-emerald-400" />
+                <div>
+                  <h2 className="text-sm font-semibold text-white">
+                    Code administrateur de l’appareil
+                  </h2>
+                  <p className="mt-0.5 text-xs text-zinc-400">
+                    Définir ou modifier à distance le code requis pour arrêter, modifier ou
+                    désinstaller l’application
+                  </p>
+                </div>
+              </div>
+              <span
+                className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${
+                  telemetry?.hasAdminPin && telemetry?.adminProtectionEnabled
+                    ? 'bg-emerald-500/15 text-emerald-300'
+                    : telemetry?.hasAdminPin
+                    ? 'bg-amber-500/15 text-amber-300'
+                    : 'bg-white/[0.06] text-zinc-400'
+                }`}
+              >
+                {telemetry?.hasAdminPin && telemetry?.adminProtectionEnabled
+                  ? 'Protection active'
+                  : telemetry?.hasAdminPin
+                  ? 'Code défini'
+                  : 'Non défini'}
+              </span>
+            </div>
+
+            <form
+              onSubmit={(e) => void handleSetRemoteAdminPin(e)}
+              className="mt-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"
+            >
+              <div className="relative">
+                <input
+                  type={remoteAdminPinShow ? 'text' : 'password'}
+                  inputMode="text"
+                  autoComplete="new-password"
+                  maxLength={12}
+                  value={remoteAdminPin}
+                  onChange={(e) => setRemoteAdminPin(e.target.value)}
+                  placeholder="Nouveau code (4–12 car.)"
+                  className="w-full rounded-xl border border-white/10 bg-zinc-950 py-2 pl-3 pr-9 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setRemoteAdminPinShow((v) => !v)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
+                  title={remoteAdminPinShow ? 'Masquer' : 'Afficher'}
+                >
+                  {remoteAdminPinShow ? (
+                    <EyeOff className="h-3.5 w-3.5" />
+                  ) : (
+                    <Eye className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              </div>
+
+              <input
+                type={remoteAdminPinShow ? 'text' : 'password'}
+                inputMode="text"
+                autoComplete="new-password"
+                maxLength={12}
+                value={remoteAdminPinConfirm}
+                onChange={(e) => setRemoteAdminPinConfirm(e.target.value)}
+                placeholder="Confirmer le code"
+                className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+              />
+
+              <button
+                type="submit"
+                disabled={
+                  remoteAdminPinBusy ||
+                  remoteAdminPin.trim().length < 4 ||
+                  remoteAdminPinConfirm.trim().length < 4
+                }
+                className="rounded-xl bg-white px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                {remoteAdminPinBusy ? 'Enregistrement…' : 'Mettre à jour'}
+              </button>
+            </form>
           </div>
         </div>
       )}

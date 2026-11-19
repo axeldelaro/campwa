@@ -122,17 +122,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v11.0.${{ github.run_number }}
-          name: "SentinelCam v11.0.${{ github.run_number }} (Verrouillage Écran • Temps d’Écran • Verrouillage d’Applis à Distance)"
+          tag_name: v12.0.${{ github.run_number }}
+          name: "SentinelCam v12.0.${{ github.run_number }} (Code Admin Modifiable à Distance • Accès Parent • Optimisations)"
           body: |
-            ### SentinelCam v11.0 (`v11.0.${{ github.run_number }}`)
+            ### SentinelCam v12.0 (`v12.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Verrouillage d’écran immédiat à distance (`lockNow`)** : verrouillez instantanément l’écran du smartphone en 1 clic depuis l’onglet *Contrôle* du site Web (via l’Administrateur d’appareil Android).
-            - **Pause globale de l’appareil** : mettez l’ensemble des applications en pause pendant une durée choisie (*15 min*, *30 min*, *1 h*, *2 h* ou durée libre) avec décompte en direct et levée instantanée.
-            - **Contrôle du temps d’écran aujourd’hui (`UsageStatsManager`)** : temps total d’écran, application actuellement ouverte et détail précis par application.
-            - **Verrouillage d’applications à distance pendant une durée définie** : bloquez n’importe quelle application installée (YouTube, TikTok, Instagram, jeux…) pour *15 min*, *30 min*, *1 h*, *2 h*, *jusqu’à minuit* ou une durée personnalisée. Fonctionne même hors-ligne avec écran de verrouillage natif, décompte en direct, 0 % conso écran éteint et déblocage anticipé possible via code administrateur.
+            - **Code administrateur modifiable à distance (Accès Parent / Propriétaire)** : toute personne disposant du code Propriétaire ou d’un profil *Parent / Contrôle* peut désormais définir ou changer le code administrateur de l’appareil directement depuis l’onglet *Contrôle* du site Web (avec confirmation et activation immédiate).
+            - **Changement du code en local & protection complète des accès** : modification du code administrateur possible sur le téléphone une fois déverrouillé, et verrouillage de la création/suppression de profils d’accès tant que la protection administrateur est active.
+            - **Gestion rapide des applications bloquées** : récapitulatif des applis actuellement verrouillées avec décompte en direct et bouton **Tout débloquer** en 1 clic.
+            - **Optimisations & confort** : raccourcis clavier (`F` plein écran, `P` photo, `R` enregistrement, `Échap` fermer), polling natif allégé et compilation Android propre sans avertissement.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

@@ -309,7 +309,7 @@ object ScreenTimeHelper {
     fun resolveAppName(pm: PackageManager, packageName: String): String {
         return try {
             val ai = pm.getApplicationInfo(packageName, 0)
-            pm.getApplicationLabel(ai)?.toString()?.trim().takeUnless { it.isNullOrEmpty() } ?: packageName
+            pm.getApplicationLabel(ai).toString().trim().takeUnless { it.isEmpty() } ?: packageName
         } catch (_: Throwable) {
             packageName
         }

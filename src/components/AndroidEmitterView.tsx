@@ -103,9 +103,11 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   // Parental / Admin Background Protection state
   const [adminPinInput, setAdminPinInput] = useState('');
   const [adminUnlockInput, setAdminUnlockInput] = useState('');
+  const [newAdminPinInput, setNewAdminPinInput] = useState('');
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [verifiedAdminPin, setVerifiedAdminPin] = useState('');
   const [adminError, setAdminError] = useState<string | null>(null);
+  const [adminNotice, setAdminNotice] = useState<string | null>(null);
 
   const isAdminLocked = Boolean(
     isNativeAndroid && portal?.adminProtectionEnabled && portal?.hasAdminPin && !adminUnlocked
@@ -161,7 +163,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         } catch {
           // Ignore transient poll errors
         }
-      }, 2500);
+      }, 4000);
 
       return () => {
         window.clearInterval(pollInterval);
@@ -489,14 +491,43 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const handleDisableAdminProtection = async () => {
     if (!isNativeAndroid) return;
     setAdminError(null);
+    setAdminNotice(null);
     setBusy(true);
     try {
       const next = await SentinelNative.disableAdminProtection({ pin: verifiedAdminPin });
       setPortal(next);
       setAdminUnlocked(false);
       setVerifiedAdminPin('');
+      setNewAdminPinInput('');
     } catch (err) {
       setAdminError(err instanceof Error ? err.message : 'Désactivation refusée.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUpdateAdminPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isNativeAndroid || !adminUnlocked) return;
+    setAdminError(null);
+    setAdminNotice(null);
+    const nextPin = newAdminPinInput.trim();
+    if (nextPin.length < 4 || nextPin.length > 12) {
+      setAdminError('Le nouveau code doit contenir entre 4 et 12 caractères.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const next = await SentinelNative.updateAdminPin({
+        currentPin: verifiedAdminPin,
+        newPin: nextPin,
+      });
+      setPortal(next);
+      setVerifiedAdminPin(nextPin);
+      setNewAdminPinInput('');
+      setAdminNotice('Code administrateur mis à jour.');
+    } catch (err) {
+      setAdminError(err instanceof Error ? err.message : 'Modification refusée.');
     } finally {
       setBusy(false);
     }
@@ -519,6 +550,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleKickViewer = async () => {
+    if (!requireAdminUnlocked()) return;
     setBusy(true);
     try {
       if (isNativeAndroid) {
@@ -535,6 +567,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
 
   const handleCreateProfile = async (role: 'guest' | 'friend', e: React.FormEvent) => {
     e.preventDefault();
+    if (!requireAdminUnlocked()) {
+      setFormError('Déverrouillez la Protection Administrateur sur l’onglet Portail pour gérer les accès.');
+      return;
+    }
     setFormError(null);
 
     const chosenCode = normalizePairingCode(formCode) || generateSecurePairingCode();
@@ -596,6 +632,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleToggleProfile = async (prof: AccessProfile) => {
+    if (!requireAdminUnlocked()) {
+      setFormError('Code administrateur requis pour modifier un profil.');
+      return;
+    }
     setBusy(true);
     try {
       if (isNativeAndroid) {
@@ -614,6 +654,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleExtendPass = async (prof: AccessProfile, addMs: number) => {
+    if (!requireAdminUnlocked()) {
+      setFormError('Code administrateur requis pour prolonger un accès.');
+      return;
+    }
     setBusy(true);
     try {
       const base = Math.max(Date.now(), prof.expiresAt ?? Date.now());
@@ -631,6 +675,8 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         allowLocation: prof.allowLocation,
         allowDeviceInfo: prof.allowDeviceInfo,
         allowIntercom: prof.allowIntercom,
+        allowSmsRelay: prof.allowSmsRelay,
+        allowDeviceControl: prof.allowDeviceControl,
       };
       if (isNativeAndroid) {
         const next = await SentinelNative.upsertAccessProfile(updatedInput);
@@ -645,6 +691,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const handleDeleteProfile = async (id: string) => {
+    if (!requireAdminUnlocked()) {
+      setFormError('Code administrateur requis pour révoquer un profil.');
+      return;
+    }
     setBusy(true);
     try {
       if (isNativeAndroid) {
@@ -868,7 +918,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           className="h-4 w-4 rounded border-slate-700 bg-obsidian-900 text-emerald-500"
         />
         <Lock className="h-3.5 w-3.5 text-sky-400" />
-        <span>Contrôle</span>
+        <span>Parent / Contrôle</span>
       </label>
     </div>
   );
@@ -950,7 +1000,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               )}
               {prof.allowDeviceControl && (
                 <span className="rounded-md bg-sky-500/15 px-1.5 py-0.5 text-sky-300">
-                  Contrôle
+                  Parent / Contrôle
                 </span>
               )}
             </div>
@@ -1673,6 +1723,12 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                 </div>
               )}
 
+              {adminNotice && (
+                <div className="mt-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                  {adminNotice}
+                </div>
+              )}
+
               {!portal.adminProtectionEnabled ? (
                 <form onSubmit={(e) => void handleEnableAdminProtection(e)} className="mt-3 flex gap-2">
                   <input
@@ -1710,25 +1766,50 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                   </button>
                 </form>
               ) : (
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5">
-                  <span className="text-xs text-emerald-200">Session administrateur déverrouillée</span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setAdminUnlocked(false)}
-                      className="rounded-lg border border-white/10 bg-zinc-950 px-2.5 py-1 text-[11px] font-medium text-zinc-300 hover:text-white"
-                    >
-                      Verrouiller
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void handleDisableAdminProtection()}
-                      className="rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/25"
-                    >
-                      Désactiver
-                    </button>
+                <div className="mt-3 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5">
+                    <span className="text-xs text-emerald-200">Session administrateur déverrouillée</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdminUnlocked(false);
+                          setVerifiedAdminPin('');
+                          setNewAdminPinInput('');
+                        }}
+                        className="rounded-lg border border-white/10 bg-zinc-950 px-2.5 py-1 text-[11px] font-medium text-zinc-300 hover:text-white"
+                      >
+                        Verrouiller
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleDisableAdminProtection()}
+                        className="rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/25"
+                      >
+                        Désactiver
+                      </button>
+                    </div>
                   </div>
+
+                  <form onSubmit={(e) => void handleUpdateAdminPin(e)} className="flex gap-2">
+                    <input
+                      type="password"
+                      inputMode="text"
+                      maxLength={12}
+                      value={newAdminPinInput}
+                      onChange={(e) => setNewAdminPinInput(e.target.value)}
+                      placeholder="Nouveau code administrateur (4–12 car.)"
+                      className="flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={busy || newAdminPinInput.trim().length < 4}
+                      className="shrink-0 rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:opacity-35"
+                    >
+                      Changer
+                    </button>
+                  </form>
                 </div>
               )}
 
