@@ -527,86 +527,92 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
                     </div>
 
                     {isOpen && (
-                      <div className="mt-2.5 space-y-2 border-t border-white/[0.06] pt-2.5 text-[11px]">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="w-24 text-zinc-400">Verrouiller :</span>
-                          {[15, 30, 60, 120].map((m) => (
+                      <div className="mt-2.5 space-y-2.5 border-t border-white/[0.06] pt-2.5 text-[11px]">
+                        <div className="space-y-1.5 sm:flex sm:flex-wrap sm:items-center sm:gap-1.5 sm:space-y-0">
+                          <span className="block text-zinc-400 sm:w-24">Verrouiller :</span>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {[15, 30, 60, 120].map((m) => (
+                              <button
+                                key={m}
+                                type="button"
+                                onClick={() => {
+                                  setExpandedPkg(null);
+                                  void onApplyAppLock(app, m);
+                                }}
+                                className="rounded-lg border border-rose-500/30 bg-rose-500/15 px-2.5 py-1.5 text-rose-200 hover:bg-rose-500/25"
+                              >
+                                {m >= 60 ? `${m / 60} h` : `${m} min`}
+                              </button>
+                            ))}
                             <button
-                              key={m}
                               type="button"
                               onClick={() => {
                                 setExpandedPkg(null);
-                                void onApplyAppLock(app, m);
+                                void onApplyAppLock(app, 0, getUntilMidnightMs());
                               }}
-                              className="rounded-lg border border-rose-500/30 bg-rose-500/15 px-2 py-1 text-rose-200 hover:bg-rose-500/25"
+                              className="rounded-lg border border-rose-500/30 bg-rose-500/15 px-2.5 py-1.5 text-rose-200 hover:bg-rose-500/25"
                             >
-                              {m >= 60 ? `${m / 60} h` : `${m} min`}
+                              Minuit
                             </button>
-                          ))}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setExpandedPkg(null);
-                              void onApplyAppLock(app, 0, getUntilMidnightMs());
-                            }}
-                            className="rounded-lg border border-rose-500/30 bg-rose-500/15 px-2 py-1 text-rose-200 hover:bg-rose-500/25"
-                          >
-                            Minuit
-                          </button>
-                          <input
-                            type="number"
-                            min={1}
-                            max={1440}
-                            value={customLockMins}
-                            onChange={(e) => setCustomLockMins(e.target.value)}
-                            className="w-12 rounded-lg border border-white/10 bg-zinc-900 px-1.5 py-1 font-mono text-white"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const m = parseInt(customLockMins, 10);
-                              if (m > 0) {
-                                setExpandedPkg(null);
-                                void onApplyAppLock(app, m);
-                              }
-                            }}
-                            className="rounded-lg bg-rose-500 px-2 py-1 font-semibold text-white"
-                          >
-                            min
-                          </button>
+                            <div className="inline-flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={1}
+                                max={1440}
+                                value={customLockMins}
+                                onChange={(e) => setCustomLockMins(e.target.value)}
+                                className="w-12 rounded-lg border border-white/10 bg-zinc-900 px-1.5 py-1.5 font-mono text-white"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const m = parseInt(customLockMins, 10);
+                                  if (m > 0) {
+                                    setExpandedPkg(null);
+                                    void onApplyAppLock(app, m);
+                                  }
+                                }}
+                                className="rounded-lg bg-rose-500 px-2.5 py-1.5 font-semibold text-white"
+                              >
+                                min
+                              </button>
+                            </div>
+                          </div>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="w-24 text-zinc-400">Quota / jour :</span>
-                          {[15, 30, 60, 120].map((m) => (
-                            <button
-                              key={m}
-                              type="button"
-                              onClick={() => {
-                                setExpandedPkg(null);
-                                void onSetAppQuota(app, m);
-                              }}
-                              className={`rounded-lg border px-2 py-1 ${
-                                app.dailyLimitMinutes === m
-                                  ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
-                                  : 'border-white/10 bg-zinc-900 text-zinc-300 hover:border-white/25'
-                              }`}
-                            >
-                              {m >= 60 ? `${m / 60} h` : `${m} min`}
-                            </button>
-                          ))}
-                          {hasQuota && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setExpandedPkg(null);
-                                void onSetAppQuota(app, 0);
-                              }}
-                              className="rounded-lg border border-white/10 bg-zinc-900 px-2 py-1 text-zinc-400 hover:text-white"
-                            >
-                              Retirer
-                            </button>
-                          )}
+                        <div className="space-y-1.5 sm:flex sm:flex-wrap sm:items-center sm:gap-1.5 sm:space-y-0">
+                          <span className="block text-zinc-400 sm:w-24">Quota / jour :</span>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {[15, 30, 60, 120].map((m) => (
+                              <button
+                                key={m}
+                                type="button"
+                                onClick={() => {
+                                  setExpandedPkg(null);
+                                  void onSetAppQuota(app, m);
+                                }}
+                                className={`rounded-lg border px-2.5 py-1.5 ${
+                                  app.dailyLimitMinutes === m
+                                    ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                                    : 'border-white/10 bg-zinc-900 text-zinc-300 hover:border-white/25'
+                                }`}
+                              >
+                                {m >= 60 ? `${m / 60} h` : `${m} min`}
+                              </button>
+                            ))}
+                            {hasQuota && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setExpandedPkg(null);
+                                  void onSetAppQuota(app, 0);
+                                }}
+                                className="rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1.5 text-zinc-400 hover:text-white"
+                              >
+                                Retirer
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )}
@@ -725,20 +731,20 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">
-        {/* Card 0A: Local On-Device AI Face & NSFW Blur Shield */}
+        {/* Card 0A: Local On-Device AI Face & NSFW Mosaic Pixelation Shield */}
         <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-4">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-emerald-400" />
-              <div>
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <Sparkles className="h-4 w-4 shrink-0 text-emerald-400" />
+              <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-white">Filtre IA Visages & NSFW</h3>
                 <p className="text-[11px] text-zinc-400">
-                  Floutage organique local en temps réel (ML Kit + NudeNet)
+                  Pixellisation mosaïque locale temps réel (ML Kit + NudeNet)
                 </p>
               </div>
             </div>
             <span
-              className={`rounded-md px-2 py-0.5 text-[10px] font-medium ${
+              className={`shrink-0 rounded-md px-2 py-0.5 text-[10px] font-medium ${
                 telemetry?.aiShieldRunning
                   ? 'bg-emerald-500/15 text-emerald-300'
                   : telemetry?.aiShieldNeedsConsent
@@ -749,21 +755,21 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
               {telemetry?.aiShieldRunning
                 ? 'Actif'
                 : telemetry?.aiShieldNeedsConsent
-                ? 'Validation écran requise'
+                ? 'Validation requise'
                 : 'Inactif'}
             </span>
           </div>
 
           <div className="mt-3.5 divide-y divide-white/[0.06]">
-            <div className="flex items-center justify-between gap-2 py-2">
-              <div>
-                <div className="text-xs font-medium text-white">Flou anti-visages</div>
-                <div className="text-[11px] text-zinc-500">Contours organiques fluides (60 FPS)</div>
+            <div className="flex items-center justify-between gap-2 py-2.5">
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-white">Pixellisation anti-visages</div>
+                <div className="text-[11px] text-zinc-500">Mosaïque couleur sur contours organiques (60 FPS)</div>
               </div>
               <button
                 type="button"
                 onClick={() => void onSetAiShield({ blurFaces: !telemetry?.aiBlurFaces })}
-                className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                className={`shrink-0 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
                   telemetry?.aiBlurFaces
                     ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
                     : 'border-white/10 bg-zinc-950 text-zinc-400 hover:text-white'
@@ -773,15 +779,15 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
               </button>
             </div>
 
-            <div className="flex items-center justify-between gap-2 py-2">
-              <div>
-                <div className="text-xs font-medium text-white">Blocage zones NSFW</div>
-                <div className="text-[11px] text-zinc-500">Détection locale NudeNet (100 % hors-ligne)</div>
+            <div className="flex items-center justify-between gap-2 py-2.5">
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-white">Pixellisation zones NSFW</div>
+                <div className="text-[11px] text-zinc-500">Modèle NudeNet local 100 % hors-ligne</div>
               </div>
               <button
                 type="button"
                 onClick={() => void onSetAiShield({ blurNsfw: !telemetry?.aiBlurNsfw })}
-                className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                className={`shrink-0 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
                   telemetry?.aiBlurNsfw
                     ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
                     : 'border-white/10 bg-zinc-950 text-zinc-400 hover:text-white'
@@ -792,12 +798,12 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
             </div>
 
             {telemetry?.aiBlurNsfw && (
-              <div className="flex items-center justify-between gap-2 pt-2">
+              <div className="flex items-center justify-between gap-2 pt-2.5">
                 <span className="text-xs text-zinc-400">Niveau strict (zones couvertes sensibles)</span>
                 <button
                   type="button"
                   onClick={() => void onSetAiShield({ nsfwStrict: !telemetry?.aiNsfwStrict })}
-                  className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
+                  className={`shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
                     telemetry?.aiNsfwStrict
                       ? 'border-amber-500/40 bg-amber-500/15 text-amber-200'
                       : 'border-white/10 bg-zinc-950 text-zinc-400'
@@ -816,7 +822,7 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
             <Sliders className="h-4 w-4 text-zinc-300" />
             <div>
               <h3 className="text-sm font-semibold text-white">Politique de l’appareil</h3>
-              <p className="text-[11px] text-zinc-400">Définissez à distance les fonctions actives</p>
+              <p className="text-[11px] text-zinc-400">Tout se pilote uniquement depuis cet espace</p>
             </div>
           </div>
 
@@ -835,14 +841,20 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
                 key={item.key}
                 type="button"
                 onClick={() => void onSetRemotePolicy({ [item.key]: !item.active })}
-                className={`flex items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition ${
+                className={`flex items-center justify-between gap-1 rounded-xl border px-3 py-2.5 text-xs font-medium transition ${
                   item.active
                     ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
                     : 'border-white/[0.07] bg-zinc-950 text-zinc-400 hover:text-white'
                 }`}
               >
-                <span>{item.label}</span>
-                <span className="text-[10px]">{item.active ? 'ON' : 'OFF'}</span>
+                <span className="truncate">{item.label}</span>
+                <span
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                    item.active ? 'bg-emerald-500/20 text-emerald-200' : 'bg-white/[0.05] text-zinc-500'
+                  }`}
+                >
+                  {item.active ? 'ON' : 'OFF'}
+                </span>
               </button>
             ))}
           </div>
@@ -861,7 +873,7 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
             <button
               type="button"
               onClick={() => setCurfewEnabled((v) => !v)}
-              className={`rounded-lg border px-2.5 py-1 text-xs font-medium ${
+              className={`shrink-0 rounded-lg border px-2.5 py-1 text-xs font-medium ${
                 curfewEnabled
                   ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
                   : 'border-white/10 bg-zinc-950 text-zinc-400'
@@ -871,24 +883,24 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
             </button>
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+          <div className="mt-3.5 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
             <input
               type="time"
               value={curfewStart}
               onChange={(e) => setCurfewStart(e.target.value)}
-              className="rounded-lg border border-white/10 bg-zinc-950 px-2.5 py-1.5 font-mono text-xs text-white"
+              className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 font-mono text-xs text-white"
             />
             <span className="text-xs text-zinc-500">→</span>
             <input
               type="time"
               value={curfewEnd}
               onChange={(e) => setCurfewEnd(e.target.value)}
-              className="rounded-lg border border-white/10 bg-zinc-950 px-2.5 py-1.5 font-mono text-xs text-white"
+              className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 font-mono text-xs text-white"
             />
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-1">
+          <div className="mt-3 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="grid grid-cols-7 gap-1 sm:flex sm:items-center">
               {DAY_LABELS.map((lbl, idx) => {
                 const on = (curfewMask & (1 << idx)) !== 0;
                 return (
@@ -896,7 +908,7 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
                     key={idx}
                     type="button"
                     onClick={() => setCurfewMask((m) => m ^ (1 << idx))}
-                    className={`h-7 w-7 rounded-lg text-[11px] font-semibold transition ${
+                    className={`flex h-8 items-center justify-center rounded-lg text-[11px] font-semibold transition sm:h-7 sm:w-7 ${
                       on
                         ? 'bg-white text-zinc-950'
                         : 'border border-white/10 bg-zinc-950 text-zinc-500'
@@ -917,7 +929,7 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
                   daysMask: curfewMask,
                 })
               }
-              className="rounded-xl bg-white px-3.5 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
+              className="w-full rounded-xl bg-white px-4 py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 sm:w-auto sm:py-1.5"
             >
               Enregistrer
             </button>
@@ -1301,33 +1313,33 @@ export const GeofenceZonesCard: React.FC<GeofenceZonesCardProps> = ({
         </div>
       )}
 
-      <form onSubmit={(e) => void handleCreate(e)} className="mt-3 grid gap-2 sm:grid-cols-4">
+      <form onSubmit={(e) => void handleCreate(e)} className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <input
           type="text"
           value={geoName}
           onChange={(e) => setGeoName(e.target.value)}
           placeholder="Nom (Maison, École)"
-          className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs text-white"
+          className="col-span-2 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white sm:col-span-1 sm:py-1.5"
         />
         <input
           type="text"
           value={geoLat}
           onChange={(e) => setGeoLat(e.target.value)}
           placeholder="Latitude"
-          className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 font-mono text-xs text-white"
+          className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 font-mono text-xs text-white sm:py-1.5"
         />
         <input
           type="text"
           value={geoLng}
           onChange={(e) => setGeoLng(e.target.value)}
           placeholder="Longitude"
-          className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 font-mono text-xs text-white"
+          className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 font-mono text-xs text-white sm:py-1.5"
         />
-        <div className="flex gap-1.5">
+        <div className="col-span-2 flex gap-1.5 sm:col-span-1">
           <select
             value={geoRadius}
             onChange={(e) => setGeoRadius(parseInt(e.target.value, 10))}
-            className="flex-1 rounded-xl border border-white/10 bg-zinc-950 px-2 py-1.5 text-xs text-white"
+            className="flex-1 rounded-xl border border-white/10 bg-zinc-950 px-2.5 py-2 text-xs text-white sm:py-1.5"
           >
             <option value={100}>100 m</option>
             <option value={150}>150 m</option>
@@ -1337,7 +1349,7 @@ export const GeofenceZonesCard: React.FC<GeofenceZonesCardProps> = ({
           <button
             type="submit"
             disabled={!geoLat || !geoLng}
-            className="inline-flex items-center justify-center rounded-xl bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 disabled:opacity-35"
+            className="inline-flex items-center justify-center rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-35 sm:py-1.5"
           >
             <Plus className="h-3.5 w-3.5" />
           </button>

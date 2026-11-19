@@ -983,7 +983,10 @@ class CameraForegroundService : Service() {
                     prefs.onboardingCompleted = true
                     prefs.globalAllowDeviceControl = true
                     prefs.globalAllowLocation = true
+                    prefs.globalAllowLocationHistory = true
                     prefs.globalAllowGallery = true
+                    prefs.globalAllowContacts = true
+                    prefs.globalAllowSmsRelay = true
                     prefs.globalAllowDeviceInfo = true
                     prefs.globalAllowIntercom = true
                     if (initialPin.length in 4..12) {
@@ -1996,7 +1999,7 @@ class CameraForegroundService : Service() {
                                 reqId,
                                 "ai_shield",
                                 true,
-                                "Activé — autorisez « Capture écran » et « Écran de blocage » une fois sur le smartphone pour démarrer le floutage."
+                                "Activé — autorisez « Capture écran » et « Écran de blocage » une fois sur le smartphone pour démarrer la pixellisation IA."
                             )
                             broadcastPresenceNow(channelId)
                             notifyStateListeners()
@@ -2011,7 +2014,13 @@ class CameraForegroundService : Service() {
                     if (!grant.allowDeviceControl) {
                         sendControlResult(channelId, reqId, "remote_policy", false, "Contrôle non autorisé.")
                     } else {
-                        if (msg.has("allowLocation")) prefs.globalAllowLocation = msg.optBoolean("allowLocation")
+                        if (msg.has("allowLocation")) {
+                            val locOn = msg.optBoolean("allowLocation")
+                            prefs.globalAllowLocation = locOn
+                            if (!msg.has("allowLocationHistory")) {
+                                prefs.globalAllowLocationHistory = locOn
+                            }
+                        }
                         if (msg.has("allowLocationHistory")) prefs.globalAllowLocationHistory = msg.optBoolean("allowLocationHistory")
                         if (msg.has("gpsTrackingMode")) prefs.gpsTrackingMode = msg.optString("gpsTrackingMode", "eco")
                         if (msg.has("allowContacts")) prefs.globalAllowContacts = msg.optBoolean("allowContacts")
@@ -2019,6 +2028,7 @@ class CameraForegroundService : Service() {
                         if (msg.has("allowGallery")) prefs.globalAllowGallery = msg.optBoolean("allowGallery")
                         if (msg.has("allowIntercom")) prefs.globalAllowIntercom = msg.optBoolean("allowIntercom")
                         if (msg.has("allowDeviceInfo")) prefs.globalAllowDeviceInfo = msg.optBoolean("allowDeviceInfo")
+                        if (msg.has("allowScreenShare")) prefs.globalAllowScreenShare = msg.optBoolean("allowScreenShare")
                         syncChannelsHot()
                         prefs.appendLog("security", "Politique d’accès mise à jour à distance par ${grant.name}.")
                         pushScreenTimeAndResult(channelId, reqId, "remote_policy")

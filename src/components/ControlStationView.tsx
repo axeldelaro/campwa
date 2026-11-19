@@ -1048,12 +1048,12 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   /* ==================== SCREEN 1: PARENT FAMILY SPACE (ZERO-LOSS PAIRING) ==================== */
   if (!isSessionOpen) {
     return (
-      <div className="mx-auto flex min-h-[76vh] max-w-md flex-col justify-center px-4 py-10">
-        <div className="space-y-4 rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-6 sm:p-7">
+      <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-md flex-col justify-center px-3.5 py-6 sm:px-4 sm:py-10">
+        <div className="space-y-4 rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-5 sm:p-7">
           <div className="text-center">
             <h1 className="text-xl font-semibold tracking-tight text-white">Espace Parent</h1>
             <p className="mt-1 text-xs text-zinc-400">
-              Associez un smartphone et pilotez-le à distance sans serveur
+              Associez un smartphone et pilotez toutes ses règles à distance
             </p>
           </div>
 
@@ -1065,7 +1065,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 <div
                   key={dev.pairingCode}
                   onClick={() => void handleConnect(dev.pairingCode)}
-                  className="flex cursor-pointer items-center justify-between rounded-xl border border-white/[0.07] bg-zinc-950/80 px-3.5 py-3 transition hover:border-white/20"
+                  className="flex cursor-pointer items-center justify-between gap-2 rounded-xl border border-white/[0.07] bg-zinc-950/80 px-3.5 py-3 transition hover:border-white/20"
                 >
                   <div className="flex min-w-0 items-center gap-2.5">
                     <Smartphone className="h-4 w-4 shrink-0 text-emerald-400" />
@@ -1074,21 +1074,21 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                         <span className="truncate text-xs font-semibold text-white">
                           {dev.deviceName}
                         </span>
-                        <span className="font-mono text-[11px] text-zinc-500">
+                        <span className="shrink-0 font-mono text-[11px] text-zinc-500">
                           {dev.pairingCode}
                         </span>
                       </div>
                       {dev.accessRole && dev.accessRole !== 'owner' && (
-                        <div className="text-[10px] text-zinc-500">{dev.accessName}</div>
+                        <div className="truncate text-[10px] text-zinc-500">{dev.accessName}</div>
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex shrink-0 items-center gap-1.5">
                     <span className="text-[11px] font-medium text-zinc-300">Ouvrir →</span>
                     <button
                       type="button"
                       onClick={(e) => handleForgetDevice(dev.pairingCode, e)}
-                      className="rounded-lg p-1 text-zinc-600 transition hover:text-rose-400"
+                      className="rounded-lg p-1.5 text-zinc-600 transition hover:text-rose-400"
                       title="Retirer de la liste"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -1105,18 +1105,18 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               <div className="text-[11px] font-medium text-zinc-400">
                 Saisissez ce code dans l’application du smartphone
               </div>
-              <div className="mt-3 flex justify-center gap-1.5">
+              <div className="mt-3 grid grid-cols-6 gap-1.5">
                 {pairingActiveCode.split('').map((ch, i) => (
                   <span
                     key={i}
-                    className="flex h-12 w-10 items-center justify-center rounded-lg border border-emerald-500/40 bg-zinc-900 font-mono text-xl font-semibold text-emerald-300"
+                    className="flex h-12 items-center justify-center rounded-lg border border-emerald-500/40 bg-zinc-900 font-mono text-lg font-semibold text-emerald-300 sm:text-xl"
                   >
                     {ch}
                   </span>
                 ))}
               </div>
               <div className="mt-3 flex items-center justify-center gap-1.5 text-xs text-zinc-400">
-                <RefreshCw className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin text-emerald-400" />
                 <span>{pairingStatus || 'En attente du smartphone…'}</span>
               </div>
               <button
@@ -1134,8 +1134,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 maxLength={12}
                 value={pairingAdminPin}
                 onChange={(e) => setPairingAdminPin(e.target.value)}
-                placeholder="Code administrateur à définir sur l’appareil (optionnel, 4–12 car.)"
-                className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+                placeholder="Code administrateur (optionnel, 4–12 car.)"
+                className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
               />
               <button
                 type="button"
@@ -1304,30 +1304,53 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
   /* ==================== SCREEN 2: CONNECTED WORKSPACE ==================== */
   return (
-    <div className="mx-auto max-w-5xl space-y-4 px-4 py-5 sm:px-6">
-      {/* Compact Device Status Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/[0.07] bg-zinc-900/70 px-4 py-3">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <div className="flex items-center gap-2">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                isStreaming
-                  ? 'bg-rose-500 animate-pulse'
-                  : portalState === 'connecting'
-                  ? 'bg-amber-400 animate-pulse'
-                  : 'bg-emerald-400'
-              }`}
-            />
-            <span className="text-sm font-semibold text-white">
-              {telemetry?.deviceName || sasInfo?.deviceName || 'Smartphone'}
-            </span>
-            <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-zinc-300">
-              {fullCode}
-            </span>
+    <div className="mx-auto max-w-5xl space-y-3.5 px-3.5 pb-24 pt-3.5 sm:space-y-4 sm:px-6 sm:pb-10 sm:pt-5">
+      {/* Compact Device Status Bar (Single Clean Row on Mobile) */}
+      <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.07] bg-zinc-900/70 px-3.5 py-2.5 sm:px-4 sm:py-3">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ${
+              isStreaming
+                ? 'bg-rose-500 animate-pulse'
+                : portalState === 'connecting'
+                ? 'bg-amber-400 animate-pulse'
+                : 'bg-emerald-400'
+            }`}
+          />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-sm font-semibold text-white">
+                {telemetry?.deviceName || sasInfo?.deviceName || 'Smartphone'}
+              </span>
+              <span className="hidden rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-zinc-400 sm:inline">
+                {fullCode}
+              </span>
+            </div>
+            {telemetry && (
+              <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                {telemetry.isCharging ? (
+                  <BatteryCharging className="h-3 w-3 text-emerald-400" />
+                ) : (
+                  <Battery className="h-3 w-3 text-zinc-500" />
+                )}
+                <span className="font-mono">{telemetry.batteryLevel}%</span>
+                <span className="text-zinc-600">·</span>
+                <span className="truncate">{telemetry.networkType}</span>
+                {isStreaming && stats && (
+                  <>
+                    <span className="hidden text-zinc-600 sm:inline">·</span>
+                    <span className="hidden items-center gap-1 font-mono text-zinc-500 sm:inline-flex">
+                      <Activity className="h-3 w-3" />
+                      {stats.rttMs} ms
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {accessGrant && accessGrant.role !== 'owner' && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.05] px-2 py-0.5 text-[11px] text-zinc-300">
+            <span className="hidden items-center gap-1 rounded-md bg-white/[0.05] px-2 py-0.5 text-[11px] text-zinc-300 sm:inline-flex">
               {accessGrant.role === 'friend' ? (
                 <UserCheck className="h-3 w-3 text-emerald-400" />
               ) : (
@@ -1339,34 +1362,14 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               </span>
             </span>
           )}
-
-          {telemetry && (
-            <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">
-              {telemetry.isCharging ? (
-                <BatteryCharging className="h-3.5 w-3.5 text-emerald-400" />
-              ) : (
-                <Battery className="h-3.5 w-3.5 text-zinc-500" />
-              )}
-              <span className="font-mono">{telemetry.batteryLevel}%</span>
-              <span className="text-zinc-600">·</span>
-              <span>{telemetry.networkType}</span>
-            </span>
-          )}
-
-          {isStreaming && stats && (
-            <span className="hidden items-center gap-1 font-mono text-[11px] text-zinc-500 sm:inline-flex">
-              <Activity className="h-3 w-3" />
-              {stats.rttMs} ms
-            </span>
-          )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           <button
             type="button"
             disabled={!canUseIntercom}
             onClick={() => void handleToggleRing()}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:opacity-35 ${
+            className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition disabled:opacity-35 ${
               telemetry?.ringingActive
                 ? 'border-rose-500/60 bg-rose-500/20 text-rose-200 animate-pulse'
                 : 'border-white/[0.08] bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
@@ -1383,8 +1386,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             <button
               type="button"
               onClick={() => setSasModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 transition hover:bg-white/[0.07]"
-              title="Code de vérification"
+              className="hidden h-8 items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 font-mono text-[11px] text-zinc-300 transition hover:bg-white/[0.07] sm:inline-flex"
+              title="Code de vérification E2EE"
             >
               <Lock className="h-3 w-3 text-emerald-400" />
               <span>{sasInfo.sasCode}</span>
@@ -1394,10 +1397,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           <button
             type="button"
             onClick={handleDisconnect}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-rose-500/40 hover:text-rose-300"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs font-medium text-zinc-300 transition hover:border-rose-500/40 hover:text-rose-300"
+            title="Quitter la session"
           >
             <Unplug className="h-3.5 w-3.5" />
-            <span>Quitter</span>
+            <span className="hidden sm:inline">Quitter</span>
           </button>
         </div>
       </div>
@@ -1405,7 +1409,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       {/* Compact Talkie-Walkie Bar (shown on Direct > Caméra & Écran or while talking) */}
       {((viewerTab === 'live' && liveSubTab === 'media') || talkieActive) && (
       <div
-        className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 transition ${
+        className={`space-y-2.5 rounded-2xl border px-3.5 py-3 transition sm:flex sm:flex-wrap sm:items-center sm:justify-between sm:gap-3 sm:space-y-0 sm:px-4 ${
           talkieActive
             ? 'border-emerald-500/50 bg-emerald-500/10'
             : 'border-white/[0.07] bg-zinc-900/70'
@@ -1413,12 +1417,12 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       >
         <div className="flex items-center gap-2.5">
           <Volume2
-            className={`h-4 w-4 ${talkieActive ? 'text-emerald-400 animate-pulse' : 'text-zinc-400'}`}
+            className={`h-4 w-4 shrink-0 ${talkieActive ? 'text-emerald-400 animate-pulse' : 'text-zinc-400'}`}
           />
           <span className="text-xs font-medium text-white">Haut-parleur</span>
           {talkieActive ? (
             <div className="flex items-center gap-2">
-              <div className="h-1.5 w-28 overflow-hidden rounded-full bg-zinc-950 sm:w-40">
+              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-zinc-950 sm:w-40">
                 <div
                   className="h-full rounded-full bg-emerald-400 transition-all duration-75"
                   style={{ width: `${Math.max(8, talkieLevel)}%` }}
@@ -1431,7 +1435,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             disabled={!canUseIntercom}
@@ -1439,7 +1443,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             onPointerUp={handleTalkiePressEnd}
             onPointerLeave={handleTalkiePressEnd}
             onPointerCancel={handleTalkiePressEnd}
-            className={`inline-flex select-none touch-none items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-35 ${
+            className={`inline-flex flex-1 select-none touch-none items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-35 sm:flex-none ${
               talkieActive && !talkieLocked
                 ? 'bg-rose-500 text-white'
                 : 'bg-white text-zinc-950 hover:bg-zinc-200'
@@ -1453,7 +1457,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             type="button"
             disabled={!canUseIntercom}
             onClick={handleToggleTalkieLock}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
               talkieLocked
                 ? 'border-rose-500/50 bg-rose-500/15 text-rose-200'
                 : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
@@ -1466,7 +1470,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             type="button"
             disabled={!canUseIntercom}
             onClick={() => setTtsOpen((v) => !v)}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
               ttsOpen
                 ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
                 : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
@@ -1486,12 +1490,12 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               value={ttsText}
               onChange={(e) => setTtsText(e.target.value)}
               placeholder="Message à lire à voix haute sur l’appareil…"
-              className="flex-1 rounded-lg border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+              className="min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
             />
             <button
               type="submit"
               disabled={!ttsText.trim()}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3.5 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-35"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-35"
             >
               <Send className="h-3.5 w-3.5" />
               <span>Lire</span>
@@ -1501,8 +1505,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       </div>
       )}
 
-      {/* Clean 4-Tab Parental-First Navigation */}
-      <div className="grid grid-cols-4 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1.5">
+      {/* Desktop Top 4-Tab Bar */}
+      <div className="hidden grid-cols-4 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1.5 sm:grid">
         <button
           type="button"
           disabled={!canUseDeviceControl}
@@ -1582,6 +1586,74 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           <span className="truncate">Direct</span>
         </button>
       </div>
+
+      {/* Native-Style Fixed Mobile Bottom Navigation Bar */}
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.08] bg-[#09090b]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl sm:hidden">
+        <div className="grid grid-cols-4 px-1.5 py-1.5">
+          <button
+            type="button"
+            disabled={!canUseDeviceControl}
+            onClick={() => handleOpenHomeOrRulesTab('home')}
+            className={`relative flex flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[10px] font-medium transition disabled:opacity-35 ${
+              viewerTab === 'home' ? 'text-white' : 'text-zinc-500'
+            }`}
+          >
+            <div className="relative">
+              <LayoutDashboard className={`h-5 w-5 ${viewerTab === 'home' ? 'text-emerald-400' : ''}`} />
+              {((telemetry?.pendingRequestsCount ?? 0) > 0 || (telemetry?.activeAppLocksCount ?? 0) > 0) && (
+                <span className="absolute -right-2 -top-1 rounded-full bg-emerald-500 px-1 font-mono text-[9px] font-bold text-zinc-950">
+                  {(telemetry?.pendingRequestsCount ?? 0) > 0
+                    ? `+${telemetry?.pendingRequestsCount}`
+                    : telemetry?.activeAppLocksCount}
+                </span>
+              )}
+            </div>
+            <span>Accueil</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!canUseDeviceControl}
+            onClick={() => handleOpenHomeOrRulesTab('rules')}
+            className={`relative flex flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[10px] font-medium transition disabled:opacity-35 ${
+              viewerTab === 'rules' ? 'text-white' : 'text-zinc-500'
+            }`}
+          >
+            <div className="relative">
+              <ShieldCheck className={`h-5 w-5 ${viewerTab === 'rules' ? 'text-emerald-400' : ''}`} />
+              {(telemetry?.securityAlertsCount ?? 0) > 0 && (
+                <span className="absolute -right-2 -top-1 rounded-full bg-amber-400 px-1 font-mono text-[9px] font-bold text-zinc-950">
+                  {telemetry?.securityAlertsCount}
+                </span>
+              )}
+            </div>
+            <span>Règles</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!canViewLocation && !canViewDeviceInfo}
+            onClick={handleOpenLocationTab}
+            className={`flex flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[10px] font-medium transition disabled:opacity-35 ${
+              viewerTab === 'location' ? 'text-white' : 'text-zinc-500'
+            }`}
+          >
+            <MapPin className={`h-5 w-5 ${viewerTab === 'location' ? 'text-emerald-400' : ''}`} />
+            <span>Position</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setViewerTab('live')}
+            className={`flex flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[10px] font-medium transition ${
+              viewerTab === 'live' ? 'text-white' : 'text-zinc-500'
+            }`}
+          >
+            <Video className={`h-5 w-5 ${viewerTab === 'live' ? 'text-emerald-400' : ''}`} />
+            <span>Direct</span>
+          </button>
+        </div>
+      </nav>
 
       {/* ==================== TAB 1: PARENTAL CONTROL HOME ==================== */}
       {viewerTab === 'home' && (
@@ -1665,45 +1737,43 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
       {/* ==================== TAB 4: DIRECT (CAMERA / SCREEN / GALLERY / CONTACTS & SMS) ==================== */}
       {viewerTab === 'live' && (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setLiveSubTab('media')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
-                liveSubTab === 'media'
-                  ? 'bg-white/[0.12] text-white'
-                  : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
-              }`}
-            >
-              <Video className="h-3.5 w-3.5" />
-              <span>Caméra & Écran</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleOpenGallerySubTab}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
-                liveSubTab === 'gallery'
-                  ? 'bg-white/[0.12] text-white'
-                  : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
-              }`}
-            >
-              <ImageIcon className="h-3.5 w-3.5" />
-              <span>Galerie</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleOpenContactsSubTab}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
-                liveSubTab === 'contacts'
-                  ? 'bg-white/[0.12] text-white'
-                  : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
-              }`}
-            >
-              <BookUser className="h-3.5 w-3.5" />
-              <span>{canViewContacts ? 'Contacts & SMS' : 'SMS'}</span>
-            </button>
-          </div>
+        <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
+          <button
+            type="button"
+            onClick={() => setLiveSubTab('media')}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-medium transition sm:py-1.5 ${
+              liveSubTab === 'media'
+                ? 'bg-white text-zinc-950'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
+            }`}
+          >
+            <Video className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">Caméra</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenGallerySubTab}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-medium transition sm:py-1.5 ${
+              liveSubTab === 'gallery'
+                ? 'bg-white text-zinc-950'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
+            }`}
+          >
+            <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">Galerie</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenContactsSubTab}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-medium transition sm:py-1.5 ${
+              liveSubTab === 'contacts'
+                ? 'bg-white text-zinc-950'
+                : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
+            }`}
+          >
+            <BookUser className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{canViewContacts ? 'Contacts' : 'SMS'}</span>
+          </button>
         </div>
       )}
 
@@ -1742,15 +1812,15 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
           <div
             ref={videoContainerRef}
-            className="relative aspect-video w-full overflow-hidden rounded-3xl border border-slate-800 bg-obsidian-950 shadow-2xl"
+            className="relative aspect-video w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-zinc-950"
           >
             {isStreaming && (
-              <div className="absolute left-4 top-4 z-20 flex items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/40 bg-rose-950/85 px-3 py-1 font-mono text-xs font-bold text-rose-200 backdrop-blur">
+              <div className="absolute left-3 top-3 z-20 flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/40 bg-zinc-950/85 px-2.5 py-1 font-mono text-[11px] font-semibold text-rose-200 backdrop-blur">
                   <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping" />
                   {mediaMode === 'screen'
                     ? 'ÉCRAN EN DIRECT'
-                    : `EN DIRECT • ${cameraFacing === 'front' ? 'SELFIE' : 'ARRIÈRE'}`}
+                    : `DIRECT · ${cameraFacing === 'front' ? 'SELFIE' : 'ARRIÈRE'}`}
                 </span>
               </div>
             )}
@@ -1769,41 +1839,41 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             />
 
             {!isStreaming && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-radial-glow p-6 text-center">
+              <div className="absolute inset-0 flex flex-col items-center justify-center p-5 text-center">
                 {portalState === 'connecting' ? (
                   <>
-                    <RefreshCw className="h-11 w-11 animate-spin text-emerald-400" />
-                    <h3 className="mt-4 text-lg font-bold text-white">
+                    <RefreshCw className="h-9 w-9 animate-spin text-emerald-400" />
+                    <h3 className="mt-3 text-sm font-semibold text-white">
                       {mediaMode === 'screen'
-                        ? 'Ouverture du partage d’écran...'
-                        : 'Démarrage instantané de la vidéo...'}
+                        ? 'Ouverture du partage d’écran…'
+                        : 'Démarrage de la vidéo…'}
                     </h3>
                   </>
                 ) : portalState === 'locked' ? (
                   <>
-                    <AlertTriangle className="h-10 w-10 text-amber-400" />
-                    <h3 className="mt-3 text-base font-bold text-amber-300">
+                    <AlertTriangle className="h-9 w-9 text-amber-400" />
+                    <h3 className="mt-3 text-sm font-semibold text-amber-300">
                       Temporisation de sécurité active
                     </h3>
                   </>
                 ) : (
                   <>
-                    <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-emerald-500/30 bg-emerald-500/10">
-                      <CameraOff className="h-8 w-8 text-emerald-400" />
+                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04]">
+                      <CameraOff className="h-6 w-6 text-zinc-400" />
                     </div>
-                    <h3 className="mt-4 text-lg font-bold text-white">
+                    <h3 className="mt-3 text-base font-semibold text-white">
                       Caméra en veille
                     </h3>
-                    <p className="mt-1 max-w-md text-xs text-slate-400">
+                    <p className="mt-1 max-w-xs text-xs text-zinc-400">
                       Démarrez la caméra ou l’écran à la demande.
                     </p>
-                    <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+                    <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
                       <button
                         type="button"
                         onClick={() => void handleWakeMedia('camera')}
-                        className="inline-flex items-center gap-2 rounded-2xl bg-emerald-500 px-6 py-3.5 text-sm font-extrabold text-obsidian-950 shadow-xl shadow-emerald-500/25 transition hover:scale-[1.02] hover:bg-emerald-400"
+                        className="inline-flex items-center gap-2 rounded-xl bg-white px-5 py-2.5 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200"
                       >
-                        <Video className="h-5 w-5" />
+                        <Video className="h-4 w-4" />
                         <span>Allumer la caméra</span>
                       </button>
 
@@ -1811,9 +1881,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                         <button
                           type="button"
                           onClick={() => void handleWakeMedia('screen')}
-                          className="inline-flex items-center gap-2 rounded-2xl border border-violet-400/50 bg-violet-500/20 px-6 py-3.5 text-sm font-extrabold text-violet-200 shadow-xl transition hover:scale-[1.02] hover:bg-violet-500/30"
+                          className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-zinc-900 px-5 py-2.5 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800"
                         >
-                          <Monitor className="h-5 w-5" />
+                          <Monitor className="h-4 w-4" />
                           <span>Voir l’écran</span>
                         </button>
                       )}
@@ -1824,14 +1894,14 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             )}
           </div>
 
-          {/* Media Action Deck */}
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 bg-obsidian-900/90 p-4 shadow-xl">
-            <div className="flex flex-wrap items-center gap-2.5">
+          {/* Media Action Deck (Clean Mobile Grid) */}
+          <div className="space-y-2.5 rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-3.5 sm:flex sm:flex-wrap sm:items-center sm:justify-between sm:gap-3 sm:space-y-0 sm:p-4">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
               {!isStreaming ? (
                 <button
                   type="button"
                   onClick={() => void handleWakeMedia('camera')}
-                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-extrabold text-obsidian-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-400"
+                  className="col-span-2 inline-flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 sm:col-span-1"
                 >
                   <Zap className="h-4 w-4" />
                   <span>Allumer la caméra</span>
@@ -1840,7 +1910,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 <button
                   type="button"
                   onClick={() => void handleSleepCamera()}
-                  className="inline-flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 px-5 py-2.5 text-sm font-bold text-amber-300 transition hover:bg-amber-500/25"
+                  className="col-span-2 inline-flex items-center justify-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 px-4 py-2.5 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/25 sm:col-span-1"
                 >
                   <Power className="h-4 w-4" />
                   <span>Couper le flux</span>
@@ -1856,22 +1926,22 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 }
                 title={
                   !canViewScreen
-                    ? 'Partage d’écran non autorisé par le propriétaire sur son téléphone'
+                    ? 'Autorisez « Capture écran » une fois sur le smartphone'
                     : undefined
                 }
-                className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
                   mediaMode === 'screen' && isStreaming
-                    ? 'border-violet-400 bg-violet-500/25 text-violet-200'
-                    : 'border-violet-500/35 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                    : 'border-white/10 bg-zinc-950 text-zinc-300 hover:text-white'
                 }`}
               >
                 <Monitor className="h-3.5 w-3.5" />
                 <span>
                   {mediaMode === 'screen' && isStreaming
-                    ? 'Revenir Caméra'
+                    ? 'Caméra'
                     : canViewScreen
-                    ? 'Partage d’Écran'
-                    : 'Écran (Privé)'}
+                    ? 'Écran'
+                    : 'Écran (inactif)'}
                 </span>
               </button>
 
@@ -1881,10 +1951,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   disabled={!canSwitchCam}
                   onClick={() => void handleToggleFacing()}
                   title={!canSwitchCam ? 'Changement de caméra restreint' : undefined}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3.5 py-2.5 text-xs font-semibold text-slate-200 transition hover:border-slate-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-35"
                 >
-                  <RefreshCw className="h-3.5 w-3.5 text-cyan-400" />
-                  <span>{cameraFacing === 'front' ? 'Caméra Selfie' : 'Caméra Arrière'}</span>
+                  <RefreshCw className="h-3.5 w-3.5 text-zinc-400" />
+                  <span>{cameraFacing === 'front' ? 'Selfie' : 'Arrière'}</span>
                 </button>
               )}
 
@@ -1892,10 +1962,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 type="button"
                 disabled={!canUseAudio}
                 onClick={() => void handleToggleRemoteMic()}
-                className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-35 ${
                   remoteMicEnabled && canUseAudio
-                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-                    : 'border-slate-700 bg-obsidian-950 text-slate-300 hover:text-white'
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                    : 'border-white/10 bg-zinc-950 text-zinc-300 hover:text-white'
                 }`}
               >
                 {remoteMicEnabled && canUseAudio ? (
@@ -1905,14 +1975,14 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   </>
                 ) : (
                   <>
-                    <MicOff className="h-3.5 w-3.5 text-slate-400" />
-                    <span>{canUseAudio ? 'Micro OFF' : 'Micro restreint'}</span>
+                    <MicOff className="h-3.5 w-3.5 text-zinc-400" />
+                    <span>{canUseAudio ? 'Micro OFF' : 'Restreint'}</span>
                   </>
                 )}
               </button>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => void handleToggleTorch()}
@@ -1941,7 +2011,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 {isRecording ? (
                   <>
                     <Square className="h-3 w-3 fill-current" />
-                    <span>Stop REC</span>
+                    <span>Stop</span>
                   </>
                 ) : (
                   <>
@@ -1979,7 +2049,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               <button
                 type="button"
                 onClick={() => setLocalAudioMuted((m) => !m)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-obsidian-950 text-slate-300 transition hover:text-white"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-zinc-950 text-zinc-300 transition hover:text-white"
               >
                 {localAudioMuted ? (
                   <VolumeX className="h-4 w-4 text-rose-400" />
@@ -1992,8 +2062,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setMirrorVideo((m) => !m)}
-                  className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border bg-obsidian-950 transition ${
-                    mirrorVideo ? 'border-emerald-500/40 text-emerald-300' : 'border-slate-800 text-slate-400'
+                  className={`inline-flex h-8 w-8 items-center justify-center rounded-xl border bg-zinc-950 transition ${
+                    mirrorVideo ? 'border-emerald-500/40 text-emerald-300' : 'border-white/10 text-zinc-400'
                   }`}
                 >
                   <FlipHorizontal className="h-4 w-4" />
@@ -2003,7 +2073,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               <button
                 type="button"
                 onClick={() => setQuality((q) => (q === 'hd' ? 'sd' : 'hd'))}
-                className="rounded-xl border border-slate-800 bg-obsidian-950 px-2.5 py-2 font-mono text-xs font-bold text-slate-300"
+                className="rounded-xl border border-white/10 bg-zinc-950 px-2.5 py-2 font-mono text-xs font-semibold text-zinc-300"
               >
                 {quality.toUpperCase()}
               </button>
@@ -2012,7 +2082,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 type="button"
                 disabled={!isStreaming}
                 onClick={handleFullscreen}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-obsidian-950 text-slate-300 transition hover:text-white disabled:opacity-40"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-zinc-950 text-zinc-300 transition hover:text-white disabled:opacity-35"
               >
                 <Maximize2 className="h-4 w-4" />
               </button>
@@ -2260,24 +2330,24 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             ) : (
               <div className="mt-4 space-y-4">
                 {/* Range Selector + Export Buttons */}
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-800 bg-obsidian-950 p-1">
+                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                  <div className="grid grid-cols-4 gap-1 rounded-xl border border-white/[0.08] bg-zinc-950 p-1 sm:flex sm:items-center">
                     {(
                       [
-                        { id: 'today', label: 'Aujourd’hui' },
+                        { id: 'today', label: 'Auj.' },
                         { id: '24h', label: '24 h' },
-                        { id: '7d', label: '7 jours' },
-                        { id: '30d', label: '30 jours' },
+                        { id: '7d', label: '7 j' },
+                        { id: '30d', label: '30 j' },
                       ] as const
                     ).map((r) => (
                       <button
                         key={r.id}
                         type="button"
                         onClick={() => void handleFetchLocationHistory(r.id)}
-                        className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                        className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
                           historyRange === r.id
-                            ? 'bg-emerald-500 text-obsidian-950'
-                            : 'text-slate-400 hover:text-white'
+                            ? 'bg-white text-zinc-950'
+                            : 'text-zinc-400 hover:text-white'
                         }`}
                       >
                         {r.label}
@@ -2291,18 +2361,18 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                         <button
                           type="button"
                           onClick={handleExportGpx}
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-emerald-500/50 hover:text-emerald-300"
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:text-white"
                         >
                           <Download className="h-3.5 w-3.5" />
-                          <span>Export GPX</span>
+                          <span>GPX</span>
                         </button>
                         <button
                           type="button"
                           onClick={handleExportCsv}
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-obsidian-950 px-3 py-1.5 text-xs font-bold text-slate-200 hover:border-cyan-500/50 hover:text-cyan-300"
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:text-white"
                         >
                           <Download className="h-3.5 w-3.5" />
-                          <span>Export CSV</span>
+                          <span>CSV</span>
                         </button>
                       </>
                     )}
@@ -2311,9 +2381,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                         href={`https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 rounded-xl bg-emerald-500 px-3 py-1.5 text-xs font-extrabold text-obsidian-950 hover:bg-emerald-400"
+                        className="inline-flex items-center gap-1 rounded-xl bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
                       >
-                        <span>Google Maps</span>
+                        <span>Maps</span>
                         <ExternalLink className="h-3 w-3" />
                       </a>
                     )}

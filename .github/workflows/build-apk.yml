@@ -130,16 +130,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v15.0.${{ github.run_number }}
-          name: "SentinelCam v15.0.${{ github.run_number }} (Filtre IA Visages & NSFW Local • Galerie Publique • Espace Parent Sans Perte)"
+          tag_name: v16.0.${{ github.run_number }}
+          name: "SentinelCam v16.0.${{ github.run_number }} (Pixellisation IA Mosaïque 60 FPS • App Verrouillée Parent • Mobile Parfait)"
           body: |
-            ### SentinelCam v15.0 (`v15.0.${{ github.run_number }}`)
+            ### SentinelCam v16.0 (`v16.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Filtre IA local temps réel (Visages & NSFW)** : embarque **Google ML Kit Face Contour** (contours organiques 36 points en ~8 ms) + **NudeNet v3 YOLOv8n (`320n.onnx`)** via ONNX Runtime ARM64 (100 % local, gratuit et hors-ligne), avec floutage organique fluide à 60 FPS (sans blocs carrés) et suivi de défilement anti-clignotement.
-            - **Galerie photos à distance (hors dossiers masqués)** : parcourir les albums publics avec miniatures rapides et aperçu HD chiffré, en excluant strictement les dossiers masqués, `.nomedia`, coffres privés et corbeilles.
-            - **Espace Parent sans serveur & sans perte (Clé Famille)** : le Parent génère un code d’association sur le site Web, l’application Android s’y lie et devient gérée à distance par le Parent (qui règle toutes les politiques depuis le site). Une **Clé Famille** (12 car.) permet de retrouver tous ses appareils associés depuis n’importe quel nouveau navigateur sans aucun serveur.
+            - **Pixellisation IA Mosaïque couleur en temps réel (zéro masque noir)** : échantillonne directement les vrais pixels de l’écran en mosaïque couleur fluide (`8×10` visages, `6×8` NSFW) découpée sur les contours organiques 36 points, avec accélération GPU matérielle 60–120 FPS, inférence parallèle ML Kit + NudeNet (~18 ms), et suivi instantané au défilement.
+            - **Application Enfant verrouillée (100 % pilotée par le Parent)** : aucun bouton pour désactiver une fonction ou couper la protection côté appareil. Tout s’active et se règle exclusivement depuis le site Parent (avec maintenance locale protégée par code administrateur).
+            - **Site Parent repensé pour smartphone** : barre de navigation fixe façon application mobile en bas d’écran, en-tête épuré, formulaires adaptés aux petits écrans (360 px+), et design sombre ultra-lisible.
+            - **Toujours 100 % gratuit & sans serveur** : E2EE (DTLS-SRTP + AES-256-GCM), Clé Famille anti-perte, Galerie publique hors dossiers masqués, Temps d’écran, Couvre-feu, Mode École, Anti-contournement, Mode Perdu et GPS continu.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

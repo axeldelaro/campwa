@@ -12,9 +12,6 @@ const APK_RELEASE_URL = 'https://github.com/axeldelaro/campwa/releases/latest';
 
 export const App: React.FC = () => {
   const nativeAndroid = isAndroidNativeApp();
-  const [activeTab, setActiveTab] = useState<'controller' | 'emitter'>(
-    nativeAndroid ? 'emitter' : 'controller'
-  );
   const [brokerConnected, setBrokerConnected] = useState(false);
   const [brokers, setBrokers] = useState<BrokerHealth[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -40,7 +37,6 @@ export const App: React.FC = () => {
         const clean = normalizePairingCode(rawCode);
         if (clean.length === 6) {
           setSharedAccessCode(clean);
-          setActiveTab('controller');
         }
       }
     }
@@ -56,18 +52,16 @@ export const App: React.FC = () => {
     : '#';
 
   return (
-    <div className="min-h-screen bg-[#09090b] text-zinc-100">
+    <div className="min-h-screen overflow-x-hidden bg-[#09090b] text-zinc-100">
       <HeaderBar
         isNativeAndroid={nativeAndroid}
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
         brokerConnected={brokerConnected}
         onOpenSettings={() => setSettingsOpen(true)}
         apkDownloadUrl={APK_RELEASE_URL}
       />
 
       {!nativeAndroid && inviteCode && (
-        <div className="mx-auto mt-6 max-w-md px-4">
+        <div className="mx-auto mt-5 max-w-md px-4">
           <div className="rounded-2xl border border-white/10 bg-zinc-900/90 p-5 text-center">
             <BellRing className="mx-auto h-7 w-7 text-emerald-400" />
             <h2 className="mt-3 text-base font-semibold text-white">Ouvrir SentinelCam</h2>
@@ -92,9 +86,9 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      <main className="pb-12">
-        {nativeAndroid || activeTab === 'emitter' ? (
-          <AndroidEmitterView isNativeAndroid={nativeAndroid} />
+      <main>
+        {nativeAndroid ? (
+          <AndroidEmitterView isNativeAndroid={true} />
         ) : (
           <ControlStationView
             onBrokerHealthChange={handleBrokerHealth}
@@ -102,23 +96,6 @@ export const App: React.FC = () => {
           />
         )}
       </main>
-
-      {!nativeAndroid && (
-        <footer className="border-t border-white/[0.05] py-5 text-center text-xs text-zinc-600">
-          <div className="mx-auto flex max-w-5xl items-center justify-center gap-4 px-4">
-            <span>SentinelCam</span>
-            <span>·</span>
-            <a
-              href={APK_RELEASE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-zinc-400 transition hover:text-white"
-            >
-              Application Android
-            </a>
-          </div>
-        </footer>
-      )}
 
       <SettingsModal
         open={settingsOpen}

@@ -386,6 +386,26 @@ class SentinelNativePlugin : Plugin() {
     }
 
     @PluginMethod
+    fun unpairFromParent(call: PluginCall) {
+        val pin = call.getString("pin") ?: ""
+        if (prefs.adminProtectionEnabled && prefs.hasAdminPin() && !prefs.verifyAdminPin(pin)) {
+            call.reject("Code administrateur incorrect.")
+            return
+        }
+        prefs.parentManaged = false
+        prefs.parentFamilyKey = ""
+        prefs.aiBlurFaces = false
+        prefs.aiBlurNsfw = false
+        prefs.clearAllAppLocks()
+        prefs.lostModeEnabled = false
+        prefs.blockSettingsAndStore = false
+        prefs.curfewEnabled = false
+        prefs.appendLog("security", "Appareil délié de l’Espace Parent par code administrateur.")
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
     fun setAiShieldSettings(call: PluginCall) {
         if (call.data.has("blurFaces")) {
             prefs.aiBlurFaces = call.getBoolean("blurFaces", false) ?: false

@@ -11,9 +11,10 @@
   body,
   #root {
     min-height: 100%;
-    background-color: #05080f;
-    color: #f1f5f9;
+    background-color: #09090b;
+    color: #f4f4f5;
     overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
   }
 }
 
