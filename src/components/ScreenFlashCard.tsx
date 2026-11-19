@@ -14,7 +14,7 @@ interface ScreenFlashCardProps {
   onFlashImage: (base64Jpeg: string, durationSec: number, caption: string) => Promise<void>;
 }
 
-async function compressFileToBase64Jpeg(file: File, maxDim = 1080, quality = 0.78): Promise<string> {
+async function compressFileToBase64Jpeg(file: File, maxDim = 800, quality = 0.72): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Lecture du fichier impossible.'));

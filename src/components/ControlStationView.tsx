@@ -144,7 +144,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [galleryLoading, setGalleryLoading] = useState(false);
   const [quarantineLoading, setQuarantineLoading] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
+  const [galleryCanManageFiles, setGalleryCanManageFiles] = useState(true);
+  const [galleryActionBusy, setGalleryActionBusy] = useState(false);
   const [galleryActionFeedback, setGalleryActionFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const pendingGalleryTargetIdRef = useRef<string | null>(null);
   const [lightboxPhoto, setLightboxPhoto] = useState<{
     item: GalleryPhotoItem;
     base64?: string;
@@ -348,11 +351,18 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       },
       onControlResult: (res) => {
         if (res.action.startsWith('gallery_')) {
+          setGalleryActionBusy(false);
           setGalleryActionFeedback({
             ok: res.success,
             text: res.error || (res.success ? 'Action appliquée.' : 'Action impossible.'),
           });
           if (res.success) {
+            const targetId = pendingGalleryTargetIdRef.current;
+            pendingGalleryTargetIdRef.current = null;
+            if (targetId) {
+              setGalleryItems((prev) => prev.filter((p) => p.id !== targetId));
+              setQuarantineItems((prev) => prev.filter((p) => p.id !== targetId));
+            }
             setLightboxPhoto(null);
             void ctrl.requestGallery(0, '', 18);
             void ctrl.performGalleryAction('list_quarantine');
@@ -392,6 +402,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           setGalleryAlbums(data.albums || []);
           setGalleryTotal(data.totalCount ?? 0);
           if (data.quarantineCount !== undefined) setQuarantineCount(data.quarantineCount);
+          if (data.canManageFiles !== undefined) setGalleryCanManageFiles(Boolean(data.canManageFiles));
           setGalleryHasMore(Boolean(data.hasMore));
           setGalleryPage(data.page ?? 0);
           setGalleryItems((prev) =>
@@ -478,6 +489,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setContacts([]);
     setGalleryItems([]);
     setQuarantineItems([]);
+    setGalleryCanManageFiles(true);
+    setGalleryActionBusy(false);
+    setGalleryActionFeedback(null);
     setLocationData(null);
     setHistoryBundle(null);
     setFocusedTrackPoint(null);
@@ -1310,7 +1324,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               quarantineLoading={quarantineLoading}
               error={galleryError}
               actionFeedback={galleryActionFeedback}
+              actionBusy={galleryActionBusy}
               canViewGallery={Boolean(telemetry?.allowGallery)}
+              canManageFiles={galleryCanManageFiles}
               lightboxPhoto={lightboxPhoto}
               onRefresh={async (alb) => {
                 await handleFetchGallery(0, alb !== undefined ? alb : galleryAlbum);
@@ -1322,21 +1338,36 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               onSelectPhoto={handleSelectGalleryPhoto}
               onQuarantinePhoto={async (item) => {
                 setGalleryActionFeedback(null);
+                setGalleryActionBusy(true);
+                pendingGalleryTargetIdRef.current = item.id;
                 await controllerRef.current?.performGalleryAction('quarantine', item.id);
+                window.setTimeout(() => setGalleryActionBusy(false), 12000);
               }}
               onDeletePhoto={async (item) => {
                 setGalleryActionFeedback(null);
+                setGalleryActionBusy(true);
+                pendingGalleryTargetIdRef.current = item.id;
                 await controllerRef.current?.performGalleryAction('delete', item.id);
+                window.setTimeout(() => setGalleryActionBusy(false), 12000);
               }}
               onRestoreQuarantine={async (item) => {
                 setGalleryActionFeedback(null);
+                setGalleryActionBusy(true);
+                pendingGalleryTargetIdRef.current = item.id;
                 await controllerRef.current?.performGalleryAction('restore_quarantine', item.id);
+                window.setTimeout(() => setGalleryActionBusy(false), 12000);
               }}
               onDeleteQuarantine={async (item) => {
                 setGalleryActionFeedback(null);
+                setGalleryActionBusy(true);
+                pendingGalleryTargetIdRef.current = item.id;
                 await controllerRef.current?.performGalleryAction('delete_quarantine', item.id);
+                window.setTimeout(() => setGalleryActionBusy(false), 12000);
               }}
-              onCloseLightbox={() => setLightboxPhoto(null)}
+              onCloseLightbox={() => {
+                setLightboxPhoto(null);
+                setGalleryActionBusy(false);
+              }}
               onDismissFeedback={() => setGalleryActionFeedback(null)}
             />
           )}

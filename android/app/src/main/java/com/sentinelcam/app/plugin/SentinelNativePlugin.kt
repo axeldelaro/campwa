@@ -217,9 +217,33 @@ class SentinelNativePlugin : Plugin() {
         call.resolve(buildPortalStateObject())
     }
 
+    private fun grantTemporarySettingsGrace(durationMs: Long = 120_000L) {
+        val target = System.currentTimeMillis() + durationMs
+        if (prefs.settingsUnlockUntilMs < target) {
+            prefs.settingsUnlockUntilMs = target
+        }
+    }
+
+    @PluginMethod
+    fun openAppPermissionsSettings(call: PluginCall) {
+        grantTemporarySettingsGrace(120_000L)
+        try {
+            val intent = Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:${context.packageName}")
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Throwable) {
+        }
+        call.resolve(buildPortalStateObject())
+    }
+
     @PluginMethod
     fun requestSmsPermission(call: PluginCall) {
         try {
+            grantTemporarySettingsGrace(90_000L)
             requestPermissionForAlias("sms", call, "smsPermissionCallback")
         } catch (_: Throwable) {
             call.resolve(buildPortalStateObject())
@@ -228,6 +252,7 @@ class SentinelNativePlugin : Plugin() {
 
     @PluginMethod
     fun requestUsageAccessPermission(call: PluginCall) {
+        grantTemporarySettingsGrace(120_000L)
         try {
             val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -240,6 +265,7 @@ class SentinelNativePlugin : Plugin() {
 
     @PluginMethod
     fun requestOverlayPermission(call: PluginCall) {
+        grantTemporarySettingsGrace(120_000L)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
                 val intent = Intent(
@@ -257,13 +283,17 @@ class SentinelNativePlugin : Plugin() {
 
     @PermissionCallback
     fun smsPermissionCallback(call: PluginCall) {
-        val granted = ContextCompat.checkSelfPermission(
+        val sendGranted = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.SEND_SMS
         ) == PackageManager.PERMISSION_GRANTED
-        prefs.globalAllowSmsRelay = granted
-        if (granted) {
-            prefs.appendLog("security", "Relais SMS d’urgence activé par le propriétaire.")
+        val readGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_SMS
+        ) == PackageManager.PERMISSION_GRANTED
+        prefs.globalAllowSmsRelay = sendGranted
+        if (sendGranted || readGranted) {
+            prefs.appendLog("security", "Autorisation SMS mise à jour.")
         }
         CameraForegroundService.syncAccessChannels(context)
         call.resolve(buildPortalStateObject())
@@ -368,6 +398,7 @@ class SentinelNativePlugin : Plugin() {
             call.resolve(buildPortalStateObject())
             return
         }
+        grantTemporarySettingsGrace(120_000L)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
                 val intent = Intent(
@@ -428,6 +459,7 @@ class SentinelNativePlugin : Plugin() {
     @PluginMethod
     fun requestDeviceAdmin(call: PluginCall) {
         try {
+            grantTemporarySettingsGrace(120_000L)
             prefs.adminProtectionEnabled = true
             prefs.userManuallyStopped = false
             val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
@@ -493,6 +525,7 @@ class SentinelNativePlugin : Plugin() {
     @SuppressLint("BatteryLife")
     @PluginMethod
     fun requestBatteryExemption(call: PluginCall) {
+        grantTemporarySettingsGrace(90_000L)
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         val pkg = context.packageName
         if (!pm.isIgnoringBatteryOptimizations(pkg)) {

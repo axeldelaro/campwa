@@ -23,7 +23,9 @@ interface GalleryTabProps {
   quarantineLoading: boolean;
   error: string | null;
   actionFeedback: { ok: boolean; text: string } | null;
+  actionBusy: boolean;
   canViewGallery: boolean;
+  canManageFiles: boolean;
   lightboxPhoto: { item: GalleryPhotoItem; base64?: string; loading: boolean; error?: string } | null;
   onRefresh: (album?: string) => Promise<void>;
   onLoadMore: () => Promise<void>;
@@ -49,7 +51,9 @@ export const GalleryTab: React.FC<GalleryTabProps> = ({
   quarantineLoading,
   error,
   actionFeedback,
+  actionBusy,
   canViewGallery,
+  canManageFiles,
   lightboxPhoto,
   onRefresh,
   onLoadMore,
@@ -126,6 +130,16 @@ export const GalleryTab: React.FC<GalleryTabProps> = ({
           <Lock className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
           <span>
             Dossier verrouillé inaccessible depuis la galerie et les fichiers du téléphone.
+          </span>
+        </div>
+      )}
+
+      {canViewGallery && !canManageFiles && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+          <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+          <span>
+            Pour mettre en quarantaine ou supprimer des photos à distance, autorisez « Gestion photos »
+            une fois dans l’appli SentinelCam sur le téléphone.
           </span>
         </div>
       )}
@@ -284,32 +298,58 @@ export const GalleryTab: React.FC<GalleryTabProps> = ({
               ) : null}
             </div>
 
+            {actionFeedback && (
+              <div
+                className={`mx-4 mt-3 flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs ${
+                  actionFeedback.ok
+                    ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
+                    : 'border-rose-500/35 bg-rose-500/10 text-rose-200'
+                }`}
+              >
+                <span>{actionFeedback.text}</span>
+                <button type="button" onClick={onDismissFeedback} className="text-zinc-400 hover:text-white">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* Parent Moderation Bar: Quarantine / Restore / Delete / Download */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.07] px-4 py-3 text-xs">
               <div className="flex flex-wrap items-center gap-2">
                 {lightboxPhoto.item.quarantined ? (
                   <button
                     type="button"
+                    disabled={actionBusy}
                     onClick={() => void onRestoreQuarantine(lightboxPhoto.item)}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 font-medium text-emerald-200 hover:bg-emerald-500/25"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 font-medium text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-45"
                   >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    <span>Restaurer</span>
+                    {actionBusy ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    )}
+                    <span>{actionBusy ? 'Traitement…' : 'Restaurer'}</span>
                   </button>
                 ) : (
                   <button
                     type="button"
+                    disabled={actionBusy}
                     onClick={() => void onQuarantinePhoto(lightboxPhoto.item)}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-2 font-medium text-amber-200 hover:bg-amber-500/25"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-2 font-medium text-amber-200 hover:bg-amber-500/25 disabled:opacity-45"
                   >
-                    <ShieldAlert className="h-3.5 w-3.5" />
-                    <span>Quarantaine</span>
+                    {actionBusy ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ShieldAlert className="h-3.5 w-3.5" />
+                    )}
+                    <span>{actionBusy ? 'Traitement…' : 'Quarantaine'}</span>
                   </button>
                 )}
 
                 {confirmDeleteId === lightboxPhoto.item.id ? (
                   <button
                     type="button"
+                    disabled={actionBusy}
                     onClick={() => {
                       setConfirmDeleteId(null);
                       if (lightboxPhoto.item.quarantined) {
@@ -318,16 +358,21 @@ export const GalleryTab: React.FC<GalleryTabProps> = ({
                         void onDeletePhoto(lightboxPhoto.item);
                       }
                     }}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-rose-500 px-3 py-2 font-semibold text-white hover:bg-rose-400"
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-rose-500 px-3 py-2 font-semibold text-white hover:bg-rose-400 disabled:opacity-45"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    <span>Confirmer suppression</span>
+                    {actionBusy ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                    <span>{actionBusy ? 'Suppression…' : 'Confirmer suppression'}</span>
                   </button>
                 ) : (
                   <button
                     type="button"
+                    disabled={actionBusy}
                     onClick={() => setConfirmDeleteId(lightboxPhoto.item.id)}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 font-medium text-rose-200 hover:bg-rose-500/20"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 font-medium text-rose-200 hover:bg-rose-500/20 disabled:opacity-45"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     <span>Supprimer</span>

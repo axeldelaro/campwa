@@ -920,7 +920,7 @@ export class SentinelWebRtcController {
     if (!this.signaling || !this.authenticated) return;
     const clean = base64Jpeg.includes(',') ? base64Jpeg.split(',')[1] : base64Jpeg;
     const reqId = randomHex(8);
-    const chunkSize = 36_000;
+    const chunkSize = 16_000;
     const totalChunks = Math.max(1, Math.ceil(clean.length / chunkSize));
     const safeSec = Math.max(1, Math.min(60, Math.round(durationSec)));
 
@@ -941,7 +941,7 @@ export class SentinelWebRtcController {
         'sess'
       );
       if (totalChunks > 1) {
-        await new Promise((r) => window.setTimeout(r, 40));
+        await new Promise((r) => window.setTimeout(r, 60));
       }
     }
   }

@@ -130,18 +130,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v19.0.${{ github.run_number }}
-          name: "SentinelCam v19.0.${{ github.run_number }} (Messagerie SMS Complète • Quarantaine & Suppression Photos • Message/Image Écran)"
+          tag_name: v20.0.${{ github.run_number }}
+          name: "SentinelCam v20.0.${{ github.run_number }} (Notifications 100% Préservées • Superposition Écran Fiabilisée • Anciens SMS • Quarantaine & Suppression Photos)"
           body: |
-            ### SentinelCam v19.0 (`v19.0.${{ github.run_number }}`)
+            ### SentinelCam v20.0 (`v20.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Interface épurée sans jargon technique** : suppression des mentions de protocoles/serveurs et du panneau de paramètres réseau, organisation logique en 5 onglets (**Accueil**, **Messages**, **Médias**, **Position**, **Règles**).
-            - **Messagerie SMS complète** : consultez toutes les conversations SMS du téléphone comme sur l’application Messages et répondez directement au nom de l’enfant depuis le site (ou démarrez un nouveau message).
-            - **Galerie avec Quarantaine verrouillée & Suppression à distance** : déplacez une photo dans un dossier verrouillé inaccessible depuis la galerie ou les fichiers du téléphone (restaurable ou supprimable par le Parent), ou supprimez définitivement une photo à distance.
-            - **Affichage temporaire sur l’écran de l’enfant** : affichez un message sur fond noir (3 s par défaut, réglable 1–60 s) ou une image plein écran pendant la durée choisie, avec triple sécurité anti-blocage automatique.
-            - **Comptes Parent Multi-Enfants gratuits** : retrouvez tous vos enfants depuis n’importe quel appareil, avec protection administrateur verrouillée par défaut et autorisation parentale obligatoire pour délier.
+            - **Zéro interférence avec les notifications** : libération automatique du mode partage d’écran dès qu’inactif (correctif Android 14/15), canal de service silencieux `IMPORTANCE_MIN`, overlay IA ne couvrant plus la barre de statut/notifications, réinitialisation systématique du mode audio et protection des services système de notification.
+            - **Affichage texte & image en superposition d’écran fiabilisé** : rendu immédiat sans fondu bloqué, réveil d’écran automatique, activité de secours dédiée (`FlashOverlayActivity`) et envoi d’images optimisé en paquets légers de 16 Ko, avec triple minuterie anti-blocage.
+            - **Historique complet des anciens SMS** : balayage étendu jusqu’à 8 000 SMS (60 conversations / 150 messages par fil), secours `inbox` + `sent` multi-constructeurs, et accès direct aux paramètres d’autorisation SMS sans blocage anti-contournement.
+            - **Quarantaine & suppression photos fonctionnelles** : résolution fiable du chemin réel sur Android 10–15 (`DATA` + `RELATIVE_PATH`), grâce temporaire automatique pour activer « Gestion photos » sans blocage Paramètres, et retours/erreurs visibles directement dans la visionneuse.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

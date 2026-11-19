@@ -258,6 +258,12 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       icon: MessageSquare,
       action: () => runAction(() => SentinelNative.requestSmsPermission()),
     });
+    missingOsSteps.push({
+      key: 'sms-settings',
+      label: 'Paramètres de l’appli (si SMS bloqué : ⋮ → Paramètres restreints)',
+      icon: ShieldAlert,
+      action: () => runAction(() => SentinelNative.openAppPermissionsSettings()),
+    });
   }
 
   /* ==================== MODE A: INSTALLATION & ASSOCIATION ==================== */

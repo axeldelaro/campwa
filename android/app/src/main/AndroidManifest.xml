@@ -95,6 +95,16 @@
             android:showWhenLocked="true"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
 
+        <!-- Triple-Fail-Safe Fullscreen Flash Message / Image Fallback Activity -->
+        <activity
+            android:name=".control.FlashOverlayActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
         <!-- Eco-Standby Continuous Background Portal, Camera & Opt-In Screen Share ForegroundService -->
         <service
             android:name=".service.CameraForegroundService"

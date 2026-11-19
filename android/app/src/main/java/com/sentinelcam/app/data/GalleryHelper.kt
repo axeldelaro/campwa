@@ -304,18 +304,31 @@ object GalleryHelper {
 
     private fun lookupMediaFileInfo(context: Context, mediaId: Long): Triple<String?, String, String> {
         val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, mediaId)
-        val cols = arrayOf(
-            MediaStore.Images.Media.DISPLAY_NAME,
-            MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+        val cols = ArrayList<String>().apply {
+            add(MediaStore.Images.Media.DISPLAY_NAME)
+            add(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
             @Suppress("DEPRECATION")
-            MediaStore.Images.Media.DATA
-        )
+            add(MediaStore.Images.Media.DATA)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                add(MediaStore.Images.Media.RELATIVE_PATH)
+            }
+        }.toTypedArray()
+
         return try {
             context.contentResolver.query(uri, cols, null, null, null)?.use { c ->
                 if (!c.moveToFirst()) return Triple(null, "Photo_$mediaId.jpg", "Photos")
                 val name = c.getString(0)?.takeIf { it.isNotBlank() } ?: "Photo_$mediaId.jpg"
                 val album = c.getString(1)?.takeIf { it.isNotBlank() } ?: "Photos"
-                val path = c.getString(2)
+                var path = c.getString(2)?.takeIf { it.isNotBlank() }
+                if (path == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && c.columnCount > 3) {
+                    val rel = c.getString(3)?.trim().orEmpty()
+                    if (rel.isNotEmpty()) {
+                        @Suppress("DEPRECATION")
+                        val root = Environment.getExternalStorageDirectory()
+                        val candidate = File(File(root, rel), name)
+                        path = candidate.absolutePath
+                    }
+                }
                 Triple(path, name, album)
             } ?: Triple(null, "Photo_$mediaId.jpg", "Photos")
         } catch (_: Throwable) {
@@ -328,15 +341,21 @@ object GalleryHelper {
         val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, mediaId)
         val (dataPath, _, _) = lookupMediaFileInfo(context, mediaId)
 
-        var deleted = false
+        var fileDeleted = false
+        var storeDeleted = false
+        var fileExisted = false
+
         // 1. Direct filesystem removal when Manage Files permission is granted (works silently on Android 11-15!)
         if (!dataPath.isNullOrBlank()) {
             try {
                 val f = File(dataPath)
-                if (f.exists() && f.delete()) {
-                    deleted = true
+                fileExisted = f.exists()
+                if (fileExisted && f.delete()) {
+                    fileDeleted = true
                     try {
-                        MediaScannerConnection.scanFile(context, arrayOf(dataPath), null, null)
+                        val parentPath = f.parentFile?.absolutePath
+                        val toScan = if (parentPath != null) arrayOf(dataPath, parentPath) else arrayOf(dataPath)
+                        MediaScannerConnection.scanFile(context, toScan, null, null)
                     } catch (_: Throwable) {
                     }
                 }
@@ -344,19 +363,32 @@ object GalleryHelper {
             }
         }
 
-        // 2. Also remove MediaStore row
+        // 2. Also remove MediaStore row (works on own files & Android <=10 or with All Files Access)
         try {
             val rows = context.contentResolver.delete(uri, null, null)
-            if (rows > 0) deleted = true
+            if (rows > 0) storeDeleted = true
         } catch (_: Throwable) {
         }
+
+        // 3. Re-verify if file disappeared
+        val goneFromDisk = if (!dataPath.isNullOrBlank()) {
+            try {
+                !File(dataPath).exists()
+            } catch (_: Throwable) {
+                false
+            }
+        } else {
+            storeDeleted
+        }
+
+        val deleted = fileDeleted || (storeDeleted && (!fileExisted || goneFromDisk))
 
         return if (deleted) {
             Pair(true, null)
         } else if (!hasStorageManagePermission(context)) {
             Pair(
                 false,
-                "Autorisez « Gestion des fichiers » une fois sur le téléphone pour supprimer ou mettre en quarantaine à distance."
+                "Activez « Gestion photos » une fois dans l’appli SentinelCam sur le téléphone pour autoriser la suppression et la quarantaine."
             )
         } else {
             Pair(false, "Suppression impossible pour cette image.")

@@ -111,7 +111,16 @@ object ScreenTimeHelper {
             lower.contains("telecom") ||
             lower.contains("incallui") ||
             lower.contains("emergency") ||
-            lower.contains("launcher")
+            lower.contains("launcher") ||
+            lower.contains("permissioncontroller") ||
+            lower.contains("notification") ||
+            lower.contains("statusbar") ||
+            lower.contains("keyguard") ||
+            lower.contains("inputmethod") ||
+            lower.contains("gboard") ||
+            lower.contains("honeyboard") ||
+            lower.contains("swiftkey") ||
+            lower.contains("wellbeing")
     }
 
     fun isSettingsOrStorePackage(pkg: String): Boolean {

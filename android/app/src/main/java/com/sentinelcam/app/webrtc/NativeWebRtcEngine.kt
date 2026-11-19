@@ -629,6 +629,23 @@ class NativeWebRtcEngine(
 
         if (intercomSpeakerActive) {
             applyLoudspeakerMode(false)
+        } else {
+            // Always guarantee Android audio mode returns to NORMAL so incoming notifications are never muted
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    audioManager.clearCommunicationDevice()
+                }
+            } catch (_: Throwable) {
+            }
+            try {
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = false
+                if (audioManager.mode != AudioManager.MODE_NORMAL) {
+                    audioManager.mode = AudioManager.MODE_NORMAL
+                }
+                abandonVoiceAudioFocus()
+            } catch (_: Throwable) {
+            }
         }
 
         try { videoCapturer?.stopCapture() } catch (_: Throwable) {}

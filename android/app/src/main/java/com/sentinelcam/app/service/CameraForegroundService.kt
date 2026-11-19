@@ -67,7 +67,7 @@ class CameraForegroundService : Service() {
     private data class FlashChunkBucket(
         val totalChunks: Int,
         val durationSec: Int,
-        val caption: String,
+        var caption: String,
         val createdAt: Long,
         val chunks: HashMap<Int, String> = HashMap()
     )
@@ -159,7 +159,8 @@ class CameraForegroundService : Service() {
 
         isRunning = true
         val fromUi = intent?.getBooleanExtra(EXTRA_FROM_UI, false) ?: false
-        val promoteScreen = intent?.action == ACTION_PROMOTE_MEDIA_PROJECTION
+        val promoteScreen = intent?.action == ACTION_PROMOTE_MEDIA_PROJECTION &&
+            (prefs.aiBlurFaces || prefs.aiBlurNsfw)
 
         if (!startInForegroundSafely(promoteCamera = fromUi, promoteScreen = promoteScreen)) {
             isRunning = false
@@ -459,6 +460,7 @@ class CameraForegroundService : Service() {
             if (!want) {
                 if (shield.isActive) shield.stop()
                 aiShieldActive = false
+                dropMediaProjectionFgsIfUnused()
                 return
             }
             if (isStreaming && currentMediaMode == "screen") {
@@ -736,6 +738,7 @@ class CameraForegroundService : Service() {
         activeViewerExpiresAt = null
         intercomActive = false
         serviceScope.launch(Dispatchers.Main) {
+            dropMediaProjectionFgsIfUnused()
             updateNotificationAndNotifyListeners()
         }
     }
@@ -765,7 +768,19 @@ class CameraForegroundService : Service() {
                 mode = "sess"
             )
         }
-        updateNotificationAndNotifyListeners()
+        serviceScope.launch(Dispatchers.Main) {
+            dropMediaProjectionFgsIfUnused()
+            updateNotificationAndNotifyListeners()
+        }
+    }
+
+    private fun dropMediaProjectionFgsIfUnused() {
+        val screenActive = (isStreaming && currentMediaMode == "screen") || (aiScreenShield?.isActive == true)
+        if (!screenActive && mediaProjectionFgsPromoted) {
+            mediaProjectionFgsPromoted = false
+            lastAppliedFgType = -1
+            startInForegroundSafely(promoteCamera = false, promoteScreen = false)
+        }
     }
 
     private fun buildPortalStatusJson(channelId: String): JSONObject {
@@ -1114,7 +1129,10 @@ class CameraForegroundService : Service() {
                             },
                             mode = "sess"
                         )
-                        serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
+                        serviceScope.launch(Dispatchers.Main) {
+                            dropMediaProjectionFgsIfUnused()
+                            updateNotificationAndNotifyListeners()
+                        }
                     }
                 }
 
@@ -1123,7 +1141,10 @@ class CameraForegroundService : Service() {
                         val active = msg.optBoolean("active", false)
                         intercomActive = active
                         webRtcEngine?.setIntercomActive(active)
-                        serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
+                        serviceScope.launch(Dispatchers.Main) {
+                            dropMediaProjectionFgsIfUnused()
+                            updateNotificationAndNotifyListeners()
+                        }
                         broadcastPresenceNow(channelId)
                     }
                 }
@@ -2126,7 +2147,7 @@ class CameraForegroundService : Service() {
                         )
                     } else {
                         serviceScope.launch(Dispatchers.IO) {
-                            val resp = SmsInboxHelper.listConversations(applicationContext, 45)
+                            val resp = SmsInboxHelper.listConversations(applicationContext, 60)
                             resp.put("type", "DATA_SMS_THREADS")
                             resp.put("requestId", reqId)
                             resp.put("ts", System.currentTimeMillis())
@@ -2155,7 +2176,7 @@ class CameraForegroundService : Service() {
                         )
                     } else {
                         serviceScope.launch(Dispatchers.IO) {
-                            val resp = SmsInboxHelper.getThreadMessages(applicationContext, threadId, address, 80)
+                            val resp = SmsInboxHelper.getThreadMessages(applicationContext, threadId, address, 150)
                             resp.put("type", "DATA_SMS_MESSAGES")
                             resp.put("requestId", reqId)
                             resp.put("ts", System.currentTimeMillis())
@@ -2253,22 +2274,24 @@ class CameraForegroundService : Service() {
                         sendControlResult(channelId, reqId, "flash_screen", false, "Contrôle non autorisé.")
                     } else if (mode == "text") {
                         val text = msg.optString("text", "")
-                        val (ok, err) = FlashOverlayManager.showTextMessage(applicationContext, text, durationSec)
-                        sendControlResult(
-                            channelId,
-                            reqId,
-                            "flash_screen",
-                            ok,
-                            err ?: "Message affiché pendant $durationSec s."
-                        )
+                        serviceScope.launch(Dispatchers.IO) {
+                            val (ok, err) = FlashOverlayManager.showTextMessage(applicationContext, text, durationSec)
+                            sendControlResult(
+                                channelId,
+                                reqId,
+                                "flash_screen",
+                                ok,
+                                err ?: "Message affiché pendant $durationSec s."
+                            )
+                        }
                     } else if (mode == "image") {
-                        val totalChunks = msg.optInt("totalChunks", 1).coerceIn(1, 32)
+                        val totalChunks = msg.optInt("totalChunks", 1).coerceIn(1, 64)
                         val chunkIndex = msg.optInt("chunkIndex", 0)
                         val data = msg.optString("data", "")
                         val caption = msg.optString("caption", "")
                         val now = System.currentTimeMillis()
-                        // Evict stale incomplete buckets (>20s)
-                        flashImageBuckets.entries.removeIf { now - it.value.createdAt > 20_000L }
+                        // Evict stale incomplete buckets (>30s)
+                        flashImageBuckets.entries.removeIf { now - it.value.createdAt > 30_000L }
 
                         if (totalChunks <= 1) {
                             serviceScope.launch(Dispatchers.IO) {
@@ -2289,6 +2312,9 @@ class CameraForegroundService : Service() {
                         } else {
                             val bucket = flashImageBuckets.getOrPut(reqId) {
                                 FlashChunkBucket(totalChunks, durationSec, caption, now)
+                            }
+                            if (caption.isNotBlank() && bucket.caption.isBlank()) {
+                                bucket.caption = caption
                             }
                             bucket.chunks[chunkIndex] = data
                             if (bucket.chunks.size >= bucket.totalChunks) {
@@ -2587,11 +2613,14 @@ class CameraForegroundService : Service() {
             try {
                 val channel = NotificationChannel(
                     CHANNEL_ID,
-                    "Portail Éco-Veille SentinelCam",
-                    NotificationManager.IMPORTANCE_LOW
+                    "Protection SentinelCam",
+                    NotificationManager.IMPORTANCE_MIN
                 ).apply {
-                    description = "Écoute éco-énergie et partage autorisé SentinelCam"
+                    description = "Service discret en arrière-plan"
                     setShowBadge(false)
+                    setSound(null, null)
+                    enableVibration(false)
+                    enableLights(false)
                 }
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 nm.createNotificationChannel(channel)
@@ -2653,8 +2682,9 @@ class CameraForegroundService : Service() {
             .setContentText(subtitle)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
             .setContentIntent(contentPi)
 
         if (!prefs.parentManaged) {
@@ -2713,7 +2743,16 @@ class CameraForegroundService : Service() {
         val hasBgLoc = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
-        val hasScreenConsent = (promoteScreen || mediaProjectionFgsPromoted) && screenProjectionIntent != null
+        // CRITICAL (Android 14/15): Only hold MEDIA_PROJECTION FGS type while actively screen-sharing
+        // or running AI Screen Shield; otherwise Android suppresses incoming device notifications!
+        val needScreenFgs = promoteScreen ||
+            (isStreaming && currentMediaMode == "screen") ||
+            (aiScreenShield?.isActive == true)
+        val hasScreenConsent = needScreenFgs && (
+            screenProjectionIntent != null ||
+                aiScreenShield?.hasActiveProjection() == true ||
+                (isStreaming && currentMediaMode == "screen")
+            )
 
         val baseSpecial = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
@@ -2866,7 +2905,7 @@ class CameraForegroundService : Service() {
         private const val OWNER_CHANNEL_ID = "owner"
         private const val FAMILY_CHANNEL_ID = "__family__"
         private const val PAIRING_CHANNEL_ID = "__pairing__"
-        private const val CHANNEL_ID = "sentinelcam_portal_channel"
+        private const val CHANNEL_ID = "sentinelcam_portal_quiet"
         private const val NOTIFICATION_ID = 4401
 
         const val ACTION_RESTART_SIGNALING = "com.sentinelcam.app.ACTION_RESTART_SIGNALING"
@@ -3024,6 +3063,7 @@ class CameraForegroundService : Service() {
                     instance?.sleepCameraInternal()
                 } else {
                     instance?.syncChannelsHot()
+                    instance?.dropMediaProjectionFgsIfUnused()
                 }
             } catch (_: Throwable) {
             }
