@@ -128,6 +128,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [cameraFacing, setCameraFacing] = useState<CameraFacingMode>('front');
   const [remoteMicEnabled, setRemoteMicEnabled] = useState(false);
   const [localAudioMuted, setLocalAudioMuted] = useState(false);
+  const [talkieActive, setTalkieActive] = useState(false);
+  const [talkieLocked, setTalkieLocked] = useState(false);
+  const [talkieLevel, setTalkieLevel] = useState(0);
   const [quality, setQuality] = useState<StreamQualityPreset>('hd');
   const [mirrorVideo, setMirrorVideo] = useState(true);
   const [snapshots, setSnapshots] = useState<SnapshotItem[]>([]);
@@ -165,6 +168,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             allowContacts: t.allowContacts ?? prev?.allowContacts ?? false,
             allowLocation: t.allowLocation ?? prev?.allowLocation ?? false,
             allowDeviceInfo: t.allowDeviceInfo ?? prev?.allowDeviceInfo ?? true,
+            allowIntercom: t.allowIntercom ?? prev?.allowIntercom ?? true,
           }));
         }
       },
@@ -226,6 +230,13 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       },
       onStreamError: (msg) => {
         setStreamNotice(msg);
+      },
+      onTalkieStateChange: (active) => {
+        setTalkieActive(active);
+        if (!active) setTalkieLocked(false);
+      },
+      onTalkieLevel: (lvl) => {
+        setTalkieLevel(lvl);
       },
     });
 
@@ -362,12 +373,37 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   };
 
   const handleDisconnect = () => {
+    setTalkieLocked(false);
+    setTalkieActive(false);
     controllerRef.current?.disconnect();
     setTelemetry(null);
     setStats(null);
     setSasInfo(null);
     setAccessGrant(null);
     setStreamNotice(null);
+  };
+
+  const handleTalkiePressStart = () => {
+    if (!canUseIntercom || talkieLocked) return;
+    setStreamNotice(null);
+    void controllerRef.current?.startTalkie();
+  };
+
+  const handleTalkiePressEnd = () => {
+    if (talkieLocked) return;
+    void controllerRef.current?.stopTalkie();
+  };
+
+  const handleToggleTalkieLock = () => {
+    if (!canUseIntercom) return;
+    setStreamNotice(null);
+    if (talkieActive) {
+      setTalkieLocked(false);
+      void controllerRef.current?.stopTalkie();
+    } else {
+      setTalkieLocked(true);
+      void controllerRef.current?.startTalkie();
+    }
   };
 
   const handleForgetDevice = (code: string, e: React.MouseEvent) => {
@@ -486,6 +522,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const canViewContacts = accessGrant ? accessGrant.allowContacts : false;
   const canViewLocation = accessGrant ? accessGrant.allowLocation : false;
   const canViewDeviceInfo = accessGrant ? accessGrant.allowDeviceInfo : true;
+  const canUseIntercom = accessGrant ? accessGrant.allowIntercom : true;
 
   /* ==================== SCREEN 1: INSTANT 6-CHAR CODE ENTRY ==================== */
   if (!isSessionOpen) {
@@ -730,6 +767,90 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           >
             <Unplug className="h-3.5 w-3.5" />
             <span>Déconnecter</span>
+          </button>
+        </div>
+      </div>
+
+      {/* ==================== WALKIE-TALKIE (ONE-WAY PHONE LOUDSPEAKER) BAR ==================== */}
+      <div
+        className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-3.5 shadow-lg transition ${
+          talkieActive
+            ? 'border-emerald-400/70 bg-emerald-500/15 shadow-emerald-500/15'
+            : 'border-slate-800/90 bg-obsidian-900/90'
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className={`flex h-10 w-10 items-center justify-center rounded-xl border ${
+              talkieActive
+                ? 'border-emerald-400 bg-emerald-500 text-obsidian-950 animate-pulse'
+                : 'border-slate-700 bg-obsidian-950 text-emerald-400'
+            }`}
+          >
+            <Volume2 className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 text-xs font-extrabold text-white">
+              <span>Talkie Haut-Parleur (1 sens → Téléphone)</span>
+              {talkieActive && (
+                <span className="rounded-full bg-emerald-500 px-2 py-0.5 font-mono text-[10px] font-black uppercase text-obsidian-950">
+                  EN ÉMISSION
+                </span>
+              )}
+            </div>
+            {talkieActive ? (
+              <div className="mt-1.5 flex items-center gap-2">
+                <div className="h-2 w-36 overflow-hidden rounded-full bg-obsidian-950 sm:w-48">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-cyan-300 transition-all duration-75"
+                    style={{ width: `${Math.max(8, talkieLevel)}%` }}
+                  />
+                </div>
+                <span className="font-mono text-[10px] text-emerald-300">Voix diffusée</span>
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-400">
+                {canUseIntercom
+                  ? 'Maintenez pour parler sur le haut-parleur du smartphone (fonctionne même caméra éteinte).'
+                  : 'Désactivé par le propriétaire du smartphone.'}
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={!canUseIntercom}
+            onPointerDown={handleTalkiePressStart}
+            onPointerUp={handleTalkiePressEnd}
+            onPointerLeave={handleTalkiePressEnd}
+            onPointerCancel={handleTalkiePressEnd}
+            className={`inline-flex select-none touch-none items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-extrabold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              talkieActive && !talkieLocked
+                ? 'scale-[0.98] bg-rose-500 text-white shadow-lg shadow-rose-500/30'
+                : 'bg-gradient-to-r from-emerald-500 to-cyan-400 text-obsidian-950 shadow-md hover:brightness-110'
+            }`}
+          >
+            <Mic className="h-4 w-4" />
+            <span>
+              {talkieActive && !talkieLocked ? 'Parlez maintenant...' : 'Maintenir pour parler'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!canUseIntercom}
+            onClick={handleToggleTalkieLock}
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              talkieLocked
+                ? 'border-rose-400 bg-rose-500/20 text-rose-200 hover:bg-rose-500/30'
+                : 'border-slate-700 bg-obsidian-950 text-slate-300 hover:border-emerald-400/50 hover:text-white'
+            }`}
+            title="Activer ou couper le Talkie en mode mains libres sans maintenir le bouton"
+          >
+            <Volume2 className="h-3.5 w-3.5" />
+            <span>{talkieLocked ? 'Couper Talkie' : 'Mains libres'}</span>
           </button>
         </div>
       </div>

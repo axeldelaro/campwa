@@ -57,6 +57,8 @@ export interface ControllerCallbacks {
   onLocationData?: (data: DataLocationMsg) => void;
   onDeviceInfoData?: (data: DataDeviceInfoMsg) => void;
   onStreamError?: (message: string) => void;
+  onTalkieStateChange?: (active: boolean) => void;
+  onTalkieLevel?: (level: number) => void;
 }
 
 export class SentinelWebRtcController {
@@ -65,6 +67,17 @@ export class SentinelWebRtcController {
   private bootstrapKeys: DerivedBootstrapKeys | null = null;
   private pc: RTCPeerConnection | null = null;
   private remoteStream: MediaStream | null = null;
+
+  // One-Way Walkie-Talkie (Web -> Phone Loudspeaker) state
+  private talkieActive = false;
+  private allowIntercomGranted = true;
+  private startedIntercomOnlySession = false;
+  private talkieAudioSender: RTCRtpSender | null = null;
+  private localMicStream: MediaStream | null = null;
+  private silentAudioCtx: AudioContext | null = null;
+  private silentAudioTrack: MediaStreamTrack | null = null;
+  private vuAudioCtx: AudioContext | null = null;
+  private vuRafId: number | null = null;
 
   private pairingCode = '';
   private tokenId = '';
@@ -185,6 +198,184 @@ export class SentinelWebRtcController {
       },
       'boot'
     );
+  }
+
+  /* ==================== ONE-WAY WALKIE-TALKIE (WEB -> PHONE SPEAKER) ==================== */
+
+  private ensureSilentAudioTrack(): MediaStreamTrack | null {
+    try {
+      if (this.silentAudioTrack && this.silentAudioTrack.readyState === 'live') {
+        return this.silentAudioTrack;
+      }
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return null;
+      this.silentAudioCtx = new AudioCtx();
+      const dest = this.silentAudioCtx.createMediaStreamDestination();
+      const track = dest.stream.getAudioTracks()[0] || null;
+      if (track) {
+        track.enabled = false;
+      }
+      this.silentAudioTrack = track;
+      return track;
+    } catch {
+      return null;
+    }
+  }
+
+  private async ensureBrowserMicTrack(): Promise<MediaStreamTrack> {
+    const existing = this.localMicStream?.getAudioTracks()[0];
+    if (existing && existing.readyState === 'live') {
+      existing.enabled = true;
+      return existing;
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false,
+    });
+    this.localMicStream = stream;
+    const track = stream.getAudioTracks()[0];
+    if (!track) {
+      throw new Error('Aucun microphone disponible sur cet appareil.');
+    }
+    track.enabled = true;
+    return track;
+  }
+
+  private startMicVuMeter(stream: MediaStream): void {
+    this.stopMicVuMeter();
+    try {
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      this.vuAudioCtx = ctx;
+      const src = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+
+      const tick = () => {
+        if (!this.talkieActive) {
+          this.callbacks.onTalkieLevel?.(0);
+          return;
+        }
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        const pct = Math.min(100, Math.round(rms * 320));
+        this.callbacks.onTalkieLevel?.(pct);
+        this.vuRafId = window.requestAnimationFrame(tick);
+      };
+      this.vuRafId = window.requestAnimationFrame(tick);
+    } catch {
+      // Optional VU meter
+    }
+  }
+
+  private stopMicVuMeter(): void {
+    if (this.vuRafId !== null) {
+      window.cancelAnimationFrame(this.vuRafId);
+      this.vuRafId = null;
+    }
+    if (this.vuAudioCtx) {
+      void this.vuAudioCtx.close().catch(() => {});
+      this.vuAudioCtx = null;
+    }
+    this.callbacks.onTalkieLevel?.(0);
+  }
+
+  public async startTalkie(): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    if (!this.allowIntercomGranted) {
+      this.callbacks.onStreamError?.('Le propriétaire n’a pas autorisé le haut-parleur Talkie.');
+      return;
+    }
+    if (this.talkieActive) return;
+
+    try {
+      const micTrack = await this.ensureBrowserMicTrack();
+      this.talkieActive = true;
+      this.callbacks.onTalkieStateChange?.(true);
+
+      if (this.localMicStream) {
+        this.startMicVuMeter(this.localMicStream);
+      }
+
+      if (this.pc && this.talkieAudioSender && this.pc.connectionState !== 'closed') {
+        // Instant 0ms track swap on existing Camera/Screen WebRTC tunnel!
+        this.startedIntercomOnlySession = false;
+        await this.talkieAudioSender.replaceTrack(micTrack);
+        await this.signaling.send(
+          {
+            type: 'CMD_INTERCOM_STATE',
+            sessionId: this.activeSessionId,
+            active: true,
+            ts: Date.now(),
+          },
+          'sess'
+        );
+      } else {
+        // Camera is OFF (Eco-Standby): launch audio-only Walkie-Talkie tunnel (0% camera usage!)
+        this.startedIntercomOnlySession = true;
+        await this.startCameraStream('front', false, 'sd', 'intercom');
+      }
+    } catch (err) {
+      this.talkieActive = false;
+      this.stopMicVuMeter();
+      this.callbacks.onTalkieStateChange?.(false);
+      this.callbacks.onStreamError?.(
+        err instanceof Error
+          ? `Micro navigateur indisponible : ${err.message}`
+          : 'Autorisez le microphone dans votre navigateur pour utiliser le Talkie.'
+      );
+    }
+  }
+
+  public async stopTalkie(): Promise<void> {
+    if (!this.talkieActive) return;
+    this.talkieActive = false;
+    this.stopMicVuMeter();
+    this.callbacks.onTalkieStateChange?.(false);
+
+    const micTrack = this.localMicStream?.getAudioTracks()[0];
+    if (micTrack) {
+      micTrack.enabled = false;
+    }
+
+    if (this.talkieAudioSender) {
+      try {
+        const silent = this.ensureSilentAudioTrack();
+        await this.talkieAudioSender.replaceTrack(silent);
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (this.signaling && this.authenticated && this.activeSessionId) {
+      await this.signaling.send(
+        {
+          type: 'CMD_INTERCOM_STATE',
+          sessionId: this.activeSessionId,
+          active: false,
+          ts: Date.now(),
+        },
+        'sess'
+      );
+    }
+
+    if (this.startedIntercomOnlySession) {
+      this.startedIntercomOnlySession = false;
+      await this.stopCameraStream();
+    }
   }
 
   public async sendServerlessPushInvitation(rawCode?: string): Promise<boolean> {
@@ -329,7 +520,9 @@ export class SentinelWebRtcController {
       allowContacts: msg.allowContacts ?? false,
       allowLocation: msg.allowLocation ?? false,
       allowDeviceInfo: msg.allowDeviceInfo ?? true,
+      allowIntercom: msg.allowIntercom ?? true,
     };
+    this.allowIntercomGranted = accessGrant.allowIntercom;
 
     this.authenticated = true;
 
@@ -360,6 +553,7 @@ export class SentinelWebRtcController {
       cameraFacing: msg.cameraFacing,
       mediaMode: msg.mediaMode ?? 'camera',
       micEnabled: msg.micEnabled,
+      intercomActive: msg.intercomActive ?? false,
       uptimeSec: msg.uptimeSec,
       accessRole: accessGrant.role,
       accessName: accessGrant.name,
@@ -370,6 +564,7 @@ export class SentinelWebRtcController {
       allowContacts: accessGrant.allowContacts,
       allowLocation: accessGrant.allowLocation,
       allowDeviceInfo: accessGrant.allowDeviceInfo,
+      allowIntercom: accessGrant.allowIntercom,
       updatedAt: Date.now(),
     });
 
@@ -387,6 +582,13 @@ export class SentinelWebRtcController {
   }
 
   private handlePortalStatus(msg: PortalStatusMsg): void {
+    if (msg.allowIntercom !== undefined) {
+      this.allowIntercomGranted = msg.allowIntercom;
+      if (!msg.allowIntercom && this.talkieActive) {
+        void this.stopTalkie();
+      }
+    }
+
     this.callbacks.onTelemetry({
       deviceId: msg.deviceId,
       deviceName: msg.deviceName,
@@ -402,6 +604,7 @@ export class SentinelWebRtcController {
       cameraFacing: msg.cameraFacing,
       mediaMode: msg.mediaMode ?? 'camera',
       micEnabled: msg.micEnabled,
+      intercomActive: msg.intercomActive ?? false,
       uptimeSec: msg.uptimeSec,
       accessRole: msg.accessRole,
       accessName: msg.accessName,
@@ -412,6 +615,7 @@ export class SentinelWebRtcController {
       allowContacts: msg.allowContacts,
       allowLocation: msg.allowLocation,
       allowDeviceInfo: msg.allowDeviceInfo,
+      allowIntercom: msg.allowIntercom,
       updatedAt: Date.now(),
     });
 
@@ -425,6 +629,9 @@ export class SentinelWebRtcController {
   private handleAuthErr(msg: AuthErrMsg): void {
     this.authenticated = false;
     this.desiredStreaming = false;
+    this.talkieActive = false;
+    this.stopMicVuMeter();
+    this.callbacks.onTalkieStateChange?.(false);
     this.closePeerConnectionOnly();
 
     if (msg.reason === 'ACCESS_EXPIRED' || msg.reason === 'ACCESS_REVOKED') {
@@ -459,6 +666,9 @@ export class SentinelWebRtcController {
     this.desiredFacing = cameraFacing;
     this.desiredAudio = enableAudio;
     this.desiredQuality = quality;
+    if (mediaMode !== 'intercom') {
+      this.startedIntercomOnlySession = false;
+    }
 
     if (!this.signaling || !this.authenticated) {
       this.callbacks.onStateChange('connecting');
@@ -470,7 +680,9 @@ export class SentinelWebRtcController {
 
     this.activeSessionId = randomHex(10);
     this.pendingCandidates = [];
-    this.callbacks.onStateChange('connecting');
+    if (mediaMode !== 'intercom') {
+      this.callbacks.onStateChange('connecting');
+    }
 
     this.setupPeerConnection(this.activeSessionId);
 
@@ -508,6 +720,12 @@ export class SentinelWebRtcController {
 
   public async stopCameraStream(): Promise<void> {
     this.desiredStreaming = false;
+    this.startedIntercomOnlySession = false;
+    if (this.talkieActive) {
+      this.talkieActive = false;
+      this.stopMicVuMeter();
+      this.callbacks.onTalkieStateChange?.(false);
+    }
     if (this.streamRecoverTimer) {
       window.clearTimeout(this.streamRecoverTimer);
       this.streamRecoverTimer = null;
@@ -564,9 +782,11 @@ export class SentinelWebRtcController {
       rtcpMuxPolicy: 'require',
     });
     this.pc = pc;
+    this.talkieAudioSender = null;
     this.remoteStream = new MediaStream();
 
     pc.ontrack = (event) => {
+      if (this.desiredMediaMode === 'intercom') return;
       if (event.streams && event.streams[0]) {
         this.remoteStream = event.streams[0];
       } else if (this.remoteStream) {
@@ -615,8 +835,22 @@ export class SentinelWebRtcController {
           window.clearTimeout(this.streamRecoverTimer);
           this.streamRecoverTimer = null;
         }
-        this.callbacks.onStateChange('streaming');
-        this.startStatsMonitor();
+        if (this.desiredMediaMode !== 'intercom') {
+          this.callbacks.onStateChange('streaming');
+          this.startStatsMonitor();
+        }
+        // If user is currently holding Talkie, confirm speakerphone active on Android!
+        if (this.talkieActive && this.signaling && this.activeSessionId === sessionId) {
+          void this.signaling.send(
+            {
+              type: 'CMD_INTERCOM_STATE',
+              sessionId,
+              active: true,
+              ts: Date.now(),
+            },
+            'sess'
+          );
+        }
       } else if (state === 'failed' || state === 'disconnected') {
         this.stopStatsMonitor();
         if (this.desiredStreaming && this.pc === pc) {
@@ -658,6 +892,32 @@ export class SentinelWebRtcController {
         sdp: msg.sdp,
       })
     );
+
+    // Pre-attach Walkie-Talkie outbound audio track (real mic if talking, else silent dummy track)
+    // BEFORE createAnswer() so WebRTC negotiates sendrecv/sendonly Opus immediately with 0ms swap latency!
+    if (this.allowIntercomGranted) {
+      const audioTransceiver = this.pc
+        .getTransceivers()
+        .find((t) => t.receiver.track?.kind === 'audio');
+
+      if (audioTransceiver) {
+        const trackToSend =
+          this.talkieActive && this.localMicStream?.getAudioTracks()[0]
+            ? this.localMicStream.getAudioTracks()[0]
+            : this.ensureSilentAudioTrack();
+
+        if (trackToSend) {
+          try {
+            await audioTransceiver.sender.replaceTrack(trackToSend);
+            audioTransceiver.direction =
+              this.desiredMediaMode === 'intercom' ? 'sendonly' : 'sendrecv';
+            this.talkieAudioSender = audioTransceiver.sender;
+          } catch {
+            // Fallback gracefully if transceiver doesn't accept send
+          }
+        }
+      }
+    }
 
     for (const c of this.pendingCandidates) {
       try {
@@ -732,6 +992,9 @@ export class SentinelWebRtcController {
 
     if (msg.state === 'error') {
       this.desiredStreaming = false;
+      this.talkieActive = false;
+      this.stopMicVuMeter();
+      this.callbacks.onTalkieStateChange?.(false);
       if (this.streamRecoverTimer) {
         window.clearTimeout(this.streamRecoverTimer);
         this.streamRecoverTimer = null;
@@ -881,6 +1144,7 @@ export class SentinelWebRtcController {
   private closePeerConnectionOnly(): void {
     this.stopStatsMonitor();
     this.activeSessionId = '';
+    this.talkieAudioSender = null;
     if (this.pc) {
       try {
         this.pc.ontrack = null;
@@ -898,6 +1162,24 @@ export class SentinelWebRtcController {
 
   public disconnect(): void {
     this.desiredStreaming = false;
+    this.talkieActive = false;
+    this.startedIntercomOnlySession = false;
+    this.stopMicVuMeter();
+    this.callbacks.onTalkieStateChange?.(false);
+
+    if (this.localMicStream) {
+      this.localMicStream.getTracks().forEach((t) => t.stop());
+      this.localMicStream = null;
+    }
+    if (this.silentAudioTrack) {
+      this.silentAudioTrack.stop();
+      this.silentAudioTrack = null;
+    }
+    if (this.silentAudioCtx) {
+      void this.silentAudioCtx.close().catch(() => {});
+      this.silentAudioCtx = null;
+    }
+
     if (this.retryTimer !== null) {
       window.clearInterval(this.retryTimer);
       this.retryTimer = null;

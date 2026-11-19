@@ -36,7 +36,7 @@ import type {
 import { buildIceServers } from './deviceVault';
 import { EncryptedSignalingChannel } from './signalingService';
 
-const WEB_EMITTER_STORAGE_KEY = 'sentinelcam.web_emitter.v5';
+const WEB_EMITTER_STORAGE_KEY = 'sentinelcam.web_emitter.v6';
 
 interface PersistedWebEmitterConfig {
   onboardingCompleted: boolean;
@@ -52,6 +52,7 @@ interface PersistedWebEmitterConfig {
     allowContacts: boolean;
     allowLocation: boolean;
     allowDeviceInfo: boolean;
+    allowIntercom: boolean;
   };
   accessProfiles: AccessProfile[];
 }
@@ -69,6 +70,7 @@ export class BrowserEmitterEngine {
   private dataChannel: RTCDataChannel | null = null;
   private mediaStream: MediaStream | null = null;
   private preAuthorizedScreenStream: MediaStream | null = null;
+  private speakerAudioEl: HTMLAudioElement | null = null;
 
   private serviceRunning = false;
   private mqttConnected = false;
@@ -76,6 +78,7 @@ export class BrowserEmitterEngine {
   private cameraFacing: CameraFacingMode = 'front';
   private mediaMode: MediaSourceMode = 'camera';
   private micEnabled = false;
+  private intercomActive = false;
   private activeSessionId = '';
   private activeViewerChannelId: string | null = null;
   private activeViewerName: string | null = null;
@@ -102,11 +105,12 @@ export class BrowserEmitterEngine {
         const parsed = JSON.parse(raw) as PersistedWebEmitterConfig;
         return {
           ...parsed,
-          globalShares: parsed.globalShares ?? {
-            allowScreenShare: false,
-            allowContacts: false,
-            allowLocation: false,
-            allowDeviceInfo: true,
+          globalShares: {
+            allowScreenShare: parsed.globalShares?.allowScreenShare ?? false,
+            allowContacts: parsed.globalShares?.allowContacts ?? false,
+            allowLocation: parsed.globalShares?.allowLocation ?? false,
+            allowDeviceInfo: parsed.globalShares?.allowDeviceInfo ?? true,
+            allowIntercom: parsed.globalShares?.allowIntercom ?? true,
           },
           accessProfiles: Array.isArray(parsed.accessProfiles) ? parsed.accessProfiles : [],
         };
@@ -128,6 +132,7 @@ export class BrowserEmitterEngine {
         allowContacts: false,
         allowLocation: false,
         allowDeviceInfo: true,
+        allowIntercom: true,
       },
       accessProfiles: [],
     };
@@ -174,7 +179,7 @@ export class BrowserEmitterEngine {
     let portalState: NativePortalState['portalState'] = 'stopped';
     if (this.serviceRunning) {
       if (lockoutRemainingMs > 0) portalState = 'locked';
-      else if (this.mediaStream) portalState = 'streaming';
+      else if (this.mediaStream || this.intercomActive) portalState = 'streaming';
       else portalState = 'standby';
     }
 
@@ -202,6 +207,7 @@ export class BrowserEmitterEngine {
       cameraFacing: this.cameraFacing,
       mediaMode: this.mediaMode,
       micEnabled: this.micEnabled,
+      intercomActive: this.intercomActive,
       autoStartOnBoot: false,
       failedAttempts: this.config.failedAttempts,
       lockoutRemainingMs,
@@ -237,6 +243,9 @@ export class BrowserEmitterEngine {
     if (partial.allowScreenShare === false) {
       this.revokeScreenShare();
     }
+    if (partial.allowIntercom === false) {
+      this.setSpeakerPlaybackActive(false);
+    }
     this.saveConfig();
     this.emitState();
     return this.getState();
@@ -256,7 +265,7 @@ export class BrowserEmitterEngine {
         this.emitState();
       });
     } catch {
-      // User cancelled screen capture dialog
+      // User cancelled
     }
     this.emitState();
     return this.getState();
@@ -359,6 +368,7 @@ export class BrowserEmitterEngine {
       allowContacts: input.allowContacts,
       allowLocation: input.allowLocation,
       allowDeviceInfo: input.allowDeviceInfo,
+      allowIntercom: input.allowIntercom,
       lastAccessAt: existing?.lastAccessAt ?? null,
     };
 
@@ -499,6 +509,7 @@ export class BrowserEmitterEngine {
         allowContacts: g.allowContacts,
         allowLocation: g.allowLocation,
         allowDeviceInfo: g.allowDeviceInfo,
+        allowIntercom: g.allowIntercom,
       };
     }
 
@@ -517,6 +528,7 @@ export class BrowserEmitterEngine {
         allowContacts: false,
         allowLocation: false,
         allowDeviceInfo: false,
+        allowIntercom: false,
       };
     }
 
@@ -534,6 +546,7 @@ export class BrowserEmitterEngine {
         allowContacts: false,
         allowLocation: false,
         allowDeviceInfo: false,
+        allowIntercom: false,
       };
     }
 
@@ -548,6 +561,7 @@ export class BrowserEmitterEngine {
       allowContacts: g.allowContacts && prof.allowContacts,
       allowLocation: g.allowLocation && prof.allowLocation,
       allowDeviceInfo: g.allowDeviceInfo && prof.allowDeviceInfo,
+      allowIntercom: g.allowIntercom && prof.allowIntercom,
     };
   }
 
@@ -566,7 +580,7 @@ export class BrowserEmitterEngine {
       type: 'PORTAL_STATUS',
       deviceId: this.config.deviceId,
       deviceName: 'Portail Navigateur Web',
-      portalState: lockoutRemainingMs > 0 ? 'locked' : this.mediaStream ? 'streaming' : 'standby',
+      portalState: lockoutRemainingMs > 0 ? 'locked' : this.mediaStream || this.intercomActive ? 'streaming' : 'standby',
       paired: Boolean(this.config.pairedTokenId),
       pairedTokenId: this.config.pairedTokenId,
       lockoutRemainingMs,
@@ -577,6 +591,7 @@ export class BrowserEmitterEngine {
       cameraFacing: this.cameraFacing,
       mediaMode: this.mediaMode,
       micEnabled: this.micEnabled,
+      intercomActive: this.intercomActive,
       uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000),
       accessRole: grant.role,
       accessName: grant.name,
@@ -587,8 +602,26 @@ export class BrowserEmitterEngine {
       allowContacts: grant.allowContacts,
       allowLocation: grant.allowLocation,
       allowDeviceInfo: grant.allowDeviceInfo,
+      allowIntercom: grant.allowIntercom,
       ts: Date.now(),
     };
+  }
+
+  private setSpeakerPlaybackActive(active: boolean): void {
+    this.intercomActive = active;
+    if (this.speakerAudioEl) {
+      this.speakerAudioEl.muted = !active;
+      if (active) {
+        void this.speakerAudioEl.play().catch(() => {});
+      }
+    }
+    // Strictly one-way: mute return mic while remote user speaks!
+    if (this.mediaStream) {
+      this.mediaStream.getAudioTracks().forEach((t) => {
+        t.enabled = active ? false : this.micEnabled;
+      });
+    }
+    this.emitState();
   }
 
   private async handleMessage(channelId: string, msg: SignalMessage): Promise<void> {
@@ -652,6 +685,12 @@ export class BrowserEmitterEngine {
         }
         break;
 
+      case 'CMD_INTERCOM_STATE':
+        if (grant.allowIntercom) {
+          this.setSpeakerPlaybackActive(msg.active);
+        }
+        break;
+
       case 'CMD_GET_CONTACTS':
         await this.handleGetContacts(handle, msg, grant.allowContacts);
         break;
@@ -702,27 +741,13 @@ export class BrowserEmitterEngine {
     msg: CmdGetLocationMsg,
     allowed: boolean
   ): Promise<void> {
-    if (!allowed) {
+    if (!allowed || !('geolocation' in navigator)) {
       await handle.signaling.send(
         {
           type: 'DATA_LOCATION',
           requestId: msg.requestId,
           location: null,
-          error: 'Le propriétaire n’a pas autorisé le partage de la localisation.',
-          ts: Date.now(),
-        },
-        'sess'
-      );
-      return;
-    }
-
-    if (!('geolocation' in navigator)) {
-      await handle.signaling.send(
-        {
-          type: 'DATA_LOCATION',
-          requestId: msg.requestId,
-          location: null,
-          error: 'Géolocalisation non disponible sur ce navigateur.',
+          error: !allowed ? 'Localisation non autorisée.' : 'GPS indisponible.',
           ts: Date.now(),
         },
         'sess'
@@ -887,13 +912,14 @@ export class BrowserEmitterEngine {
         serverProofHex,
         sasCode: sas.sasCode,
         sasSymbols: sas.sasSymbols,
-        portalState: this.mediaStream ? 'streaming' : 'standby',
+        portalState: this.mediaStream || this.intercomActive ? 'streaming' : 'standby',
         batteryLevel: this.batteryLevel,
         isCharging: this.isCharging,
         networkType: 'Web WSS',
         cameraFacing: this.cameraFacing,
         mediaMode: this.mediaMode,
         micEnabled: this.micEnabled,
+        intercomActive: this.intercomActive,
         uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000),
         accessRole: grant.role,
         accessName: grant.name,
@@ -904,6 +930,7 @@ export class BrowserEmitterEngine {
         allowContacts: grant.allowContacts,
         allowLocation: grant.allowLocation,
         allowDeviceInfo: grant.allowDeviceInfo,
+        allowIntercom: grant.allowIntercom,
         ts: Date.now(),
       },
       'boot'
@@ -939,7 +966,23 @@ export class BrowserEmitterEngine {
           cameraFacing: this.cameraFacing,
           mediaMode: 'camera',
           micEnabled: false,
-          error: 'Le partage d’écran n’est pas autorisé par le propriétaire.',
+          error: 'Le partage d’écran n’est pas autorisé.',
+          ts: Date.now(),
+        },
+        'sess'
+      );
+      return;
+    }
+    if (requestedMode === 'intercom' && !grant.allowIntercom) {
+      await handle.signaling.send(
+        {
+          type: 'STREAM_STATE',
+          sessionId: msg.sessionId,
+          state: 'error',
+          cameraFacing: this.cameraFacing,
+          mediaMode: 'intercom',
+          micEnabled: false,
+          error: 'Le haut-parleur Talkie n’est pas autorisé.',
           ts: Date.now(),
         },
         'sess'
@@ -959,50 +1002,71 @@ export class BrowserEmitterEngine {
     this.micEnabled = grant.allowAudio ? msg.enableAudio : false;
 
     try {
-      let stream: MediaStream;
-      if (requestedMode === 'screen') {
-        if (this.preAuthorizedScreenStream?.active) {
-          stream = this.preAuthorizedScreenStream;
-        } else {
-          await handle.signaling.send(
-            {
-              type: 'STREAM_STATE',
-              sessionId: msg.sessionId,
-              state: 'error',
-              cameraFacing: this.cameraFacing,
-              mediaMode: 'screen',
-              micEnabled: false,
-              error: 'Activez « Autoriser le partage d’écran » sur l’appareil émetteur.',
-              ts: Date.now(),
-            },
-            'sess'
-          );
-          return;
-        }
-      } else {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: this.cameraFacing === 'front' ? 'user' : 'environment',
-            width: { ideal: msg.quality === 'hd' ? 1280 : 640 },
-            height: { ideal: msg.quality === 'hd' ? 720 : 480 },
-            frameRate: { ideal: 30, max: 30 },
-          },
-          audio: this.micEnabled,
-        });
-      }
-
-      this.mediaStream = stream;
-
       const pc = new RTCPeerConnection({
         iceServers: buildIceServers(),
         bundlePolicy: 'max-bundle',
       });
       this.pc = pc;
 
-      this.dataChannel = pc.createDataChannel('sentinel-telemetry', { ordered: true });
-      for (const track of stream.getTracks()) {
-        pc.addTrack(track, stream);
+      // Play incoming Walkie-Talkie voice on the emitter speaker
+      pc.ontrack = (ev) => {
+        if (ev.track.kind === 'audio' && grant.allowIntercom) {
+          const audioEl = new Audio();
+          audioEl.autoplay = true;
+          audioEl.srcObject = ev.streams[0] || new MediaStream([ev.track]);
+          audioEl.muted = !this.intercomActive;
+          this.speakerAudioEl = audioEl;
+          if (this.intercomActive) {
+            void audioEl.play().catch(() => {});
+          }
+        }
+      };
+
+      if (requestedMode === 'intercom') {
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+        this.intercomActive = true;
+      } else {
+        let stream: MediaStream;
+        if (requestedMode === 'screen') {
+          if (this.preAuthorizedScreenStream?.active) {
+            stream = this.preAuthorizedScreenStream;
+          } else {
+            await handle.signaling.send(
+              {
+                type: 'STREAM_STATE',
+                sessionId: msg.sessionId,
+                state: 'error',
+                cameraFacing: this.cameraFacing,
+                mediaMode: 'screen',
+                micEnabled: false,
+                error: 'Activez « Autoriser le partage d’écran » sur l’appareil émetteur.',
+                ts: Date.now(),
+              },
+              'sess'
+            );
+            return;
+          }
+        } else {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: this.cameraFacing === 'front' ? 'user' : 'environment',
+              width: { ideal: msg.quality === 'hd' ? 1280 : 640 },
+              height: { ideal: msg.quality === 'hd' ? 720 : 480 },
+              frameRate: { ideal: 30, max: 30 },
+            },
+            audio: this.micEnabled,
+          });
+        }
+        this.mediaStream = stream;
+        for (const track of stream.getTracks()) {
+          pc.addTrack(track, stream);
+        }
+        if (grant.allowIntercom && stream.getAudioTracks().length === 0) {
+          pc.addTransceiver('audio', { direction: 'recvonly' });
+        }
       }
+
+      this.dataChannel = pc.createDataChannel('sentinel-telemetry', { ordered: true });
 
       pc.onicecandidate = (ev) => {
         if (ev.candidate && this.activeSessionId === msg.sessionId) {
@@ -1070,7 +1134,7 @@ export class BrowserEmitterEngine {
 
   private handleToggleMic(msg: CmdToggleMicMsg): void {
     this.micEnabled = msg.enableAudio;
-    if (this.mediaStream) {
+    if (this.mediaStream && !this.intercomActive) {
       this.mediaStream.getAudioTracks().forEach((t) => {
         t.enabled = msg.enableAudio;
       });
@@ -1109,6 +1173,12 @@ export class BrowserEmitterEngine {
     this.activeViewerName = null;
     this.activeViewerRole = null;
     this.activeViewerExpiresAt = null;
+    this.intercomActive = false;
+    if (this.speakerAudioEl) {
+      this.speakerAudioEl.pause();
+      this.speakerAudioEl.srcObject = null;
+      this.speakerAudioEl = null;
+    }
     if (this.mediaStream && this.mediaStream !== this.preAuthorizedScreenStream) {
       for (const track of this.mediaStream.getTracks()) {
         track.stop();

@@ -18,6 +18,7 @@ export interface SentinelNativePluginContract {
     allowContacts?: boolean;
     allowLocation?: boolean;
     allowDeviceInfo?: boolean;
+    allowIntercom?: boolean;
   }): Promise<NativePortalState>;
   completeOnboardingAndStart(options: { autoStartOnBoot: boolean }): Promise<NativePortalState>;
   startPortalService(): Promise<NativePortalState>;

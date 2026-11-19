@@ -201,6 +201,9 @@ class SentinelNativePlugin : Plugin() {
         if (call.data.has("allowDeviceInfo")) {
             prefs.globalAllowDeviceInfo = call.getBoolean("allowDeviceInfo", true) ?: true
         }
+        if (call.data.has("allowIntercom")) {
+            prefs.globalAllowIntercom = call.getBoolean("allowIntercom", true) ?: true
+        }
         CameraForegroundService.syncAccessChannels(context)
         call.resolve(buildPortalStateObject())
     }
@@ -315,6 +318,7 @@ class SentinelNativePlugin : Plugin() {
             val allowContacts = call.getBoolean("allowContacts", false) ?: false
             val allowLocation = call.getBoolean("allowLocation", false) ?: false
             val allowDeviceInfo = call.getBoolean("allowDeviceInfo", true) ?: true
+            val allowIntercom = call.getBoolean("allowIntercom", true) ?: true
 
             prefs.upsertAccessProfile(
                 id = id,
@@ -328,7 +332,8 @@ class SentinelNativePlugin : Plugin() {
                 allowScreenShare = allowScreenShare,
                 allowContacts = allowContacts,
                 allowLocation = allowLocation,
-                allowDeviceInfo = allowDeviceInfo
+                allowDeviceInfo = allowDeviceInfo,
+                allowIntercom = allowIntercom
             )
             CameraForegroundService.syncAccessChannels(context)
             call.resolve(buildPortalStateObject())
@@ -470,6 +475,7 @@ class SentinelNativePlugin : Plugin() {
                     put("allowContacts", p.allowContacts)
                     put("allowLocation", p.allowLocation)
                     put("allowDeviceInfo", p.allowDeviceInfo)
+                    put("allowIntercom", p.allowIntercom)
                     put("lastAccessAt", p.lastAccessAt ?: JSONObject.NULL)
                 }
             )
@@ -480,6 +486,7 @@ class SentinelNativePlugin : Plugin() {
             put("allowContacts", prefs.globalAllowContacts)
             put("allowLocation", prefs.globalAllowLocation)
             put("allowDeviceInfo", prefs.globalAllowDeviceInfo)
+            put("allowIntercom", prefs.globalAllowIntercom)
             put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
         }
 
@@ -501,6 +508,7 @@ class SentinelNativePlugin : Plugin() {
             put("cameraFacing", CameraForegroundService.currentFacing)
             put("mediaMode", CameraForegroundService.currentMediaMode)
             put("micEnabled", CameraForegroundService.currentMic)
+            put("intercomActive", CameraForegroundService.intercomActive)
             put("autoStartOnBoot", prefs.autoStartOnBoot)
             put("failedAttempts", prefs.failedAttempts)
             put("lockoutRemainingMs", lockoutRem)

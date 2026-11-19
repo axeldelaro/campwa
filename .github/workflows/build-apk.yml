@@ -122,17 +122,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.0.${{ github.run_number }}
-          name: "SentinelCam v5.0.${{ github.run_number }} (Partage d'Écran, Contacts, GPS & Contrôle Utilisateur)"
+          tag_name: v6.0.${{ github.run_number }}
+          name: "SentinelCam v6.0.${{ github.run_number }} (Talkie-Walkie Haut-Parleur 1-Sens + Partages à la Carte)"
           body: |
-            ### 🛡️ SentinelCam v5.0 — Contrôle Granulaire Utilisateur : Écran, Contacts, GPS & Infos Appareil (`v5.0.${{ github.run_number }}`)
+            ### 📢 SentinelCam v6.0 — Talkie-Walkie Haut-Parleur 1-Sens (Web → Smartphone) (`v6.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Partage d'Écran en Direct (Opt-In)** : Autorisez le partage de votre écran Android via le dialogue système `MediaProjection` et coupez-le en 1 clic à tout moment.
-            - **Répertoire Contacts Partagé (Opt-In E2EE)** : Activez ou désactivez le partage en lecture seule de vos contacts (avec recherche instantanée côté Web).
-            - **Localisation GPS & Infos Système (Opt-In)** : Partagez sur demande la position sur carte (OpenStreetMap + Google Maps), le stockage disponible et l'état du téléphone.
-            - **Permissions par Pass Temporaire & Profil Ami** : Cochez exactement ce que chaque invité ou ami a le droit de voir (`Micro`, `Caméra arrière`, `Écran`, `Contacts`, `GPS`, `Infos`).
+            - **Talkie-Walkie 1-Sens sur le Haut-Parleur** : Parlez directement depuis le site Web dans le haut-parleur principal du smartphone Android (bouton *Maintenir pour parler* + mode *Mains libres* + VU-mètre vocal en direct).
+            - **Zéro Larsen & Ultra-Faible Latence** : Le micro sortant du téléphone est coupé automatiquement pendant la diffusion vocale, avec bascule instantanée (0 ms) si la caméra est allumée ou ouverture d'un canal audio-seul (0 % caméra) en mode Éco-Veille.
+            - **Contrôle Utilisateur Absolu** : Interrupteur global *Haut-Parleur Talkie* sur le téléphone, permission dédiée par Pass temporaire / Profil Ami, et notification Android visible en direct.
+            - **Partages à la Carte Inclus** : Caméra HD, Partage d'Écran (`MediaProjection`), Contacts, Localisation GPS et Infos Système sous contrôle 100 % volontaire du propriétaire.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

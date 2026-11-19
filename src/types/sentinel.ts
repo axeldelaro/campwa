@@ -2,7 +2,7 @@ export type PortalOperationalState = 'offline' | 'standby' | 'connecting' | 'str
 
 export type CameraFacingMode = 'front' | 'back';
 
-export type MediaSourceMode = 'camera' | 'screen';
+export type MediaSourceMode = 'camera' | 'screen' | 'intercom';
 
 export type StreamQualityPreset = 'sd' | 'hd';
 
@@ -13,6 +13,7 @@ export interface GlobalShareSettings {
   allowContacts: boolean;
   allowLocation: boolean;
   allowDeviceInfo: boolean;
+  allowIntercom: boolean;
   screenShareReady: boolean;
 }
 
@@ -30,6 +31,7 @@ export interface AccessProfile {
   allowContacts: boolean;
   allowLocation: boolean;
   allowDeviceInfo: boolean;
+  allowIntercom: boolean;
   lastAccessAt: number | null;
 }
 
@@ -46,6 +48,7 @@ export interface AccessProfileInput {
   allowContacts: boolean;
   allowLocation: boolean;
   allowDeviceInfo: boolean;
+  allowIntercom: boolean;
 }
 
 export interface SharedContactItem {
@@ -120,6 +123,7 @@ export interface ActiveAccessGrant {
   allowContacts: boolean;
   allowLocation: boolean;
   allowDeviceInfo: boolean;
+  allowIntercom: boolean;
 }
 
 export interface DeviceTelemetry {
@@ -137,6 +141,7 @@ export interface DeviceTelemetry {
   cameraFacing: CameraFacingMode;
   mediaMode?: MediaSourceMode;
   micEnabled: boolean;
+  intercomActive?: boolean;
   uptimeSec: number;
   accessRole?: AccessProfileRole;
   accessName?: string;
@@ -147,6 +152,7 @@ export interface DeviceTelemetry {
   allowContacts?: boolean;
   allowLocation?: boolean;
   allowDeviceInfo?: boolean;
+  allowIntercom?: boolean;
   updatedAt: number;
 }
 
@@ -178,7 +184,7 @@ export interface TurnServerSetting {
   credential?: string;
 }
 
-/* ==================== V5 1-RTT INSTANT E2EE PROTOCOL PAYLOADS ==================== */
+/* ==================== V6 1-RTT INSTANT E2EE PROTOCOL PAYLOADS ==================== */
 
 export interface HelloWakeMsg {
   type: 'HELLO_WAKE';
@@ -211,6 +217,7 @@ export interface HelloAckMsg {
   cameraFacing: CameraFacingMode;
   mediaMode?: MediaSourceMode;
   micEnabled: boolean;
+  intercomActive?: boolean;
   uptimeSec: number;
   accessRole?: AccessProfileRole;
   accessName?: string;
@@ -221,6 +228,7 @@ export interface HelloAckMsg {
   allowContacts?: boolean;
   allowLocation?: boolean;
   allowDeviceInfo?: boolean;
+  allowIntercom?: boolean;
   ts: number;
 }
 
@@ -247,6 +255,7 @@ export interface PortalStatusMsg {
   cameraFacing: CameraFacingMode;
   mediaMode?: MediaSourceMode;
   micEnabled: boolean;
+  intercomActive?: boolean;
   uptimeSec: number;
   accessRole?: AccessProfileRole;
   accessName?: string;
@@ -257,6 +266,7 @@ export interface PortalStatusMsg {
   allowContacts?: boolean;
   allowLocation?: boolean;
   allowDeviceInfo?: boolean;
+  allowIntercom?: boolean;
   ts: number;
 }
 
@@ -296,6 +306,13 @@ export interface CmdToggleMicMsg {
   type: 'CMD_TOGGLE_MIC';
   sessionId: string;
   enableAudio: boolean;
+  ts: number;
+}
+
+export interface CmdIntercomStateMsg {
+  type: 'CMD_INTERCOM_STATE';
+  sessionId: string;
+  active: boolean;
   ts: number;
 }
 
@@ -388,6 +405,7 @@ export type SignalMessage =
   | CmdStopStreamMsg
   | CmdSwitchCameraMsg
   | CmdToggleMicMsg
+  | CmdIntercomStateMsg
   | CmdGetContactsMsg
   | DataContactsMsg
   | CmdGetLocationMsg
@@ -435,6 +453,7 @@ export interface NativePortalState {
   cameraFacing: CameraFacingMode;
   mediaMode: MediaSourceMode;
   micEnabled: boolean;
+  intercomActive: boolean;
   autoStartOnBoot: boolean;
   failedAttempts: number;
   lockoutRemainingMs: number;

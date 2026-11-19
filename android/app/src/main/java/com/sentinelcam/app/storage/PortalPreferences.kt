@@ -27,6 +27,7 @@ data class AccessProfileRecord(
     val allowContacts: Boolean,
     val allowLocation: Boolean,
     val allowDeviceInfo: Boolean,
+    val allowIntercom: Boolean,
     val lastAccessAt: Long?
 )
 
@@ -94,6 +95,12 @@ class PortalPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_GLOBAL_DEVICE_INFO, true)
         set(value) {
             prefs.edit().putBoolean(KEY_GLOBAL_DEVICE_INFO, value).commit()
+        }
+
+    var globalAllowIntercom: Boolean
+        get() = prefs.getBoolean(KEY_GLOBAL_INTERCOM, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GLOBAL_INTERCOM, value).commit()
         }
 
     val pairingCode: String
@@ -219,6 +226,7 @@ class PortalPreferences(context: Context) {
                             allowContacts = o.optBoolean("allowContacts", false),
                             allowLocation = o.optBoolean("allowLocation", false),
                             allowDeviceInfo = o.optBoolean("allowDeviceInfo", true),
+                            allowIntercom = o.optBoolean("allowIntercom", true),
                             lastAccessAt = lastVal
                         )
                     )
@@ -246,7 +254,8 @@ class PortalPreferences(context: Context) {
         allowScreenShare: Boolean,
         allowContacts: Boolean,
         allowLocation: Boolean,
-        allowDeviceInfo: Boolean
+        allowDeviceInfo: Boolean,
+        allowIntercom: Boolean
     ): AccessProfileRecord {
         synchronized(LOCK) {
             val cleanCode = CryptoProtocol.normalizePairingCode(rawCode)
@@ -279,6 +288,7 @@ class PortalPreferences(context: Context) {
                 allowContacts = allowContacts,
                 allowLocation = allowLocation,
                 allowDeviceInfo = allowDeviceInfo,
+                allowIntercom = allowIntercom,
                 lastAccessAt = existing?.lastAccessAt
             )
 
@@ -339,6 +349,7 @@ class PortalPreferences(context: Context) {
                     put("allowContacts", p.allowContacts)
                     put("allowLocation", p.allowLocation)
                     put("allowDeviceInfo", p.allowDeviceInfo)
+                    put("allowIntercom", p.allowIntercom)
                     put("lastAccessAt", p.lastAccessAt ?: JSONObject.NULL)
                 }
             )
@@ -401,6 +412,7 @@ class PortalPreferences(context: Context) {
         private const val KEY_GLOBAL_CONTACTS = "global_allow_contacts"
         private const val KEY_GLOBAL_LOCATION = "global_allow_location"
         private const val KEY_GLOBAL_DEVICE_INFO = "global_allow_device_info"
+        private const val KEY_GLOBAL_INTERCOM = "global_allow_intercom"
         private const val KEY_PAIRING_CODE = "pairing_code"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_DEVICE_SALT = "device_salt"

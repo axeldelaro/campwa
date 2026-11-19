@@ -4,7 +4,12 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.projection.MediaProjection
+import android.os.Build
 import androidx.core.content.ContextCompat
 import com.sentinelcam.app.crypto.CryptoProtocol
 import org.json.JSONObject
@@ -21,8 +26,10 @@ import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
+import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.RtpTransceiver
 import org.webrtc.ScreenCapturerAndroid
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
@@ -78,8 +85,11 @@ private object SharedWebRtcRuntime {
 }
 
 /**
- * Thread-safe Hardware WebRTC Engine supporting both Camera2 (`CameraVideoCapturer`)
- * and User-Consented Screen Capture (`ScreenCapturerAndroid` via MediaProjection).
+ * Thread-safe Hardware WebRTC Engine supporting:
+ * 1. Camera2 video streaming (`CameraVideoCapturer`)
+ * 2. User-consented Screen Share (`ScreenCapturerAndroid`)
+ * 3. One-Way Walkie-Talkie Loudspeaker playback (`Web -> Android Built-in Speaker`) both
+ *    during active video sessions and in standalone audio-only mode (0% camera usage).
  */
 class NativeWebRtcEngine(
     context: Context,
@@ -89,6 +99,9 @@ class NativeWebRtcEngine(
     private val onScreenProjectionEnded: () -> Unit = {}
 ) {
     private val appContext = context.applicationContext
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+
     private val rtcExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "SentinelWebRtcWorker").apply { isDaemon = true }
     }
@@ -119,6 +132,10 @@ class NativeWebRtcEngine(
         private set
 
     @Volatile
+    var intercomSpeakerActive: Boolean = false
+        private set
+
+    @Volatile
     var isStreamingActive: Boolean = false
         private set
 
@@ -129,10 +146,11 @@ class NativeWebRtcEngine(
         sessionId: String,
         facing: String = "front",
         enableAudio: Boolean = false,
-        quality: String = "hd"
+        quality: String = "hd",
+        allowIntercom: Boolean = true
     ) {
         rtcExecutor.execute {
-            startCameraStreamOnWorker(sessionId, facing, enableAudio, quality)
+            startCameraStreamOnWorker(sessionId, facing, enableAudio, quality, allowIntercom)
         }
     }
 
@@ -140,10 +158,98 @@ class NativeWebRtcEngine(
         sessionId: String,
         projectionIntent: Intent,
         enableAudio: Boolean = false,
-        quality: String = "hd"
+        quality: String = "hd",
+        allowIntercom: Boolean = true
     ) {
         rtcExecutor.execute {
-            startScreenStreamOnWorker(sessionId, projectionIntent, enableAudio, quality)
+            startScreenStreamOnWorker(sessionId, projectionIntent, enableAudio, quality, allowIntercom)
+        }
+    }
+
+    fun startIntercomOnlyStream(sessionId: String) {
+        rtcExecutor.execute {
+            startIntercomOnlyOnWorker(sessionId)
+        }
+    }
+
+    fun setIntercomActive(active: Boolean) {
+        rtcExecutor.execute {
+            applyLoudspeakerMode(active)
+        }
+    }
+
+    private fun applyLoudspeakerMode(active: Boolean) {
+        intercomSpeakerActive = active
+        // Strictly one-way: mute phone's outbound mic while remote user is speaking to prevent feedback
+        try {
+            audioTrack?.setEnabled(if (active) false else currentMicEnabled)
+        } catch (_: Throwable) {
+        }
+
+        try {
+            if (active) {
+                requestVoiceAudioFocus()
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val speaker = audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    if (speaker != null) {
+                        audioManager.setCommunicationDevice(speaker)
+                    }
+                }
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = true
+            } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    try {
+                        audioManager.clearCommunicationDevice()
+                    } catch (_: Throwable) {
+                    }
+                }
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = false
+                audioManager.mode = AudioManager.MODE_NORMAL
+                abandonVoiceAudioFocus()
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun requestVoiceAudioFocus() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                    .setAudioAttributes(attrs)
+                    .build()
+                audioFocusRequest = req
+                audioManager.requestAudioFocus(req)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_VOICE_CALL,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                )
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun abandonVoiceAudioFocus() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+                audioFocusRequest = null
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.abandonAudioFocus(null)
+            }
+        } catch (_: Throwable) {
         }
     }
 
@@ -151,7 +257,8 @@ class NativeWebRtcEngine(
         sessionId: String,
         facing: String,
         enableAudio: Boolean,
-        quality: String
+        quality: String,
+        allowIntercom: Boolean
     ) {
         stopStreamOnWorker()
 
@@ -175,14 +282,15 @@ class NativeWebRtcEngine(
         currentMediaMode = "camera"
         val width = if (quality == "sd") 640 else 1280
         val height = if (quality == "sd") 480 else 720
-        launchCapturerSession(sessionId, capturer, width, height, 30, enableAudio)
+        launchSession(sessionId, capturer, width, height, 30, enableAudio, allowIntercom)
     }
 
     private fun startScreenStreamOnWorker(
         sessionId: String,
         projectionIntent: Intent,
         enableAudio: Boolean,
-        quality: String
+        quality: String,
+        allowIntercom: Boolean
     ) {
         stopStreamOnWorker()
 
@@ -210,16 +318,24 @@ class NativeWebRtcEngine(
         )
 
         currentMediaMode = "screen"
-        launchCapturerSession(sessionId, screenCapturer, targetW, targetH.coerceIn(480, 1600), 20, enableAudio)
+        launchSession(sessionId, screenCapturer, targetW, targetH.coerceIn(480, 1600), 20, enableAudio, allowIntercom)
     }
 
-    private fun launchCapturerSession(
+    private fun startIntercomOnlyOnWorker(sessionId: String) {
+        stopStreamOnWorker()
+        currentMediaMode = "intercom"
+        applyLoudspeakerMode(true)
+        launchSession(sessionId, capturer = null, width = 0, height = 0, fps = 0, enableAudio = false, allowIntercom = true)
+    }
+
+    private fun launchSession(
         sessionId: String,
-        capturer: VideoCapturer,
+        capturer: VideoCapturer?,
         width: Int,
         height: Int,
         fps: Int,
-        enableAudio: Boolean
+        enableAudio: Boolean,
+        allowIntercom: Boolean
     ) {
         try {
             val runtime = SharedWebRtcRuntime.ensureReady(appContext)
@@ -231,33 +347,40 @@ class NativeWebRtcEngine(
 
             currentSessionId = sessionId
             currentMicEnabled = enableAudio
-            videoCapturer = capturer
 
-            val texHelper = SurfaceTextureHelper.create("SentinelCaptureTex", rootEgl.eglBaseContext)
-            surfaceTextureHelper = texHelper
+            var createdVideoTrack: VideoTrack? = null
+            if (capturer != null) {
+                videoCapturer = capturer
+                val texHelper = SurfaceTextureHelper.create("SentinelCaptureTex", rootEgl.eglBaseContext)
+                surfaceTextureHelper = texHelper
 
-            val vSource = factory.createVideoSource(capturer.isScreencast)
-            videoSource = vSource
-            capturer.initialize(texHelper, appContext, vSource.capturerObserver)
-            capturer.startCapture(width, height, fps)
+                val vSource = factory.createVideoSource(capturer.isScreencast)
+                videoSource = vSource
+                capturer.initialize(texHelper, appContext, vSource.capturerObserver)
+                capturer.startCapture(width, height, fps)
 
-            val vTrack = factory.createVideoTrack("ARDAMSv0", vSource)
-            vTrack.setEnabled(true)
-            videoTrack = vTrack
+                val vTrack = factory.createVideoTrack("ARDAMSv0", vSource)
+                vTrack.setEnabled(true)
+                videoTrack = vTrack
+                createdVideoTrack = vTrack
+            }
 
-            val hasAudioPerm = ContextCompat.checkSelfPermission(
-                appContext,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
+            // Local phone mic track only if we are streaming camera/screen and have RECORD_AUDIO
+            if (capturer != null) {
+                val hasAudioPerm = ContextCompat.checkSelfPermission(
+                    appContext,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
 
-            if (hasAudioPerm) {
-                try {
-                    val aSource = factory.createAudioSource(MediaConstraints())
-                    audioSource = aSource
-                    val aTrack = factory.createAudioTrack("ARDAMSa0", aSource)
-                    aTrack.setEnabled(enableAudio)
-                    audioTrack = aTrack
-                } catch (_: Throwable) {
+                if (hasAudioPerm) {
+                    try {
+                        val aSource = factory.createAudioSource(MediaConstraints())
+                        audioSource = aSource
+                        val aTrack = factory.createAudioTrack("ARDAMSa0", aSource)
+                        aTrack.setEnabled(enableAudio && !intercomSpeakerActive)
+                        audioTrack = aTrack
+                    } catch (_: Throwable) {
+                    }
                 }
             }
 
@@ -296,7 +419,12 @@ class NativeWebRtcEngine(
                     }
                 }
                 override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
-                override fun onAddStream(stream: MediaStream?) {}
+                override fun onAddStream(stream: MediaStream?) {
+                    // Ensure received remote Walkie-Talkie audio track is enabled for loudspeaker playout
+                    stream?.audioTracks?.forEach { t ->
+                        try { t.setEnabled(true) } catch (_: Throwable) {}
+                    }
+                }
                 override fun onRemoveStream(stream: MediaStream?) {}
                 override fun onDataChannel(dc: DataChannel?) {}
                 override fun onRenegotiationNeeded() {}
@@ -309,8 +437,18 @@ class NativeWebRtcEngine(
             }
             peerConnection = pc
 
-            pc.addTrack(vTrack, listOf("ARDAMS"))
-            audioTrack?.let { pc.addTrack(it, listOf("ARDAMS")) }
+            createdVideoTrack?.let { pc.addTrack(it, listOf("ARDAMS")) }
+
+            val localAudio = audioTrack
+            if (localAudio != null) {
+                pc.addTrack(localAudio, listOf("ARDAMS"))
+            } else if (allowIntercom) {
+                // Audio-receive-only transceiver so Web can talk directly to Android Loudspeaker!
+                pc.addTransceiver(
+                    MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
+                    RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY)
+                )
+            }
 
             val dcInit = DataChannel.Init().apply { ordered = true }
             dataChannel = pc.createDataChannel("sentinel-telemetry", dcInit)
@@ -320,7 +458,12 @@ class NativeWebRtcEngine(
 
             val offerConstraints = MediaConstraints().apply {
                 mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
-                mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
+                mandatory.add(
+                    MediaConstraints.KeyValuePair(
+                        "OfferToReceiveAudio",
+                        if (allowIntercom) "true" else "false"
+                    )
+                )
             }
 
             pc.createOffer(object : SdpObserver {
@@ -361,7 +504,7 @@ class NativeWebRtcEngine(
                 if (currentMediaMode == "screen") {
                     "Le propriétaire doit ré-autoriser le partage d’écran sur son smartphone."
                 } else {
-                    t.message ?: "Erreur ouverture capteur"
+                    t.message ?: "Erreur ouverture flux média"
                 }
             )
         }
@@ -420,7 +563,7 @@ class NativeWebRtcEngine(
         rtcExecutor.execute {
             try {
                 currentMicEnabled = enabled
-                audioTrack?.setEnabled(enabled)
+                audioTrack?.setEnabled(enabled && !intercomSpeakerActive)
             } catch (_: Throwable) {
             }
         }
@@ -449,56 +592,33 @@ class NativeWebRtcEngine(
         isStreamingActive = false
         currentSessionId = ""
 
-        try {
-            videoCapturer?.stopCapture()
-        } catch (_: Throwable) {
+        if (intercomSpeakerActive) {
+            applyLoudspeakerMode(false)
         }
-        try {
-            videoCapturer?.dispose()
-        } catch (_: Throwable) {
-        }
+
+        try { videoCapturer?.stopCapture() } catch (_: Throwable) {}
+        try { videoCapturer?.dispose() } catch (_: Throwable) {}
         videoCapturer = null
 
-        try {
-            dataChannel?.close()
-        } catch (_: Throwable) {
-        }
+        try { dataChannel?.close() } catch (_: Throwable) {}
         dataChannel = null
 
-        try {
-            peerConnection?.close()
-        } catch (_: Throwable) {
-        }
+        try { peerConnection?.close() } catch (_: Throwable) {}
         peerConnection = null
 
-        try {
-            videoTrack?.dispose()
-        } catch (_: Throwable) {
-        }
+        try { videoTrack?.dispose() } catch (_: Throwable) {}
         videoTrack = null
 
-        try {
-            videoSource?.dispose()
-        } catch (_: Throwable) {
-        }
+        try { videoSource?.dispose() } catch (_: Throwable) {}
         videoSource = null
 
-        try {
-            surfaceTextureHelper?.dispose()
-        } catch (_: Throwable) {
-        }
+        try { surfaceTextureHelper?.dispose() } catch (_: Throwable) {}
         surfaceTextureHelper = null
 
-        try {
-            audioTrack?.dispose()
-        } catch (_: Throwable) {
-        }
+        try { audioTrack?.dispose() } catch (_: Throwable) {}
         audioTrack = null
 
-        try {
-            audioSource?.dispose()
-        } catch (_: Throwable) {
-        }
+        try { audioSource?.dispose() } catch (_: Throwable) {}
         audioSource = null
 
         if (wasStreaming && !shuttingDown) {

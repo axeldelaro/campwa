@@ -80,7 +80,8 @@ class CameraForegroundService : Service() {
         val allowScreenShare: Boolean = false,
         val allowContacts: Boolean = false,
         val allowLocation: Boolean = false,
-        val allowDeviceInfo: Boolean = true
+        val allowDeviceInfo: Boolean = true,
+        val allowIntercom: Boolean = true
     )
 
     override fun onCreate() {
@@ -165,6 +166,7 @@ class CameraForegroundService : Service() {
         isRunning = false
         mqttConnected = false
         isStreaming = false
+        intercomActive = false
         cameraFgsPromoted = false
         mediaProjectionFgsPromoted = false
         screenProjectionIntent = null
@@ -285,8 +287,10 @@ class CameraForegroundService : Service() {
                 currentMediaMode = webRtcEngine?.currentMediaMode ?: "camera"
                 if (active) {
                     acquireStreamingLocks()
+                    intercomActive = webRtcEngine?.intercomSpeakerActive ?: intercomActive
                 } else {
                     releaseStreamingLocks()
+                    intercomActive = false
                     activeViewerName = null
                     activeViewerRole = null
                     activeViewerExpiresAt = null
@@ -436,6 +440,7 @@ class CameraForegroundService : Service() {
         val globalContacts = prefs.globalAllowContacts
         val globalLocation = prefs.globalAllowLocation
         val globalDevInfo = prefs.globalAllowDeviceInfo
+        val globalIntercom = prefs.globalAllowIntercom
 
         if (channelId == OWNER_CHANNEL_ID) {
             return ResolvedGrant(
@@ -448,7 +453,8 @@ class CameraForegroundService : Service() {
                 allowScreenShare = globalScreen,
                 allowContacts = globalContacts,
                 allowLocation = globalLocation,
-                allowDeviceInfo = globalDevInfo
+                allowDeviceInfo = globalDevInfo,
+                allowIntercom = globalIntercom
             )
         }
 
@@ -492,7 +498,8 @@ class CameraForegroundService : Service() {
             allowScreenShare = globalScreen && prof.allowScreenShare,
             allowContacts = globalContacts && prof.allowContacts,
             allowLocation = globalLocation && prof.allowLocation,
-            allowDeviceInfo = globalDevInfo && prof.allowDeviceInfo
+            allowDeviceInfo = globalDevInfo && prof.allowDeviceInfo,
+            allowIntercom = globalIntercom && prof.allowIntercom
         )
     }
 
@@ -511,6 +518,17 @@ class CameraForegroundService : Service() {
         // If user revoked screen share while someone was viewing screen -> stop stream immediately
         if (currentMediaMode == "screen" && !grant.allowScreenShare) {
             sleepCameraInternal()
+            return
+        }
+        // If user revoked intercom while someone was broadcasting voice -> mute speaker immediately
+        if (intercomActive && !grant.allowIntercom) {
+            intercomActive = false
+            webRtcEngine?.setIntercomActive(false)
+            if (currentMediaMode == "intercom") {
+                sleepCameraInternal()
+            } else {
+                serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
+            }
         }
     }
 
@@ -557,6 +575,7 @@ class CameraForegroundService : Service() {
         activeViewerName = null
         activeViewerRole = null
         activeViewerExpiresAt = null
+        intercomActive = false
         serviceScope.launch(Dispatchers.Main) {
             updateNotificationAndNotifyListeners()
         }
@@ -567,6 +586,7 @@ class CameraForegroundService : Service() {
         val activeSession = webRtcEngine?.currentSessionId.orEmpty()
         webRtcEngine?.stopStream()
         releaseStreamingLocks()
+        intercomActive = false
         activeViewerName = null
         activeViewerRole = null
         activeViewerExpiresAt = null
@@ -624,6 +644,8 @@ class CameraForegroundService : Service() {
             put("allowContacts", grant.allowContacts)
             put("allowLocation", grant.allowLocation)
             put("allowDeviceInfo", grant.allowDeviceInfo)
+            put("allowIntercom", grant.allowIntercom)
+            put("intercomActive", intercomActive)
             put("ts", System.currentTimeMillis())
         }
     }
@@ -646,7 +668,38 @@ class CameraForegroundService : Service() {
         reqAudio: Boolean,
         quality: String
     ) {
-        if (mediaMode == "screen") {
+        if (mediaMode == "intercom") {
+            if (!grant.allowIntercom) {
+                signalingEngine?.send(
+                    channelId = channelId,
+                    payload = JSONObject().apply {
+                        put("type", "STREAM_STATE")
+                        put("sessionId", sessionId)
+                        put("state", "error")
+                        put("cameraFacing", currentFacing)
+                        put("mediaMode", "intercom")
+                        put("micEnabled", false)
+                        put("error", "Le propriétaire n’a pas autorisé le haut-parleur Talkie.")
+                        put("ts", System.currentTimeMillis())
+                    },
+                    mode = "sess"
+                )
+                return
+            }
+
+            activeStreamChannelId = channelId
+            activeViewerName = grant.name
+            activeViewerRole = grant.role
+            activeViewerExpiresAt = grant.expiresAt
+            currentMediaMode = "intercom"
+            intercomActive = true
+            if (channelId != OWNER_CHANNEL_ID) {
+                prefs.touchProfileLastAccess(channelId)
+            }
+            acquireStreamingLocks()
+            ensureWebRtcInitialized().startIntercomOnlyStream(sessionId)
+            serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
+        } else if (mediaMode == "screen") {
             val projIntent = screenProjectionIntent
             if (!grant.allowScreenShare || projIntent == null) {
                 signalingEngine?.send(
@@ -678,11 +731,18 @@ class CameraForegroundService : Service() {
             activeViewerRole = grant.role
             activeViewerExpiresAt = grant.expiresAt
             currentMediaMode = "screen"
+            intercomActive = false
             if (channelId != OWNER_CHANNEL_ID) {
                 prefs.touchProfileLastAccess(channelId)
             }
             acquireStreamingLocks()
-            ensureWebRtcInitialized().startScreenStream(sessionId, intentCopy, effectiveAudio, quality)
+            ensureWebRtcInitialized().startScreenStream(
+                sessionId = sessionId,
+                projectionIntent = intentCopy,
+                enableAudio = effectiveAudio,
+                quality = quality,
+                allowIntercom = grant.allowIntercom
+            )
             serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
         } else {
             val effectiveFacing = if (grant.allowSwitchCamera) reqFacing else "front"
@@ -692,11 +752,18 @@ class CameraForegroundService : Service() {
             activeViewerRole = grant.role
             activeViewerExpiresAt = grant.expiresAt
             currentMediaMode = "camera"
+            intercomActive = false
             if (channelId != OWNER_CHANNEL_ID) {
                 prefs.touchProfileLastAccess(channelId)
             }
             acquireStreamingLocks()
-            ensureWebRtcInitialized().startStream(sessionId, effectiveFacing, effectiveAudio, quality)
+            ensureWebRtcInitialized().startStream(
+                sessionId = sessionId,
+                facing = effectiveFacing,
+                enableAudio = effectiveAudio,
+                quality = quality,
+                allowIntercom = grant.allowIntercom
+            )
             serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
         }
     }
@@ -747,6 +814,7 @@ class CameraForegroundService : Service() {
                     if (channelId == activeStreamChannelId || channelId == OWNER_CHANNEL_ID) {
                         webRtcEngine?.stopStream()
                         releaseStreamingLocks()
+                        intercomActive = false
                         activeViewerName = null
                         activeViewerRole = null
                         activeViewerExpiresAt = null
@@ -764,6 +832,16 @@ class CameraForegroundService : Service() {
                             mode = "sess"
                         )
                         serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
+                    }
+                }
+
+                "CMD_INTERCOM_STATE" -> {
+                    if (grant.allowIntercom && (channelId == activeStreamChannelId || channelId == OWNER_CHANNEL_ID)) {
+                        val active = msg.optBoolean("active", false)
+                        intercomActive = active
+                        webRtcEngine?.setIntercomActive(active)
+                        serviceScope.launch(Dispatchers.Main) { updateNotificationAndNotifyListeners() }
+                        broadcastPresenceNow(channelId)
                     }
                 }
 
@@ -1013,6 +1091,8 @@ class CameraForegroundService : Service() {
                 put("allowContacts", grant.allowContacts)
                 put("allowLocation", grant.allowLocation)
                 put("allowDeviceInfo", grant.allowDeviceInfo)
+                put("allowIntercom", grant.allowIntercom)
+                put("intercomActive", intercomActive)
                 put("ts", now)
             },
             mode = "boot"
@@ -1071,20 +1151,25 @@ class CameraForegroundService : Service() {
         )
 
         val viewerLabel = activeViewerName
-        val streamKind = if (currentMediaMode == "screen") "Partage d’écran" else "Caméra"
-        val title = if (isStreaming && viewerLabel != null) {
-            "$streamKind en cours • $viewerLabel"
-        } else if (isStreaming) {
-            "$streamKind en cours"
-        } else {
-            "SentinelCam actif (Éco-Veille)"
+        val streamKind = when (currentMediaMode) {
+            "screen" -> "Partage d’écran"
+            "intercom" -> "Haut-parleur Talkie"
+            else -> "Caméra"
+        }
+        val title = when {
+            intercomActive && viewerLabel != null -> "Haut-parleur Talkie actif • $viewerLabel"
+            intercomActive -> "Haut-parleur Talkie actif"
+            isStreaming && viewerLabel != null -> "$streamKind en cours • $viewerLabel"
+            isStreaming -> "$streamKind en cours"
+            else -> "SentinelCam actif (Éco-Veille)"
         }
 
-        val subtitle = if (isStreaming) {
-            if (currentMediaMode == "screen") "Votre écran est partagé en direct"
-            else "Flux direct actif (${if (currentFacing == "front") "Selfie" else "Arrière"})"
-        } else {
-            "Code : ${prefs.pairingCode} • Contrôle total actif"
+        val subtitle = when {
+            intercomActive -> "Diffusion vocale en direct sur le haut-parleur"
+            isStreaming && currentMediaMode == "screen" -> "Votre écran est partagé en direct"
+            isStreaming && currentMediaMode == "intercom" -> "Canal haut-parleur Talkie ouvert"
+            isStreaming -> "Flux direct actif (${if (currentFacing == "front") "Selfie" else "Arrière"})"
+            else -> "Code : ${prefs.pairingCode} • Contrôle total actif"
         }
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -1274,6 +1359,10 @@ class CameraForegroundService : Service() {
             private set
 
         @Volatile
+        var intercomActive: Boolean = false
+            private set
+
+        @Volatile
         var activeViewerName: String? = null
             private set
 
@@ -1427,6 +1516,7 @@ class CameraForegroundService : Service() {
 
                 isRunning = false
                 isStreaming = false
+                intercomActive = false
                 mqttConnected = false
                 screenProjectionIntent = null
                 activeViewerName = null

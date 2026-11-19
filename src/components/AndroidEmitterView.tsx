@@ -27,6 +27,7 @@ import {
   Trash2,
   UserCheck,
   Users,
+  Volume2,
   Wifi,
   XCircle,
   Zap,
@@ -88,6 +89,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const [allowContacts, setAllowContacts] = useState(false);
   const [allowLocation, setAllowLocation] = useState(false);
   const [allowDeviceInfo, setAllowDeviceInfo] = useState(true);
+  const [allowIntercom, setAllowIntercom] = useState(true);
 
   const webEngineRef = useRef<BrowserEmitterEngine | null>(null);
 
@@ -255,6 +257,23 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     }
   };
 
+  const handleToggleIntercomShare = async () => {
+    if (!portal) return;
+    setBusy(true);
+    try {
+      const targetVal = !portal.globalShares.allowIntercom;
+      if (isNativeAndroid) {
+        const next = await SentinelNative.setGlobalShareSettings({ allowIntercom: targetVal });
+        setPortal(next);
+      } else if (webEngineRef.current) {
+        const next = await webEngineRef.current.setGlobalShareSettings({ allowIntercom: targetVal });
+        setPortal(next);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleToggleService = async () => {
     if (!portal) return;
     setBusy(true);
@@ -342,6 +361,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       allowContacts,
       allowLocation,
       allowDeviceInfo,
+      allowIntercom,
     };
 
     setBusy(true);
@@ -399,6 +419,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         allowContacts: prof.allowContacts,
         allowLocation: prof.allowLocation,
         allowDeviceInfo: prof.allowDeviceInfo,
+        allowIntercom: prof.allowIntercom,
       };
       if (isNativeAndroid) {
         const next = await SentinelNative.upsertAccessProfile(updatedInput);
@@ -534,6 +555,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     allowContacts: false,
     allowLocation: false,
     allowDeviceInfo: true,
+    allowIntercom: true,
     screenShareReady: false,
   };
 
@@ -604,6 +626,17 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         <Cpu className="h-3.5 w-3.5 text-slate-400" />
         <span>Infos tel</span>
       </label>
+
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowIntercom}
+          onChange={(e) => setAllowIntercom(e.target.checked)}
+          className="h-4 w-4 rounded border-slate-700 bg-obsidian-900 text-emerald-500"
+        />
+        <Volume2 className="h-3.5 w-3.5 text-emerald-300" />
+        <span>Talkie HP</span>
+      </label>
     </div>
   );
 
@@ -670,6 +703,11 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               {prof.allowLocation && (
                 <span className="rounded-md bg-rose-500/15 px-1.5 py-0.5 text-rose-300">
                   GPS
+                </span>
+              )}
+              {prof.allowIntercom && (
+                <span className="rounded-md bg-teal-500/15 px-1.5 py-0.5 text-teal-300">
+                  Talkie HP
                 </span>
               )}
             </div>
@@ -778,8 +816,12 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             <Eye className="h-5 w-5 text-rose-400 animate-pulse" />
             <div className="text-xs">
               <div className="font-bold text-white">
-                {portal.mediaMode === 'screen' ? 'Partage d’écran' : 'Caméra'} en direct :{' '}
-                {portal.activeViewerName}{' '}
+                {portal.intercomActive
+                  ? 'Haut-parleur Talkie actif'
+                  : portal.mediaMode === 'screen'
+                  ? 'Partage d’écran'
+                  : 'Caméra'}{' '}
+                en direct : {portal.activeViewerName}{' '}
                 <span className="rounded bg-rose-500/30 px-1.5 py-0.5 text-[10px] uppercase text-rose-200">
                   {portal.activeViewerRole === 'owner'
                     ? 'Propriétaire'
@@ -1006,6 +1048,31 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             </p>
 
             <div className="mt-4 space-y-2.5">
+              {/* Walkie-Talkie Loudspeaker Control */}
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
+                <div className="flex items-start gap-3">
+                  <Volume2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-400" />
+                  <div>
+                    <div className="text-xs font-bold text-white">Haut-Parleur Talkie (1 sens)</div>
+                    <div className="text-[11px] text-slate-400">
+                      Permet de parler depuis le site Web directement sur le haut-parleur du téléphone.
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleToggleIntercomShare()}
+                  className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                    shares.allowIntercom
+                      ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-200'
+                      : 'border-slate-700 bg-obsidian-900 text-slate-300'
+                  }`}
+                >
+                  {shares.allowIntercom ? 'Activé' : 'Désactivé'}
+                </button>
+              </div>
+
               {/* Screen Share Control */}
               <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-obsidian-950 p-3.5">
                 <div className="flex items-start gap-3">
