@@ -176,6 +176,61 @@ class PortalPreferences(context: Context) {
             prefs.edit().putBoolean(KEY_GLOBAL_DEVICE_CONTROL, value).commit()
         }
 
+    var globalAllowGallery: Boolean
+        get() = prefs.getBoolean(KEY_GLOBAL_GALLERY, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GLOBAL_GALLERY, value).commit()
+        }
+
+    /* ==================== V15 ON-DEVICE AI BLUR SHIELD & PARENT BINDING ==================== */
+
+    var aiBlurFaces: Boolean
+        get() = prefs.getBoolean(KEY_AI_BLUR_FACES, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_AI_BLUR_FACES, value).commit()
+        }
+
+    var aiBlurNsfw: Boolean
+        get() = prefs.getBoolean(KEY_AI_BLUR_NSFW, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_AI_BLUR_NSFW, value).commit()
+        }
+
+    var aiNsfwStrict: Boolean
+        get() = prefs.getBoolean(KEY_AI_NSFW_STRICT, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_AI_NSFW_STRICT, value).commit()
+        }
+
+    var parentManaged: Boolean
+        get() = prefs.getBoolean(KEY_PARENT_MANAGED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_PARENT_MANAGED, value).commit()
+        }
+
+    var parentFamilyKey: String
+        get() = KeystoreVault.decrypt(prefs.getString(KEY_PARENT_FAMILY_KEY, null)) ?: ""
+        set(value) {
+            val clean = CryptoProtocol.normalizeFamilyKey(value)
+            if (clean.length == 12) {
+                prefs.edit().putString(KEY_PARENT_FAMILY_KEY, KeystoreVault.encrypt(clean)).commit()
+            } else {
+                prefs.edit().remove(KEY_PARENT_FAMILY_KEY).commit()
+            }
+        }
+
+    fun setPairingCodeDirect(rawCode: String) {
+        val clean = CryptoProtocol.normalizePairingCode(rawCode)
+        require(clean.length == 6) { "Code appareil invalide." }
+        synchronized(LOCK) {
+            prefs.edit()
+                .putString(KEY_PAIRING_CODE, KeystoreVault.encrypt(clean))
+                .putInt(KEY_FAILED_ATTEMPTS, 0)
+                .putLong(KEY_LOCKOUT_UNTIL, 0L)
+                .commit()
+        }
+    }
+
     var screenPausedUntilMs: Long
         get() = prefs.getLong(KEY_SCREEN_PAUSED_UNTIL, 0L)
         set(value) {
@@ -1096,6 +1151,12 @@ class PortalPreferences(context: Context) {
         private const val KEY_GLOBAL_INTERCOM = "global_allow_intercom"
         private const val KEY_GLOBAL_SMS_RELAY = "global_allow_sms_relay"
         private const val KEY_GLOBAL_DEVICE_CONTROL = "global_allow_device_control"
+        private const val KEY_GLOBAL_GALLERY = "global_allow_gallery_v15"
+        private const val KEY_AI_BLUR_FACES = "ai_blur_faces_v15"
+        private const val KEY_AI_BLUR_NSFW = "ai_blur_nsfw_v15"
+        private const val KEY_AI_NSFW_STRICT = "ai_nsfw_strict_v15"
+        private const val KEY_PARENT_MANAGED = "parent_managed_v15"
+        private const val KEY_PARENT_FAMILY_KEY = "parent_family_key_v15"
         private const val KEY_SCREEN_PAUSED_UNTIL = "screen_paused_until_ms"
         private const val KEY_APP_LOCK_RULES = "app_lock_rules_v11"
         private const val KEY_CURFEW_ENABLED = "curfew_enabled_v13"

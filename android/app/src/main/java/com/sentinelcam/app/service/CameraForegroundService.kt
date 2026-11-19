@@ -22,6 +22,7 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.sentinelcam.app.MainActivity
+import com.sentinelcam.app.ai.AiScreenShieldEngine
 import com.sentinelcam.app.control.AppLockMonitor
 import com.sentinelcam.app.control.DeviceSecurityMonitor
 import com.sentinelcam.app.control.ScreenTimeHelper
@@ -29,6 +30,7 @@ import com.sentinelcam.app.crypto.BootstrapKeys
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.data.DeviceActionHelper
 import com.sentinelcam.app.data.DeviceDataHelper
+import com.sentinelcam.app.data.GalleryHelper
 import com.sentinelcam.app.data.SmsRelayHelper
 import com.sentinelcam.app.location.LocationHistoryStore
 import com.sentinelcam.app.location.SmartLocationTracker
@@ -63,6 +65,11 @@ class CameraForegroundService : Service() {
     private var locationStore: LocationHistoryStore? = null
     private var locationTracker: SmartLocationTracker? = null
     private var appLockMonitor: AppLockMonitor? = null
+    private var aiScreenShield: AiScreenShieldEngine? = null
+
+    @Volatile
+    private var pendingPairCode: String? = null
+    private var pendingPairJob: kotlinx.coroutines.Job? = null
     private var startedAtMs: Long = System.currentTimeMillis()
     private var telemetryLoopStarted: Boolean = false
 
@@ -121,6 +128,10 @@ class CameraForegroundService : Service() {
             notifyStateListeners()
         }
         appLockMonitor = AppLockMonitor(applicationContext, prefs).also { it.start() }
+        aiScreenShield = AiScreenShieldEngine(applicationContext, prefs) {
+            aiShieldActive = aiScreenShield?.isActive == true
+            notifyStateListeners()
+        }
         DeviceSecurityMonitor.checkSimState(applicationContext, prefs)
         createNotificationChannel()
     }
@@ -158,6 +169,7 @@ class CameraForegroundService : Service() {
 
             ACTION_PROMOTE_MEDIA_PROJECTION -> {
                 ensureSignalingRunning(forceRebuild = false)
+                syncAiShieldState()
                 updateNotificationAndNotifyListeners()
                 broadcastPresenceNow(activeStreamChannelId)
                 return START_STICKY
@@ -228,6 +240,9 @@ class CameraForegroundService : Service() {
         gpsTrackerState = "disabled"
         try { appLockMonitor?.destroy() } catch (_: Throwable) {}
         appLockMonitor = null
+        try { aiScreenShield?.destroy() } catch (_: Throwable) {}
+        aiScreenShield = null
+        aiShieldActive = false
         try { DeviceActionHelper.releaseAll(applicationContext) } catch (_: Throwable) {}
 
         releaseStreamingLocks()
@@ -396,7 +411,57 @@ class CameraForegroundService : Service() {
             } catch (_: Throwable) {
             }
         }
+
+        // Zero-Loss Serverless Family Discovery Channel
+        val famKey = prefs.parentFamilyKey
+        if (famKey.length == 12) {
+            try {
+                val famKeys = CryptoProtocol.deriveFamilyDiscoveryKeys(famKey)
+                list.add(SignalingChannelSpec(FAMILY_CHANNEL_ID, famKeys))
+                channelKeysById[FAMILY_CHANNEL_ID] = famKeys
+            } catch (_: Throwable) {
+            }
+        }
+
+        // Temporary Parent-Generated Pairing Channel
+        val pCode = pendingPairCode
+        if (!pCode.isNullOrEmpty() && pCode.length == 6) {
+            try {
+                val pKeys = CryptoProtocol.deriveBootstrapKeys(pCode)
+                list.add(SignalingChannelSpec(PAIRING_CHANNEL_ID, pKeys))
+                channelKeysById[PAIRING_CHANNEL_ID] = pKeys
+            } catch (_: Throwable) {
+            }
+        }
         return list
+    }
+
+    private fun syncAiShieldState() {
+        try {
+            val shield = aiScreenShield ?: return
+            val want = prefs.aiBlurFaces || prefs.aiBlurNsfw
+            if (!want) {
+                if (shield.isActive) shield.stop()
+                aiShieldActive = false
+                return
+            }
+            if (isStreaming && currentMediaMode == "screen") {
+                shield.pauseForWebRtcScreenShare()
+                return
+            }
+            if (shield.hasActiveProjection() || screenProjectionIntent != null) {
+                if (!mediaProjectionFgsPromoted) {
+                    startInForegroundSafely(promoteCamera = false, promoteScreen = true)
+                }
+                val started = shield.startOrRefresh(screenProjectionIntent)
+                if (started && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    // Android 14+ consumes the Intent on first MediaProjection creation; shield keeps MediaProjection alive!
+                    screenProjectionIntent = null
+                }
+                aiShieldActive = started
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     private fun ensureSignalingRunning(forceRebuild: Boolean) {
@@ -464,6 +529,7 @@ class CameraForegroundService : Service() {
 
     fun syncChannelsHot() {
         syncLocationTrackerState()
+        syncAiShieldState()
         try { appLockMonitor?.refreshSchedule() } catch (_: Throwable) {}
         val engine = signalingEngine
         if (engine == null) {
@@ -739,6 +805,14 @@ class CameraForegroundService : Service() {
             put("blockSettingsAndStore", prefs.blockSettingsAndStore)
             put("pendingRequestsCount", prefs.getPendingTimeRequests().size)
             put("securityAlertsCount", prefs.getSecurityEvents().size)
+            put("allowGallery", prefs.globalAllowGallery && GalleryHelper.hasGalleryPermission(applicationContext))
+            put("hasGalleryPermission", GalleryHelper.hasGalleryPermission(applicationContext))
+            put("aiBlurFaces", prefs.aiBlurFaces)
+            put("aiBlurNsfw", prefs.aiBlurNsfw)
+            put("aiNsfwStrict", prefs.aiNsfwStrict)
+            put("aiShieldRunning", aiScreenShield?.isActive == true)
+            put("aiShieldNeedsConsent", (prefs.aiBlurFaces || prefs.aiBlurNsfw) && aiScreenShield?.isActive != true)
+            put("parentManaged", prefs.parentManaged)
             put("pfsEnabled", lastSessionPfs)
             put("gpsTrackerState", gpsTrackerState)
             put("gpsTrackingMode", prefs.gpsTrackingMode)
@@ -873,6 +947,80 @@ class CameraForegroundService : Service() {
 
     private fun handleDecryptedSignal(channelId: String, msg: JSONObject) {
         if (!isRunning) return
+
+        // 1. Zero-Loss Serverless Family Discovery Channel
+        if (channelId == FAMILY_CHANNEL_ID) {
+            if (msg.optString("type") == "FAMILY_DISCOVER") {
+                val bat = readBatteryInfo()
+                signalingEngine?.send(
+                    channelId = FAMILY_CHANNEL_ID,
+                    payload = JSONObject().apply {
+                        put("type", "FAMILY_ANNOUNCE")
+                        put("deviceId", prefs.deviceId)
+                        put("deviceName", prefs.deviceName)
+                        put("deviceCode", prefs.pairingCode)
+                        put("batteryLevel", bat.first)
+                        put("isCharging", bat.second)
+                        put("portalState", if (isStreaming) "streaming" else "standby")
+                        put("ts", System.currentTimeMillis())
+                    },
+                    mode = "boot"
+                )
+            }
+            return
+        }
+
+        // 2. Parent-Initiated One-Time Pairing Channel
+        if (channelId == PAIRING_CHANNEL_ID) {
+            if (msg.optString("type") == "PAIR_BIND") {
+                val famKey = CryptoProtocol.normalizeFamilyKey(msg.optString("familyKey", ""))
+                val assignedCode = CryptoProtocol.normalizePairingCode(msg.optString("deviceCode", ""))
+                val initialPin = msg.optString("adminPin", "").trim()
+                if (famKey.length == 12 && assignedCode.length == 6) {
+                    prefs.parentFamilyKey = famKey
+                    prefs.setPairingCodeDirect(assignedCode)
+                    prefs.parentManaged = true
+                    prefs.onboardingCompleted = true
+                    prefs.globalAllowDeviceControl = true
+                    prefs.globalAllowLocation = true
+                    prefs.globalAllowGallery = true
+                    prefs.globalAllowDeviceInfo = true
+                    prefs.globalAllowIntercom = true
+                    if (initialPin.length in 4..12) {
+                        prefs.setAdminPin(initialPin)
+                        prefs.adminProtectionEnabled = true
+                    }
+                    prefs.appendSecurityEvent(
+                        "admin",
+                        "Appareil associé au Parent",
+                        "Gestion à distance activée avec clé famille sécurisée."
+                    )
+
+                    signalingEngine?.send(
+                        channelId = PAIRING_CHANNEL_ID,
+                        payload = JSONObject().apply {
+                            put("type", "PAIR_CONFIRMED")
+                            put("deviceId", prefs.deviceId)
+                            put("deviceName", prefs.deviceName)
+                            put("deviceCode", assignedCode)
+                            put("ts", System.currentTimeMillis())
+                        },
+                        mode = "boot"
+                    )
+
+                    pendingPairJob?.cancel()
+                    pendingPairJob = null
+                    pendingPairCode = null
+                    pairStatus = "paired"
+
+                    serviceScope.launch {
+                        delay(450L)
+                        syncChannelsHot()
+                    }
+                }
+            }
+            return
+        }
 
         val grant = resolveGrant(channelId)
         if (!grant.allowed) {
@@ -1734,6 +1882,149 @@ class CameraForegroundService : Service() {
                     }
                 }
 
+                "CMD_GET_GALLERY" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val page = msg.optInt("page", 0)
+                    val pageSize = msg.optInt("pageSize", 18)
+                    val album = msg.optString("album", "")
+                    if (!grant.allowDeviceControl || !prefs.globalAllowGallery) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_GALLERY")
+                                put("requestId", reqId)
+                                put("error", "Accès Galerie désactivé.")
+                                put("items", org.json.JSONArray())
+                                put("albums", org.json.JSONArray())
+                                put("totalCount", 0)
+                                put("hasMore", false)
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val resp = GalleryHelper.listGalleryPage(applicationContext, page, pageSize, album)
+                            resp.put("type", "DATA_GALLERY")
+                            resp.put("requestId", reqId)
+                            resp.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, resp, mode = "sess")
+                        }
+                    }
+                }
+
+                "CMD_GET_GALLERY_PHOTO" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val mediaId = msg.optString("mediaId", "")
+                    if (!grant.allowDeviceControl || !prefs.globalAllowGallery) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_GALLERY_PHOTO")
+                                put("requestId", reqId)
+                                put("mediaId", mediaId)
+                                put("chunkIndex", 0)
+                                put("totalChunks", 1)
+                                put("data", "")
+                                put("error", "Accès Galerie désactivé.")
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val (b64, err) = GalleryHelper.loadHighResPhotoBase64(applicationContext, mediaId)
+                            if (b64 == null) {
+                                signalingEngine?.send(
+                                    channelId = channelId,
+                                    payload = JSONObject().apply {
+                                        put("type", "DATA_GALLERY_PHOTO")
+                                        put("requestId", reqId)
+                                        put("mediaId", mediaId)
+                                        put("chunkIndex", 0)
+                                        put("totalChunks", 1)
+                                        put("data", "")
+                                        put("error", err ?: "Photo indisponible.")
+                                        put("ts", System.currentTimeMillis())
+                                    },
+                                    mode = "sess"
+                                )
+                            } else {
+                                val chunkSize = 48_000
+                                val totalChunks = ((b64.length + chunkSize - 1) / chunkSize).coerceAtLeast(1)
+                                for (i in 0 until totalChunks) {
+                                    val slice = b64.substring(i * chunkSize, minOf(b64.length, (i + 1) * chunkSize))
+                                    signalingEngine?.send(
+                                        channelId = channelId,
+                                        payload = JSONObject().apply {
+                                            put("type", "DATA_GALLERY_PHOTO")
+                                            put("requestId", reqId)
+                                            put("mediaId", mediaId)
+                                            put("chunkIndex", i)
+                                            put("totalChunks", totalChunks)
+                                            put("data", slice)
+                                            put("ts", System.currentTimeMillis())
+                                        },
+                                        mode = "sess"
+                                    )
+                                    if (totalChunks > 1) delay(40L)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                "CMD_SET_AI_SHIELD" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "ai_shield", false, "Contrôle non autorisé.")
+                    } else {
+                        if (msg.has("blurFaces")) prefs.aiBlurFaces = msg.optBoolean("blurFaces", false)
+                        if (msg.has("blurNsfw")) prefs.aiBlurNsfw = msg.optBoolean("blurNsfw", false)
+                        if (msg.has("nsfwStrict")) prefs.aiNsfwStrict = msg.optBoolean("nsfwStrict", false)
+                        syncAiShieldState()
+                        val want = prefs.aiBlurFaces || prefs.aiBlurNsfw
+                        val activeNow = aiScreenShield?.isActive == true
+                        prefs.appendLog(
+                            "security",
+                            if (want) "Filtre IA Visages/NSFW configuré par ${grant.name}."
+                            else "Filtre IA Visages/NSFW désactivé par ${grant.name}."
+                        )
+                        if (want && !activeNow) {
+                            sendControlResult(
+                                channelId,
+                                reqId,
+                                "ai_shield",
+                                true,
+                                "Activé — autorisez « Capture écran » et « Écran de blocage » une fois sur le smartphone pour démarrer le floutage."
+                            )
+                            broadcastPresenceNow(channelId)
+                            notifyStateListeners()
+                        } else {
+                            pushScreenTimeAndResult(channelId, reqId, "ai_shield")
+                        }
+                    }
+                }
+
+                "CMD_SET_REMOTE_POLICY" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "remote_policy", false, "Contrôle non autorisé.")
+                    } else {
+                        if (msg.has("allowLocation")) prefs.globalAllowLocation = msg.optBoolean("allowLocation")
+                        if (msg.has("allowLocationHistory")) prefs.globalAllowLocationHistory = msg.optBoolean("allowLocationHistory")
+                        if (msg.has("gpsTrackingMode")) prefs.gpsTrackingMode = msg.optString("gpsTrackingMode", "eco")
+                        if (msg.has("allowContacts")) prefs.globalAllowContacts = msg.optBoolean("allowContacts")
+                        if (msg.has("allowSmsRelay")) prefs.globalAllowSmsRelay = msg.optBoolean("allowSmsRelay")
+                        if (msg.has("allowGallery")) prefs.globalAllowGallery = msg.optBoolean("allowGallery")
+                        if (msg.has("allowIntercom")) prefs.globalAllowIntercom = msg.optBoolean("allowIntercom")
+                        if (msg.has("allowDeviceInfo")) prefs.globalAllowDeviceInfo = msg.optBoolean("allowDeviceInfo")
+                        syncChannelsHot()
+                        prefs.appendLog("security", "Politique d’accès mise à jour à distance par ${grant.name}.")
+                        pushScreenTimeAndResult(channelId, reqId, "remote_policy")
+                    }
+                }
+
                 "SDP_ANSWER" -> {
                     val sessionId = msg.optString("sessionId", "")
                     val sdp = msg.optString("sdp", "")
@@ -1962,6 +2253,14 @@ class CameraForegroundService : Service() {
                 put("blockSettingsAndStore", prefs.blockSettingsAndStore)
                 put("pendingRequestsCount", prefs.getPendingTimeRequests().size)
                 put("securityAlertsCount", prefs.getSecurityEvents().size)
+                put("allowGallery", prefs.globalAllowGallery && GalleryHelper.hasGalleryPermission(applicationContext))
+                put("hasGalleryPermission", GalleryHelper.hasGalleryPermission(applicationContext))
+                put("aiBlurFaces", prefs.aiBlurFaces)
+                put("aiBlurNsfw", prefs.aiBlurNsfw)
+                put("aiNsfwStrict", prefs.aiNsfwStrict)
+                put("aiShieldRunning", aiScreenShield?.isActive == true)
+                put("aiShieldNeedsConsent", (prefs.aiBlurFaces || prefs.aiBlurNsfw) && aiScreenShield?.isActive != true)
+                put("parentManaged", prefs.parentManaged)
                 put("gpsTrackerState", gpsTrackerState)
                 put("gpsTrackingMode", prefs.gpsTrackingMode)
                 put("gpsPointsCount", gpsPointsCount)
@@ -2177,6 +2476,56 @@ class CameraForegroundService : Service() {
         notifyStateListeners()
     }
 
+    private fun startParentPairingInternal(rawTempCode: String) {
+        val code = CryptoProtocol.normalizePairingCode(rawTempCode)
+        if (code.length != 6) return
+        pendingPairJob?.cancel()
+        pendingPairCode = code
+        pairStatus = "pairing"
+        notifyStateListeners()
+
+        pendingPairJob = serviceScope.launch(Dispatchers.IO) {
+            try {
+                val specs = buildAllChannelSpecs()
+                val engine = signalingEngine
+                if (engine != null) {
+                    engine.syncChannels(specs)
+                } else {
+                    ensureSignalingRunning(forceRebuild = false)
+                }
+
+                // Wait briefly for broker subscribe, then announce PAIR_HELLO every 1.2s for 40s
+                delay(700L)
+                var attempts = 0
+                while (isActive && pendingPairCode == code && attempts < 34) {
+                    signalingEngine?.send(
+                        channelId = PAIRING_CHANNEL_ID,
+                        payload = JSONObject().apply {
+                            put("type", "PAIR_HELLO")
+                            put("deviceId", prefs.deviceId)
+                            put("deviceName", prefs.deviceName)
+                            put("ts", System.currentTimeMillis())
+                        },
+                        mode = "boot"
+                    )
+                    attempts++
+                    delay(1_200L)
+                }
+                if (pendingPairCode == code) {
+                    pendingPairCode = null
+                    pairStatus = "timeout"
+                    syncChannelsHot()
+                }
+            } catch (_: Throwable) {
+                if (pendingPairCode == code) {
+                    pendingPairCode = null
+                    pairStatus = "error"
+                    notifyStateListeners()
+                }
+            }
+        }
+    }
+
     private fun readBatteryInfo(): Pair<Int, Boolean> {
         return try {
             val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -2210,6 +2559,8 @@ class CameraForegroundService : Service() {
 
     companion object {
         private const val OWNER_CHANNEL_ID = "owner"
+        private const val FAMILY_CHANNEL_ID = "__family__"
+        private const val PAIRING_CHANNEL_ID = "__pairing__"
         private const val CHANNEL_ID = "sentinelcam_portal_channel"
         private const val NOTIFICATION_ID = 4401
 
@@ -2255,6 +2606,14 @@ class CameraForegroundService : Service() {
 
         @Volatile
         var intercomActive: Boolean = false
+            private set
+
+        @Volatile
+        var aiShieldActive: Boolean = false
+            private set
+
+        @Volatile
+        var pairStatus: String = "idle"
             private set
 
         @Volatile
@@ -2393,6 +2752,27 @@ class CameraForegroundService : Service() {
                 if (canStartBg) {
                     val intent = Intent(appCtx, CameraForegroundService::class.java)
                     ContextCompat.startForegroundService(appCtx, intent)
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
+        fun pairWithParentCode(context: Context, tempCode: String) {
+            try {
+                val appCtx = context.applicationContext
+                if (!isRunning) {
+                    val p = PortalPreferences(appCtx)
+                    p.userManuallyStopped = false
+                    p.onboardingCompleted = true
+                    startFromUi(appCtx)
+                }
+                val running = instance
+                if (running != null) {
+                    running.startParentPairingInternal(tempCode)
+                } else {
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        instance?.startParentPairingInternal(tempCode)
+                    }, 900L)
                 }
             } catch (_: Throwable) {
             }

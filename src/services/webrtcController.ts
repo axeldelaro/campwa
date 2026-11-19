@@ -20,12 +20,15 @@ import type {
   DataContactsMsg,
   DataControlResultMsg,
   DataDeviceInfoMsg,
+  DataGalleryMsg,
+  DataGalleryPhotoMsg,
   DataLocationHistoryMsg,
   DataLocationMsg,
   DataScreenTimeMsg,
   DataSmsResultMsg,
   DerivedBootstrapKeys,
   DeviceTelemetry,
+  GpsTrackingMode,
   GpsTrackPoint,
   HelloAckMsg,
   IceCandidateMsg,
@@ -69,6 +72,8 @@ export interface ControllerCallbacks {
   onSmsResult?: (data: DataSmsResultMsg) => void;
   onScreenTimeData?: (data: DataScreenTimeMsg) => void;
   onControlResult?: (data: DataControlResultMsg) => void;
+  onGalleryData?: (data: DataGalleryMsg) => void;
+  onGalleryPhotoData?: (info: { mediaId: string; base64?: string; error?: string }) => void;
   onStreamError?: (message: string) => void;
   onTalkieStateChange?: (active: boolean) => void;
   onTalkieLevel?: (level: number) => void;
@@ -120,6 +125,11 @@ export class SentinelWebRtcController {
       trackingMode: LocationHistoryBundle['trackingMode'];
       error?: string;
     }
+  >();
+
+  private photoReassembly = new Map<
+    string,
+    { mediaId: string; totalChunks: number; chunks: Map<number, string> }
   >();
 
   private statsTimer: number | null = null;
@@ -752,6 +762,73 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async requestGallery(page = 0, album = '', pageSize = 18): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_GALLERY',
+        requestId: randomHex(8),
+        page,
+        pageSize,
+        album,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async requestGalleryPhoto(mediaId: string): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_GALLERY_PHOTO',
+        requestId: randomHex(8),
+        mediaId,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async setRemoteAiShield(opts: {
+    blurFaces?: boolean;
+    blurNsfw?: boolean;
+    nsfwStrict?: boolean;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SET_AI_SHIELD',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
+  public async setRemotePolicy(opts: {
+    allowLocation?: boolean;
+    allowLocationHistory?: boolean;
+    gpsTrackingMode?: GpsTrackingMode;
+    allowContacts?: boolean;
+    allowSmsRelay?: boolean;
+    allowGallery?: boolean;
+    allowIntercom?: boolean;
+    allowDeviceInfo?: boolean;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SET_REMOTE_POLICY',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -806,8 +883,45 @@ export class SentinelWebRtcController {
         this.callbacks.onControlResult?.(msg);
         break;
 
+      case 'DATA_GALLERY':
+        this.callbacks.onGalleryData?.(msg);
+        break;
+
+      case 'DATA_GALLERY_PHOTO':
+        this.handleGalleryPhotoChunk(msg);
+        break;
+
       default:
         break;
+    }
+  }
+
+  private handleGalleryPhotoChunk(msg: DataGalleryPhotoMsg): void {
+    if (msg.error) {
+      this.callbacks.onGalleryPhotoData?.({ mediaId: msg.mediaId, error: msg.error });
+      return;
+    }
+    if (msg.totalChunks <= 1) {
+      this.callbacks.onGalleryPhotoData?.({ mediaId: msg.mediaId, base64: msg.data });
+      return;
+    }
+    let bucket = this.photoReassembly.get(msg.requestId);
+    if (!bucket) {
+      bucket = {
+        mediaId: msg.mediaId,
+        totalChunks: msg.totalChunks,
+        chunks: new Map<number, string>(),
+      };
+      this.photoReassembly.set(msg.requestId, bucket);
+    }
+    bucket.chunks.set(msg.chunkIndex, msg.data);
+    if (bucket.chunks.size >= bucket.totalChunks) {
+      this.photoReassembly.delete(msg.requestId);
+      let full = '';
+      for (let i = 0; i < bucket.totalChunks; i++) {
+        full += bucket.chunks.get(i) || '';
+      }
+      this.callbacks.onGalleryPhotoData?.({ mediaId: bucket.mediaId, base64: full });
     }
   }
 
@@ -925,6 +1039,14 @@ export class SentinelWebRtcController {
       blockSettingsAndStore: msg.blockSettingsAndStore,
       pendingRequestsCount: msg.pendingRequestsCount,
       securityAlertsCount: msg.securityAlertsCount,
+      allowGallery: msg.allowGallery,
+      hasGalleryPermission: msg.hasGalleryPermission,
+      aiBlurFaces: msg.aiBlurFaces,
+      aiBlurNsfw: msg.aiBlurNsfw,
+      aiNsfwStrict: msg.aiNsfwStrict,
+      aiShieldRunning: msg.aiShieldRunning,
+      aiShieldNeedsConsent: msg.aiShieldNeedsConsent,
+      parentManaged: msg.parentManaged,
       pfsEnabled: Boolean(ecdhSharedSecret) || Boolean(msg.pfsEnabled),
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,
@@ -996,6 +1118,14 @@ export class SentinelWebRtcController {
       blockSettingsAndStore: msg.blockSettingsAndStore,
       pendingRequestsCount: msg.pendingRequestsCount,
       securityAlertsCount: msg.securityAlertsCount,
+      allowGallery: msg.allowGallery,
+      hasGalleryPermission: msg.hasGalleryPermission,
+      aiBlurFaces: msg.aiBlurFaces,
+      aiBlurNsfw: msg.aiBlurNsfw,
+      aiNsfwStrict: msg.aiNsfwStrict,
+      aiShieldRunning: msg.aiShieldRunning,
+      aiShieldNeedsConsent: msg.aiShieldNeedsConsent,
+      parentManaged: msg.parentManaged,
       pfsEnabled: msg.pfsEnabled,
       gpsTrackerState: msg.gpsTrackerState,
       gpsTrackingMode: msg.gpsTrackingMode,

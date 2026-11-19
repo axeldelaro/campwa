@@ -94,6 +94,14 @@ jobs:
           echo "KEY_ALIAS=${SECRET_KEY_ALIAS:-sentinelcam}" >> "$GITHUB_ENV"
           echo "KEY_PASSWORD=${SECRET_KEY_PASS:-sentinelcam2026}" >> "$GITHUB_ENV"
 
+      - name: Ensure Bundled NudeNet v3 ONNX Model
+        run: |
+          if [ ! -f "android/app/src/main/assets/nudenet_320n.onnx" ]; then
+            mkdir -p android/app/src/main/assets
+            curl -fsSL "https://raw.githubusercontent.com/notAI-tech/NudeNet/v3/nudenet/320n.onnx" -o android/app/src/main/assets/nudenet_320n.onnx
+          fi
+          ls -lh android/app/src/main/assets/nudenet_320n.onnx
+
       - name: Compile Signed Release APK with Gradle
         working-directory: ./android
         run: |
@@ -122,16 +130,16 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v14.0.${{ github.run_number }}
-          name: "SentinelCam v14.0.${{ github.run_number }} (Refonte Contrôle Parental Principal • Navigation Épurée Web & Android)"
+          tag_name: v15.0.${{ github.run_number }}
+          name: "SentinelCam v15.0.${{ github.run_number }} (Filtre IA Visages & NSFW Local • Galerie Publique • Espace Parent Sans Perte)"
           body: |
-            ### SentinelCam v14.0 (`v14.0.${{ github.run_number }}`)
+            ### SentinelCam v15.0 (`v15.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Contrôle parental en écran principal** : la connexion sur le site ouvre directement le **Tableau de bord parental** (temps d’écran du jour + graphique 7 jours + application ouverte + demandes *« +15 min »* + 4 actions rapides + limites par application), sans allumer la caméra inutilement.
-            - **Navigation plate en 4 onglets clairs (sans sous-menus empilés)** : **Accueil**, **Règles** (Couvre-feu, Mode École, Paramètres/Play Store, Code administrateur, Mode Perdu, Journal), **Position** (carte GPS + trajets + Zones de sécurité réunies au même endroit + infos appareil) et **Direct** (Caméra, Écran, Talkie, Contacts & SMS).
-            - **Application Android unifiée & sobre** : palette sombre homogène sans surcharge, écran **Statut** centré sur la protection et la checklist de configuration, onglet **Réglages** épuré et onglet **Accès** regroupant Parents & Pass temporaires.
+            - **Filtre IA local temps réel (Visages & NSFW)** : embarque **Google ML Kit Face Contour** (contours organiques 36 points en ~8 ms) + **NudeNet v3 YOLOv8n (`320n.onnx`)** via ONNX Runtime ARM64 (100 % local, gratuit et hors-ligne), avec floutage organique fluide à 60 FPS (sans blocs carrés) et suivi de défilement anti-clignotement.
+            - **Galerie photos à distance (hors dossiers masqués)** : parcourir les albums publics avec miniatures rapides et aperçu HD chiffré, en excluant strictement les dossiers masqués, `.nomedia`, coffres privés et corbeilles.
+            - **Espace Parent sans serveur & sans perte (Clé Famille)** : le Parent génère un code d’association sur le site Web, l’application Android s’y lie et devient gérée à distance par le Parent (qui règle toutes les politiques depuis le site). Une **Clé Famille** (12 car.) permet de retrouver tous ses appareils associés depuis n’importe quel nouveau navigateur sans aucun serveur.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

@@ -1,9 +1,35 @@
-import { randomHex } from '../crypto/cryptoEngine';
+import { generateFamilyKey, normalizeFamilyKey, randomHex } from '../crypto/cryptoEngine';
 import type { PairedDeviceRecord, TurnServerSetting } from '../types/sentinel';
 
 const VAULT_PAIRED_KEY = 'sentinelcam.vault.paired.v1';
 const VAULT_TOKEN_ID_KEY = 'sentinelcam.vault.token_id.v1';
 const VAULT_TURN_KEY = 'sentinelcam.vault.turn.v1';
+const VAULT_FAMILY_KEY = 'sentinelcam.vault.family_key.v15';
+
+export function getOrCreateFamilyKey(): string {
+  try {
+    const existing = normalizeFamilyKey(localStorage.getItem(VAULT_FAMILY_KEY) || '');
+    if (existing.length === 12) return existing;
+    const created = generateFamilyKey();
+    localStorage.setItem(VAULT_FAMILY_KEY, created);
+    return created;
+  } catch {
+    return generateFamilyKey();
+  }
+}
+
+export function setFamilyKey(rawKey: string): string {
+  const clean = normalizeFamilyKey(rawKey);
+  if (clean.length !== 12) {
+    throw new Error('La Clé Famille doit contenir 12 caractères.');
+  }
+  try {
+    localStorage.setItem(VAULT_FAMILY_KEY, clean);
+  } catch {
+    // Ignore
+  }
+  return clean;
+}
 
 export function getOrCreateControllerTokenId(): string {
   try {

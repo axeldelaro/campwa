@@ -27,6 +27,7 @@ export interface GlobalShareSettings {
   allowIntercom: boolean;
   allowSmsRelay?: boolean;
   allowDeviceControl?: boolean;
+  allowGallery?: boolean;
   screenShareReady: boolean;
 }
 
@@ -215,6 +216,14 @@ export interface DeviceTelemetry {
   blockSettingsAndStore?: boolean;
   pendingRequestsCount?: number;
   securityAlertsCount?: number;
+  allowGallery?: boolean;
+  hasGalleryPermission?: boolean;
+  aiBlurFaces?: boolean;
+  aiBlurNsfw?: boolean;
+  aiNsfwStrict?: boolean;
+  aiShieldRunning?: boolean;
+  aiShieldNeedsConsent?: boolean;
+  parentManaged?: boolean;
   pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
@@ -314,6 +323,14 @@ export interface HelloAckMsg {
   blockSettingsAndStore?: boolean;
   pendingRequestsCount?: number;
   securityAlertsCount?: number;
+  allowGallery?: boolean;
+  hasGalleryPermission?: boolean;
+  aiBlurFaces?: boolean;
+  aiBlurNsfw?: boolean;
+  aiNsfwStrict?: boolean;
+  aiShieldRunning?: boolean;
+  aiShieldNeedsConsent?: boolean;
+  parentManaged?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
   gpsPointsCount?: number;
@@ -371,6 +388,14 @@ export interface PortalStatusMsg {
   blockSettingsAndStore?: boolean;
   pendingRequestsCount?: number;
   securityAlertsCount?: number;
+  allowGallery?: boolean;
+  hasGalleryPermission?: boolean;
+  aiBlurFaces?: boolean;
+  aiBlurNsfw?: boolean;
+  aiNsfwStrict?: boolean;
+  aiShieldRunning?: boolean;
+  aiShieldNeedsConsent?: boolean;
+  parentManaged?: boolean;
   pfsEnabled?: boolean;
   gpsTrackerState?: GpsTrackerState;
   gpsTrackingMode?: GpsTrackingMode;
@@ -642,9 +667,127 @@ export interface DataControlResultMsg {
     | 'lost_mode'
     | 'time_request'
     | 'geofence'
-    | 'clear_events';
+    | 'clear_events'
+    | 'ai_shield'
+    | 'remote_policy';
   success: boolean;
   error?: string;
+  ts: number;
+}
+
+export interface GalleryPhotoItem {
+  id: string;
+  name: string;
+  album: string;
+  dateTaken: number;
+  width: number;
+  height: number;
+  thumbBase64: string;
+}
+
+export interface GalleryAlbumItem {
+  name: string;
+  count: number;
+}
+
+export interface CmdGetGalleryMsg {
+  type: 'CMD_GET_GALLERY';
+  requestId: string;
+  page: number;
+  pageSize?: number;
+  album?: string;
+  ts: number;
+}
+
+export interface DataGalleryMsg {
+  type: 'DATA_GALLERY';
+  requestId: string;
+  items: GalleryPhotoItem[];
+  albums: GalleryAlbumItem[];
+  page: number;
+  totalCount: number;
+  hasMore: boolean;
+  error?: string;
+  ts: number;
+}
+
+export interface CmdGetGalleryPhotoMsg {
+  type: 'CMD_GET_GALLERY_PHOTO';
+  requestId: string;
+  mediaId: string;
+  ts: number;
+}
+
+export interface DataGalleryPhotoMsg {
+  type: 'DATA_GALLERY_PHOTO';
+  requestId: string;
+  mediaId: string;
+  chunkIndex: number;
+  totalChunks: number;
+  data: string;
+  error?: string;
+  ts: number;
+}
+
+export interface CmdSetAiShieldMsg {
+  type: 'CMD_SET_AI_SHIELD';
+  requestId: string;
+  blurFaces?: boolean;
+  blurNsfw?: boolean;
+  nsfwStrict?: boolean;
+  ts: number;
+}
+
+export interface CmdSetRemotePolicyMsg {
+  type: 'CMD_SET_REMOTE_POLICY';
+  requestId: string;
+  allowLocation?: boolean;
+  allowLocationHistory?: boolean;
+  gpsTrackingMode?: GpsTrackingMode;
+  allowContacts?: boolean;
+  allowSmsRelay?: boolean;
+  allowGallery?: boolean;
+  allowIntercom?: boolean;
+  allowDeviceInfo?: boolean;
+  ts: number;
+}
+
+export interface PairHelloMsg {
+  type: 'PAIR_HELLO';
+  deviceId: string;
+  deviceName: string;
+  ts: number;
+}
+
+export interface PairBindMsg {
+  type: 'PAIR_BIND';
+  familyKey: string;
+  deviceCode: string;
+  adminPin?: string;
+  ts: number;
+}
+
+export interface PairConfirmedMsg {
+  type: 'PAIR_CONFIRMED';
+  deviceId: string;
+  deviceName: string;
+  deviceCode: string;
+  ts: number;
+}
+
+export interface FamilyDiscoverMsg {
+  type: 'FAMILY_DISCOVER';
+  ts: number;
+}
+
+export interface FamilyAnnounceMsg {
+  type: 'FAMILY_ANNOUNCE';
+  deviceId: string;
+  deviceName: string;
+  deviceCode: string;
+  batteryLevel: number;
+  isCharging: boolean;
+  portalState: string;
   ts: number;
 }
 
@@ -843,6 +986,17 @@ export type SignalMessage =
   | CmdRespondTimeRequestMsg
   | CmdSaveGeofenceMsg
   | CmdClearSecurityEventsMsg
+  | CmdGetGalleryMsg
+  | DataGalleryMsg
+  | CmdGetGalleryPhotoMsg
+  | DataGalleryPhotoMsg
+  | CmdSetAiShieldMsg
+  | CmdSetRemotePolicyMsg
+  | PairHelloMsg
+  | PairBindMsg
+  | PairConfirmedMsg
+  | FamilyDiscoverMsg
+  | FamilyAnnounceMsg
   | DataScreenTimeMsg
   | DataControlResultMsg
   | SdpOfferMsg
@@ -861,6 +1015,7 @@ export interface NativePermissionStatus {
   location: boolean;
   backgroundLocation?: boolean;
   sms?: boolean;
+  gallery?: boolean;
   usageAccess?: boolean;
   overlay?: boolean;
   screenShareReady: boolean;
@@ -907,6 +1062,12 @@ export interface NativePortalState {
   blockSettingsAndStore?: boolean;
   schoolModeUntilMs?: number;
   securityAlertsCount?: number;
+  aiBlurFaces?: boolean;
+  aiBlurNsfw?: boolean;
+  aiNsfwStrict?: boolean;
+  aiShieldRunning?: boolean;
+  parentManaged?: boolean;
+  pairStatus?: 'idle' | 'pairing' | 'paired' | 'timeout' | 'error';
   autoStartOnBoot: boolean;
   failedAttempts: number;
   lockoutRemainingMs: number;

@@ -23,6 +23,73 @@ export function normalizePairingCode(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6);
 }
 
+export function normalizeFamilyKey(raw: string): string {
+  return raw.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 12);
+}
+
+export function formatFamilyKey(raw: string): string {
+  const c = normalizeFamilyKey(raw);
+  if (c.length <= 4) return c;
+  if (c.length <= 8) return `${c.slice(0, 4)}-${c.slice(4)}`;
+  return `${c.slice(0, 4)}-${c.slice(4, 8)}-${c.slice(8, 12)}`;
+}
+
+export function generateFamilyKey(): string {
+  const randomBytes = new Uint8Array(12);
+  crypto.getRandomValues(randomBytes);
+  let out = '';
+  for (let i = 0; i < 12; i++) {
+    out += PAIRING_ALPHABET[randomBytes[i] % PAIRING_ALPHABET.length];
+  }
+  return out;
+}
+
+export async function deriveFamilyDiscoveryKeys(rawFamilyKey: string): Promise<DerivedBootstrapKeys> {
+  const normalizedCode = normalizeFamilyKey(rawFamilyKey);
+  if (normalizedCode.length !== 12) {
+    throw new Error('La Clé Famille doit comporter 12 caractères.');
+  }
+  const cacheKey = `fam:${normalizedCode}`;
+  const cached = bootstrapCache.get(cacheKey);
+  if (cached) return cached;
+
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(normalizedCode),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: encoder.encode('sentinelcam-family-v15-salt'),
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256',
+    },
+    baseKey,
+    512
+  );
+
+  const master = new Uint8Array(bits);
+  const topicId = bytesToHex(master.slice(0, 16));
+  const bootstrapEncRaw = master.slice(16, 48);
+  const bootstrapAuthRaw = master.slice(48, 64);
+  const bootstrapEncKey = await importAesGcmKey(bootstrapEncRaw);
+
+  const result: DerivedBootstrapKeys = {
+    normalizedCode,
+    topicId,
+    wakePushTopic: `sc_fam_${topicId.slice(0, 20)}`,
+    bootstrapEncKey,
+    bootstrapEncRaw,
+    bootstrapAuthRaw,
+  };
+  bootstrapCache.set(cacheKey, result);
+  return result;
+}
+
 export function generateSecurePairingCode(): string {
   const randomBytes = new Uint8Array(6);
   crypto.getRandomValues(randomBytes);

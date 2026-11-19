@@ -19,6 +19,8 @@ import {
   FlipHorizontal,
   Gauge,
   HardDrive,
+  Image as ImageIcon,
+  KeyRound,
   LayoutDashboard,
   Lock,
   Mail,
@@ -30,6 +32,7 @@ import {
   Monitor,
   Navigation,
   Phone,
+  Plus,
   Power,
   RefreshCw,
   Route,
@@ -49,8 +52,14 @@ import {
   Zap,
   ZoomIn,
 } from 'lucide-react';
-import { normalizePairingCode } from '../crypto/cryptoEngine';
-import { listPairedDevices, removePairedDevice } from '../services/deviceVault';
+import { formatFamilyKey, normalizeFamilyKey, normalizePairingCode } from '../crypto/cryptoEngine';
+import {
+  getOrCreateFamilyKey,
+  listPairedDevices,
+  removePairedDevice,
+  setFamilyKey,
+} from '../services/deviceVault';
+import { discoverFamilyDevices, ParentPairingSession } from '../services/parentPairingService';
 import type { BrokerHealth } from '../services/signalingService';
 import { SentinelWebRtcController } from '../services/webrtcController';
 import type {
@@ -60,6 +69,8 @@ import type {
   CameraFacingMode,
   DataScreenTimeMsg,
   DeviceTelemetry,
+  GalleryAlbumItem,
+  GalleryPhotoItem,
   GpsTrackPoint,
   LocationHistoryBundle,
   MediaSourceMode,
@@ -73,6 +84,7 @@ import type {
   StreamRealtimeStats,
 } from '../types/sentinel';
 import { GeofenceZonesCard, ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
+import { GalleryTab } from './GalleryTab';
 import { GpsTrailMap } from './GpsTrailMap';
 import { SecuritySasModal } from './SecuritySasModal';
 
@@ -116,7 +128,35 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [accessGrant, setAccessGrant] = useState<ActiveAccessGrant | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [viewerTab, setViewerTab] = useState<ViewerTab>('home');
-  const [liveSubTab, setLiveSubTab] = useState<'media' | 'contacts'>('media');
+  const [liveSubTab, setLiveSubTab] = useState<'media' | 'gallery' | 'contacts'>('media');
+
+  // Zero-Loss Parent Family Space & Parent-Initiated Pairing state
+  const [familyKey, setFamilyKeyState] = useState<string>(() => getOrCreateFamilyKey());
+  const [pairingActiveCode, setPairingActiveCode] = useState<string | null>(null);
+  const [pairingAdminPin, setPairingAdminPin] = useState('');
+  const [pairingStatus, setPairingStatus] = useState<string | null>(null);
+  const [familyDrawerOpen, setFamilyDrawerOpen] = useState(false);
+  const [restoreKeyInput, setRestoreKeyInput] = useState('');
+  const [restoringFamily, setRestoringFamily] = useState(false);
+  const [restoreFeedback, setRestoreFeedback] = useState<string | null>(null);
+  const [directCodeOpen, setDirectCodeOpen] = useState(false);
+  const pairingSessionRef = useRef<ParentPairingSession | null>(null);
+
+  // Remote Photo Gallery (excluding hidden folders)
+  const [galleryItems, setGalleryItems] = useState<GalleryPhotoItem[]>([]);
+  const [galleryAlbums, setGalleryAlbums] = useState<GalleryAlbumItem[]>([]);
+  const [galleryAlbum, setGalleryAlbum] = useState('');
+  const [galleryPage, setGalleryPage] = useState(0);
+  const [galleryTotal, setGalleryTotal] = useState(0);
+  const [galleryHasMore, setGalleryHasMore] = useState(false);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryError, setGalleryError] = useState<string | null>(null);
+  const [lightboxPhoto, setLightboxPhoto] = useState<{
+    item: GalleryPhotoItem;
+    base64?: string;
+    loading: boolean;
+    error?: string;
+  } | null>(null);
 
   // Shared remote data (Contacts, GPS, Device Info)
   const [contacts, setContacts] = useState<SharedContactItem[]>([]);
@@ -340,11 +380,37 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             time_request: 'Réponse envoyée à l’appareil.',
             geofence: 'Zone GPS mise à jour.',
             clear_events: 'Journal de sécurité effacé.',
+            ai_shield: res.error || 'Filtre IA mis à jour.',
+            remote_policy: 'Politique de l’appareil mise à jour.',
           };
           setControlFeedback({ ok: true, text: labels[res.action] || 'Règle mise à jour.' });
         } else {
           setControlFeedback({ ok: false, text: res.error || 'Action refusée.' });
         }
+      },
+      onGalleryData: (data) => {
+        setGalleryLoading(false);
+        if (data.error) {
+          setGalleryError(data.error);
+        } else {
+          setGalleryError(null);
+          setGalleryAlbums(data.albums || []);
+          setGalleryTotal(data.totalCount ?? 0);
+          setGalleryHasMore(Boolean(data.hasMore));
+          setGalleryPage(data.page ?? 0);
+          setGalleryItems((prev) => (data.page > 0 ? [...prev, ...(data.items || [])] : data.items || []));
+        }
+      },
+      onGalleryPhotoData: (info) => {
+        setLightboxPhoto((prev) => {
+          if (!prev || prev.item.id !== info.mediaId) return prev;
+          return {
+            ...prev,
+            loading: false,
+            base64: info.base64,
+            error: info.error,
+          };
+        });
       },
       onStreamError: (msg) => {
         setStreamNotice(msg);
@@ -360,6 +426,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
     controllerRef.current = ctrl;
     return () => {
+      pairingSessionRef.current?.stop();
       ctrl.disconnect();
     };
   }, [onBrokerHealthChange]);
@@ -594,6 +661,81 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setLiveSubTab('contacts');
     if (contacts.length === 0 && !contactsLoading && canViewContacts) {
       void handleFetchContacts('');
+    }
+  };
+
+  const handleFetchGallery = async (page = 0, album = galleryAlbum) => {
+    setGalleryAlbum(album);
+    setGalleryLoading(true);
+    setGalleryError(null);
+    await controllerRef.current?.requestGallery(page, album, 18);
+    window.setTimeout(() => setGalleryLoading(false), 12000);
+  };
+
+  const handleOpenGallerySubTab = () => {
+    setViewerTab('live');
+    setLiveSubTab('gallery');
+    if (galleryItems.length === 0 && !galleryLoading) {
+      void handleFetchGallery(0, '');
+    }
+  };
+
+  const handleSelectGalleryPhoto = async (item: GalleryPhotoItem) => {
+    setLightboxPhoto({ item, loading: true });
+    await controllerRef.current?.requestGalleryPhoto(item.id);
+  };
+
+  const handleStartParentPairing = async () => {
+    pairingSessionRef.current?.stop();
+    const session = new ParentPairingSession({
+      familyKey,
+      adminPin: pairingAdminPin.trim(),
+      onStatus: (msg) => setPairingStatus(msg),
+      onPaired: (info) => {
+        setPairingActiveCode(null);
+        setPairingStatus(null);
+        setPairingAdminPin('');
+        setSavedDevices(listPairedDevices());
+        void handleConnect(info.deviceCode);
+      },
+    });
+    pairingSessionRef.current = session;
+    setPairingActiveCode(session.getCode());
+    setPairingStatus('Initialisation du canal sécurisé…');
+    await session.start();
+  };
+
+  const handleCancelParentPairing = () => {
+    pairingSessionRef.current?.stop();
+    pairingSessionRef.current = null;
+    setPairingActiveCode(null);
+    setPairingStatus(null);
+  };
+
+  const handleRestoreFamily = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = normalizeFamilyKey(restoreKeyInput);
+    if (clean.length !== 12) {
+      setRestoreFeedback('La Clé Famille doit contenir 12 caractères.');
+      return;
+    }
+    setFamilyKey(clean);
+    setFamilyKeyState(clean);
+    setRestoringFamily(true);
+    setRestoreFeedback('Recherche des appareils associés…');
+    try {
+      const found = await discoverFamilyDevices(clean, () => {
+        setSavedDevices(listPairedDevices());
+      });
+      setSavedDevices(listPairedDevices());
+      setRestoreFeedback(
+        found.length > 0
+          ? `${found.length} appareil${found.length > 1 ? 's' : ''} retrouvé${found.length > 1 ? 's' : ''} !`
+          : 'Clé Famille enregistrée. Aucun appareil en ligne pour le moment (réessayez quand le téléphone est connecté).'
+      );
+      setRestoreKeyInput('');
+    } finally {
+      setRestoringFamily(false);
     }
   };
 
@@ -903,89 +1045,144 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     ? `https://wa.me/${cleanWaDigits}?text=${encodeURIComponent(composedPreviewText)}`
     : `https://wa.me/?text=${encodeURIComponent(composedPreviewText)}`;
 
-  /* ==================== SCREEN 1: CLEAN 6-CHAR CODE ENTRY ==================== */
+  /* ==================== SCREEN 1: PARENT FAMILY SPACE (ZERO-LOSS PAIRING) ==================== */
   if (!isSessionOpen) {
     return (
       <div className="mx-auto flex min-h-[76vh] max-w-md flex-col justify-center px-4 py-10">
-        <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-6 sm:p-7">
-          <h1 className="text-center text-xl font-semibold tracking-tight text-white">
-            Contrôle parental
-          </h1>
-          <p className="mt-1 text-center text-xs text-zinc-400">
-            Saisissez le code à 6 caractères de l’appareil
-          </p>
-
-          <div className="mt-6 grid grid-cols-6 gap-2" onPaste={handlePaste}>
-            {codeChars.map((ch, idx) => (
-              <input
-                key={idx}
-                ref={(el) => {
-                  inputRefs.current[idx] = el;
-                }}
-                type="text"
-                inputMode="text"
-                autoComplete="off"
-                autoCapitalize="characters"
-                maxLength={6}
-                value={ch}
-                onChange={(e) => handleCharChange(idx, e.target.value)}
-                onKeyDown={(e) => handleKeyDown(idx, e)}
-                className="h-14 w-full rounded-xl border border-white/10 bg-zinc-950 text-center font-mono text-xl font-semibold uppercase text-white transition focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                placeholder="·"
-              />
-            ))}
+        <div className="space-y-4 rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-6 sm:p-7">
+          <div className="text-center">
+            <h1 className="text-xl font-semibold tracking-tight text-white">Espace Parent</h1>
+            <p className="mt-1 text-xs text-zinc-400">
+              Associez un smartphone et pilotez-le à distance sans serveur
+            </p>
           </div>
 
-          <button
-            type="button"
-            disabled={fullCode.length !== 6}
-            onClick={() => void handleConnect(fullCode)}
-            className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-35"
-          >
-            {portalState === 'connecting' ? (
-              <>
-                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                <span>Connexion…</span>
-              </>
-            ) : (
-              <span>Se connecter</span>
-            )}
-          </button>
+          {/* Saved / Paired Devices (1-Click Open) */}
+          {savedDevices.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-medium text-zinc-500">Appareils associés</div>
+              {savedDevices.map((dev) => (
+                <div
+                  key={dev.pairingCode}
+                  onClick={() => void handleConnect(dev.pairingCode)}
+                  className="flex cursor-pointer items-center justify-between rounded-xl border border-white/[0.07] bg-zinc-950/80 px-3.5 py-3 transition hover:border-white/20"
+                >
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <Smartphone className="h-4 w-4 shrink-0 text-emerald-400" />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-xs font-semibold text-white">
+                          {dev.deviceName}
+                        </span>
+                        <span className="font-mono text-[11px] text-zinc-500">
+                          {dev.pairingCode}
+                        </span>
+                      </div>
+                      {dev.accessRole && dev.accessRole !== 'owner' && (
+                        <div className="text-[10px] text-zinc-500">{dev.accessName}</div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] font-medium text-zinc-300">Ouvrir →</span>
+                    <button
+                      type="button"
+                      onClick={(e) => handleForgetDevice(dev.pairingCode, e)}
+                      className="rounded-lg p-1 text-zinc-600 transition hover:text-rose-400"
+                      title="Retirer de la liste"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
-          {fullCode.length === 6 && (
-            <div className="mt-2.5 space-y-2">
+          {/* Parent-Generated Pairing Wizard */}
+          {pairingActiveCode ? (
+            <div className="rounded-xl border border-emerald-500/35 bg-zinc-950 p-4 text-center">
+              <div className="text-[11px] font-medium text-zinc-400">
+                Saisissez ce code dans l’application du smartphone
+              </div>
+              <div className="mt-3 flex justify-center gap-1.5">
+                {pairingActiveCode.split('').map((ch, i) => (
+                  <span
+                    key={i}
+                    className="flex h-12 w-10 items-center justify-center rounded-lg border border-emerald-500/40 bg-zinc-900 font-mono text-xl font-semibold text-emerald-300"
+                  >
+                    {ch}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-3 flex items-center justify-center gap-1.5 text-xs text-zinc-400">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                <span>{pairingStatus || 'En attente du smartphone…'}</span>
+              </div>
               <button
                 type="button"
-                onClick={() => void handleSendPushInvite()}
-                className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.07]"
+                onClick={handleCancelParentPairing}
+                className="mt-3 text-xs text-zinc-500 hover:text-zinc-300"
               >
-                <BellRing className="h-3.5 w-3.5 text-zinc-400" />
-                <span>Réveiller l’appareil</span>
+                Annuler
               </button>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              <input
+                type="password"
+                maxLength={12}
+                value={pairingAdminPin}
+                onChange={(e) => setPairingAdminPin(e.target.value)}
+                placeholder="Code administrateur à définir sur l’appareil (optionnel, 4–12 car.)"
+                className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => void handleStartParentPairing()}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Associer un nouvel appareil</span>
+              </button>
+            </div>
+          )}
 
-              {pushSentFeedback && (
-                <div className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300">
-                  <Check className="h-3.5 w-3.5" />
-                  <span>{pushSentFeedback}</span>
-                </div>
-              )}
+          {/* Connecting indicator */}
+          {portalState === 'connecting' && (
+            <div className="flex items-center justify-between rounded-xl border border-white/10 bg-zinc-950 px-3.5 py-2.5 text-xs text-zinc-300">
+              <span className="inline-flex items-center gap-2">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                Connexion à {fullCode}…
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleSendPushInvite()}
+                  className="text-emerald-300 hover:underline"
+                >
+                  Réveiller
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDisconnect}
+                  className="text-zinc-500 hover:text-white"
+                >
+                  Annuler
+                </button>
+              </div>
+            </div>
+          )}
 
-              {portalState === 'connecting' && (
-                <div className="text-center">
-                  <button
-                    type="button"
-                    onClick={handleDisconnect}
-                    className="text-xs text-zinc-500 hover:text-zinc-300"
-                  >
-                    Annuler
-                  </button>
-                </div>
-              )}
+          {pushSentFeedback && (
+            <div className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300">
+              <Check className="h-3.5 w-3.5" />
+              <span>{pushSentFeedback}</span>
             </div>
           )}
 
           {authError && (
-            <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
+            <div className="flex items-start gap-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
               <div>
                 <div className="font-medium">
@@ -1000,45 +1197,106 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             </div>
           )}
 
-          {savedDevices.length > 0 && (
-            <div className="mt-6 border-t border-white/[0.07] pt-4">
-              <div className="text-[11px] font-medium text-zinc-500">Appareils récents</div>
-              <div className="mt-2 space-y-1.5">
-                {savedDevices.map((dev) => (
-                  <div
-                    key={dev.pairingCode}
-                    onClick={() => void handleConnect(dev.pairingCode)}
-                    className="flex cursor-pointer items-center justify-between rounded-xl border border-white/[0.06] bg-zinc-950/70 px-3.5 py-2.5 transition hover:border-white/15"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <Smartphone className="h-4 w-4 shrink-0 text-zinc-500" />
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-xs font-medium text-white">
-                            {dev.deviceName}
-                          </span>
-                          <span className="font-mono text-[11px] text-zinc-400">
-                            {dev.pairingCode}
-                          </span>
-                        </div>
-                        {dev.accessRole && dev.accessRole !== 'owner' && (
-                          <div className="text-[10px] text-zinc-500">{dev.accessName}</div>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={(e) => handleForgetDevice(dev.pairingCode, e)}
-                      className="rounded-lg p-1 text-zinc-500 transition hover:text-rose-400"
-                      title="Supprimer"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
+          {/* Zero-Loss Family Key Backup & Multi-Device Restore */}
+          <div className="border-t border-white/[0.07] pt-3.5">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setFamilyDrawerOpen((v) => !v)}
+                className="inline-flex items-center gap-1.5 text-zinc-400 hover:text-white"
+              >
+                <KeyRound className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Clé Famille (récupération sans perte)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDirectCodeOpen((v) => !v)}
+                className="text-[11px] text-zinc-500 hover:text-zinc-300"
+              >
+                Code direct
+              </button>
             </div>
-          )}
+
+            {familyDrawerOpen && (
+              <div className="mt-3 space-y-3 rounded-xl border border-white/[0.07] bg-zinc-950 p-3.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[10px] text-zinc-500">Votre Clé Famille (à conserver)</div>
+                    <div className="mt-0.5 font-mono text-sm font-semibold tracking-wider text-emerald-300">
+                      {formatFamilyKey(familyKey)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopySmall(formatFamilyKey(familyKey), 'fam-key')}
+                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1 text-[11px] text-zinc-200 hover:border-white/25"
+                  >
+                    {copiedKey === 'fam-key' ? (
+                      <Check className="h-3 w-3 text-emerald-400" />
+                    ) : (
+                      <Copy className="h-3 w-3" />
+                    )}
+                    <span>{copiedKey === 'fam-key' ? 'Copiée' : 'Copier'}</span>
+                  </button>
+                </div>
+
+                <form onSubmit={(e) => void handleRestoreFamily(e)} className="flex gap-1.5 border-t border-white/[0.06] pt-2.5">
+                  <input
+                    type="text"
+                    value={restoreKeyInput}
+                    onChange={(e) => setRestoreKeyInput(e.target.value)}
+                    placeholder="Restaurer une Clé Famille (XXXX-XXXX-XXXX)"
+                    className="min-w-0 flex-1 rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1.5 font-mono text-[11px] uppercase text-white placeholder-zinc-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={restoringFamily || normalizeFamilyKey(restoreKeyInput).length !== 12}
+                    className="shrink-0 rounded-lg bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-950 disabled:opacity-35"
+                  >
+                    {restoringFamily ? '…' : 'Retrouver'}
+                  </button>
+                </form>
+
+                {restoreFeedback && (
+                  <div className="text-[11px] text-emerald-300">{restoreFeedback}</div>
+                )}
+              </div>
+            )}
+
+            {/* Direct 6-Char Code Fallback */}
+            {directCodeOpen && (
+              <div className="mt-3 space-y-2.5 rounded-xl border border-white/[0.07] bg-zinc-950 p-3.5">
+                <div className="grid grid-cols-6 gap-1.5" onPaste={handlePaste}>
+                  {codeChars.map((ch, idx) => (
+                    <input
+                      key={idx}
+                      ref={(el) => {
+                        inputRefs.current[idx] = el;
+                      }}
+                      type="text"
+                      inputMode="text"
+                      autoComplete="off"
+                      autoCapitalize="characters"
+                      maxLength={6}
+                      value={ch}
+                      onChange={(e) => handleCharChange(idx, e.target.value)}
+                      onKeyDown={(e) => handleKeyDown(idx, e)}
+                      className="h-11 w-full rounded-lg border border-white/10 bg-zinc-900 text-center font-mono text-base font-semibold uppercase text-white focus:border-emerald-400 focus:outline-none"
+                      placeholder="·"
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  disabled={fullCode.length !== 6}
+                  onClick={() => void handleConnect(fullCode)}
+                  className="w-full rounded-lg bg-white py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-35"
+                >
+                  Connexion directe
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -1394,13 +1652,21 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             await controllerRef.current?.clearRemoteSecurityEvents();
           }}
           onSetAdminPin={handleSetRemoteAdminPin}
+          onSetAiShield={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemoteAiShield(opts);
+          }}
+          onSetRemotePolicy={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.setRemotePolicy(opts);
+          }}
         />
       )}
 
-      {/* ==================== TAB 4: DIRECT (CAMERA / SCREEN / TALKIE & CONTACTS / SMS) ==================== */}
+      {/* ==================== TAB 4: DIRECT (CAMERA / SCREEN / GALLERY / CONTACTS & SMS) ==================== */}
       {viewerTab === 'live' && (
         <div className="space-y-4">
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={() => setLiveSubTab('media')}
@@ -1412,6 +1678,18 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             >
               <Video className="h-3.5 w-3.5" />
               <span>Caméra & Écran</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenGallerySubTab}
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+                liveSubTab === 'gallery'
+                  ? 'bg-white/[0.12] text-white'
+                  : 'text-zinc-400 hover:bg-white/[0.04] hover:text-white'
+              }`}
+            >
+              <ImageIcon className="h-3.5 w-3.5" />
+              <span>Galerie</span>
             </button>
             <button
               type="button"
@@ -1427,6 +1705,29 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             </button>
           </div>
         </div>
+      )}
+
+      {/* ==================== DIRECT SUB-VIEW: PHOTO GALLERY ==================== */}
+      {viewerTab === 'live' && liveSubTab === 'gallery' && (
+        <GalleryTab
+          items={galleryItems}
+          albums={galleryAlbums}
+          activeAlbum={galleryAlbum}
+          totalCount={galleryTotal}
+          hasMore={galleryHasMore}
+          loading={galleryLoading}
+          error={galleryError}
+          canViewGallery={Boolean(telemetry?.allowGallery)}
+          lightboxPhoto={lightboxPhoto}
+          onRefresh={async (alb) => {
+            await handleFetchGallery(0, alb !== undefined ? alb : galleryAlbum);
+          }}
+          onLoadMore={async () => {
+            await handleFetchGallery(galleryPage + 1, galleryAlbum);
+          }}
+          onSelectPhoto={handleSelectGalleryPhoto}
+          onCloseLightbox={() => setLightboxPhoto(null)}
+        />
       )}
 
       {/* ==================== DIRECT SUB-VIEW 1: CAMERA & SCREEN SHARE ==================== */}

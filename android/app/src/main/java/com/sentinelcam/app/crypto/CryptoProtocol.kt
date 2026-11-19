@@ -68,6 +68,38 @@ object CryptoProtocol {
         return raw.replace(Regex("[^a-zA-Z0-9]"), "").uppercase().take(6)
     }
 
+    fun normalizeFamilyKey(raw: String): String {
+        return raw.replace(Regex("[^a-zA-Z0-9]"), "").uppercase().take(12)
+    }
+
+    fun deriveFamilyDiscoveryKeys(rawFamilyKey: String): BootstrapKeys {
+        val normalized = normalizeFamilyKey(rawFamilyKey)
+        require(normalized.length == 12) { "Family key must be 12 chars" }
+        val cacheKey = "fam:$normalized"
+        keyCache[cacheKey]?.let { return it }
+
+        val spec = PBEKeySpec(
+            normalized.toCharArray(),
+            "sentinelcam-family-v15-salt".toByteArray(Charsets.UTF_8),
+            PBKDF2_ITERATIONS,
+            512
+        )
+        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        val master = factory.generateSecret(spec).encoded
+        spec.clearPassword()
+
+        val topicId = bytesToHex(master.copyOfRange(0, 16))
+        val derived = BootstrapKeys(
+            normalizedCode = normalized,
+            topicId = topicId,
+            wakePushTopic = "sc_fam_${topicId.take(20)}",
+            bootstrapEncKey = master.copyOfRange(16, 48),
+            bootstrapAuthKey = master.copyOfRange(48, 64)
+        )
+        keyCache[cacheKey] = derived
+        return derived
+    }
+
     fun generateSecurePairingCode(): String {
         val bytes = ByteArray(6)
         secureRandom.nextBytes(bytes)

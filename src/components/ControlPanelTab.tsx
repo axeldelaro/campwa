@@ -15,6 +15,8 @@ import {
   Search,
   ShieldAlert,
   ShieldCheck,
+  Sliders,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
@@ -22,6 +24,7 @@ import type {
   AppUsageEntry,
   DataScreenTimeMsg,
   DeviceTelemetry,
+  GpsTrackingMode,
   SharedLocationData,
 } from '../types/sentinel';
 
@@ -58,6 +61,17 @@ interface ParentalRulesTabProps extends ParentalCommonProps {
   }) => Promise<void>;
   onClearSecurityEvents: () => Promise<void>;
   onSetAdminPin: (pin: string) => Promise<void>;
+  onSetAiShield: (opts: { blurFaces?: boolean; blurNsfw?: boolean; nsfwStrict?: boolean }) => Promise<void>;
+  onSetRemotePolicy: (opts: {
+    allowLocation?: boolean;
+    allowLocationHistory?: boolean;
+    gpsTrackingMode?: GpsTrackingMode;
+    allowContacts?: boolean;
+    allowSmsRelay?: boolean;
+    allowGallery?: boolean;
+    allowIntercom?: boolean;
+    allowDeviceInfo?: boolean;
+  }) => Promise<void>;
 }
 
 interface GeofenceZonesCardProps {
@@ -625,6 +639,8 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
   onSetLostMode,
   onClearSecurityEvents,
   onSetAdminPin,
+  onSetAiShield,
+  onSetRemotePolicy,
 }) => {
   const [curfewEnabled, setCurfewEnabled] = useState(false);
   const [curfewStart, setCurfewStart] = useState('21:30');
@@ -709,6 +725,129 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">
+        {/* Card 0A: Local On-Device AI Face & NSFW Blur Shield */}
+        <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-emerald-400" />
+              <div>
+                <h3 className="text-sm font-semibold text-white">Filtre IA Visages & NSFW</h3>
+                <p className="text-[11px] text-zinc-400">
+                  Floutage organique local en temps réel (ML Kit + NudeNet)
+                </p>
+              </div>
+            </div>
+            <span
+              className={`rounded-md px-2 py-0.5 text-[10px] font-medium ${
+                telemetry?.aiShieldRunning
+                  ? 'bg-emerald-500/15 text-emerald-300'
+                  : telemetry?.aiShieldNeedsConsent
+                  ? 'bg-amber-500/15 text-amber-200'
+                  : 'bg-white/[0.06] text-zinc-400'
+              }`}
+            >
+              {telemetry?.aiShieldRunning
+                ? 'Actif'
+                : telemetry?.aiShieldNeedsConsent
+                ? 'Validation écran requise'
+                : 'Inactif'}
+            </span>
+          </div>
+
+          <div className="mt-3.5 divide-y divide-white/[0.06]">
+            <div className="flex items-center justify-between gap-2 py-2">
+              <div>
+                <div className="text-xs font-medium text-white">Flou anti-visages</div>
+                <div className="text-[11px] text-zinc-500">Contours organiques fluides (60 FPS)</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void onSetAiShield({ blurFaces: !telemetry?.aiBlurFaces })}
+                className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                  telemetry?.aiBlurFaces
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                    : 'border-white/10 bg-zinc-950 text-zinc-400 hover:text-white'
+                }`}
+              >
+                {telemetry?.aiBlurFaces ? 'Activé' : 'Désactivé'}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 py-2">
+              <div>
+                <div className="text-xs font-medium text-white">Blocage zones NSFW</div>
+                <div className="text-[11px] text-zinc-500">Détection locale NudeNet (100 % hors-ligne)</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void onSetAiShield({ blurNsfw: !telemetry?.aiBlurNsfw })}
+                className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                  telemetry?.aiBlurNsfw
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                    : 'border-white/10 bg-zinc-950 text-zinc-400 hover:text-white'
+                }`}
+              >
+                {telemetry?.aiBlurNsfw ? 'Activé' : 'Désactivé'}
+              </button>
+            </div>
+
+            {telemetry?.aiBlurNsfw && (
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <span className="text-xs text-zinc-400">Niveau strict (zones couvertes sensibles)</span>
+                <button
+                  type="button"
+                  onClick={() => void onSetAiShield({ nsfwStrict: !telemetry?.aiNsfwStrict })}
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
+                    telemetry?.aiNsfwStrict
+                      ? 'border-amber-500/40 bg-amber-500/15 text-amber-200'
+                      : 'border-white/10 bg-zinc-950 text-zinc-400'
+                  }`}
+                >
+                  {telemetry?.aiNsfwStrict ? 'Strict' : 'Standard'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Card 0B: Remote Parent Policy Toggles */}
+        <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-4">
+          <div className="flex items-center gap-2">
+            <Sliders className="h-4 w-4 text-zinc-300" />
+            <div>
+              <h3 className="text-sm font-semibold text-white">Politique de l’appareil</h3>
+              <p className="text-[11px] text-zinc-400">Définissez à distance les fonctions actives</p>
+            </div>
+          </div>
+
+          <div className="mt-3.5 grid grid-cols-2 gap-2">
+            {(
+              [
+                { key: 'allowLocation', label: 'GPS & Trajets', active: Boolean(telemetry?.allowLocation) },
+                { key: 'allowGallery', label: 'Galerie photos', active: Boolean(telemetry?.allowGallery) },
+                { key: 'allowContacts', label: 'Contacts', active: Boolean(telemetry?.allowContacts) },
+                { key: 'allowSmsRelay', label: 'Envoi SMS', active: Boolean(telemetry?.allowSmsRelay) },
+                { key: 'allowIntercom', label: 'Haut-parleur', active: Boolean(telemetry?.allowIntercom) },
+                { key: 'allowDeviceInfo', label: 'Infos système', active: Boolean(telemetry?.allowDeviceInfo) },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => void onSetRemotePolicy({ [item.key]: !item.active })}
+                className={`flex items-center justify-between rounded-xl border px-3 py-2 text-xs font-medium transition ${
+                  item.active
+                    ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
+                    : 'border-white/[0.07] bg-zinc-950 text-zinc-400 hover:text-white'
+                }`}
+              >
+                <span>{item.label}</span>
+                <span className="text-[10px]">{item.active ? 'ON' : 'OFF'}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Card 1: Scheduled Curfew */}
         <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/70 p-4">
           <div className="flex items-center justify-between gap-2">

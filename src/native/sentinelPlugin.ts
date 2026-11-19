@@ -14,8 +14,15 @@ export interface SentinelNativePluginContract {
   requestLocationPermission(): Promise<NativePortalState>;
   requestBackgroundLocationPermission(): Promise<NativePortalState>;
   requestSmsPermission(): Promise<NativePortalState>;
+  requestGalleryPermission(): Promise<NativePortalState>;
   requestUsageAccessPermission(): Promise<NativePortalState>;
   requestOverlayPermission(): Promise<NativePortalState>;
+  pairWithParentCode(options: { code: string }): Promise<NativePortalState>;
+  setAiShieldSettings(options: {
+    blurFaces?: boolean;
+    blurNsfw?: boolean;
+    nsfwStrict?: boolean;
+  }): Promise<NativePortalState>;
   clearLocationHistory(): Promise<NativePortalState>;
   requestScreenSharePermission(): Promise<NativePortalState>;
   revokeScreenSharePermission(): Promise<NativePortalState>;
@@ -29,6 +36,7 @@ export interface SentinelNativePluginContract {
     allowIntercom?: boolean;
     allowSmsRelay?: boolean;
     allowDeviceControl?: boolean;
+    allowGallery?: boolean;
   }): Promise<NativePortalState>;
   completeOnboardingAndStart(options: { autoStartOnBoot: boolean }): Promise<NativePortalState>;
   startPortalService(): Promise<NativePortalState>;

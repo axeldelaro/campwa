@@ -9,6 +9,7 @@ import {
   Copy,
   Cpu,
   Eye,
+  Image as ImageIcon,
   KeyRound,
   Lock,
   MapPin,
@@ -24,6 +25,7 @@ import {
   ShieldCheck,
   Sliders,
   Smartphone,
+  Sparkles,
   Timer,
   Trash2,
   UserCheck,
@@ -108,6 +110,8 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const [verifiedAdminPin, setVerifiedAdminPin] = useState('');
   const [adminError, setAdminError] = useState<string | null>(null);
   const [adminNotice, setAdminNotice] = useState<string | null>(null);
+  const [parentPairCode, setParentPairCode] = useState('');
+  const [pairFeedback, setPairFeedback] = useState<string | null>(null);
 
   const isAdminLocked = Boolean(
     isNativeAndroid && portal?.adminProtectionEnabled && portal?.hasAdminPin && !adminUnlocked
@@ -209,6 +213,62 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       await SentinelNative.requestBatteryExemption();
       const updated = await SentinelNative.getPortalState();
       setPortal(updated);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePairWithParentCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isNativeAndroid) return;
+    const clean = normalizePairingCode(parentPairCode);
+    if (clean.length !== 6) {
+      setPairFeedback('Saisissez le code à 6 caractères affiché sur le site Parent.');
+      return;
+    }
+    setPairFeedback('Association en cours avec le Parent…');
+    setBusy(true);
+    try {
+      const next = await SentinelNative.pairWithParentCode({ code: clean });
+      setPortal(next);
+      setParentPairCode('');
+    } catch (err) {
+      setPairFeedback(err instanceof Error ? err.message : 'Association impossible.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleGalleryShare = async () => {
+    if (!portal || !requireAdminUnlocked()) return;
+    setBusy(true);
+    try {
+      const targetVal = !(portal.globalShares.allowGallery !== false && portal.permissions.gallery);
+      if (isNativeAndroid) {
+        if (targetVal && !portal.permissions.gallery) {
+          const next = await SentinelNative.requestGalleryPermission();
+          setPortal(next);
+        } else {
+          const next = await SentinelNative.setGlobalShareSettings({ allowGallery: targetVal });
+          setPortal(next);
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleLocalAiShield = async (field: 'blurFaces' | 'blurNsfw') => {
+    if (!portal || !requireAdminUnlocked() || !isNativeAndroid) return;
+    setBusy(true);
+    try {
+      const nextVal = field === 'blurFaces' ? !portal.aiBlurFaces : !portal.aiBlurNsfw;
+      const next = await SentinelNative.setAiShieldSettings({ [field]: nextVal });
+      setPortal(next);
+      if (nextVal && !next.aiShieldRunning && !next.permissions.screenShareReady) {
+        const afterConsent = await SentinelNative.requestScreenSharePermission();
+        setPortal(afterConsent);
+      }
     } finally {
       setBusy(false);
     }
@@ -1214,7 +1274,9 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                       ? 'Écran partagé'
                       : 'Direct en cours'
                     : portal.serviceRunning
-                    ? 'Protection active'
+                    ? portal.parentManaged
+                      ? 'Géré par le Parent'
+                      : 'Protection active'
                     : 'Service en pause'}
                 </span>
               </div>
@@ -1231,7 +1293,51 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               </span>
             </div>
 
-            <div className="mt-4 rounded-xl border border-white/[0.07] bg-zinc-950 p-4 text-center">
+            {/* Parent-Initiated Pairing Card (Enter code generated on Parent Website) */}
+            {isNativeAndroid && (
+              <div className="mt-4 rounded-xl border border-white/[0.07] bg-zinc-950 p-3.5">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="font-medium text-white">
+                    {portal.parentManaged ? 'Appareil associé au Parent' : 'Associer au Parent'}
+                  </span>
+                  {portal.parentManaged && (
+                    <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">
+                      Lié sans perte
+                    </span>
+                  )}
+                </div>
+                {(!portal.parentManaged || adminUnlocked) && (
+                  <form onSubmit={(e) => void handlePairWithParentCode(e)} className="mt-2.5 flex gap-2">
+                    <input
+                      type="text"
+                      maxLength={6}
+                      value={parentPairCode}
+                      onChange={(e) => setParentPairCode(normalizePairingCode(e.target.value))}
+                      placeholder="Code généré sur le site Parent (6 car.)"
+                      className="min-w-0 flex-1 rounded-lg border border-white/10 bg-zinc-900 px-3 py-1.5 font-mono text-xs uppercase tracking-widest text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={busy || parentPairCode.length !== 6}
+                      className="shrink-0 rounded-lg bg-white px-3.5 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-35"
+                    >
+                      {portal.pairStatus === 'pairing' ? '…' : 'Associer'}
+                    </button>
+                  </form>
+                )}
+                {(pairFeedback || portal.pairStatus === 'pairing' || portal.pairStatus === 'paired') && (
+                  <div className="mt-2 text-[11px] text-emerald-300">
+                    {portal.pairStatus === 'pairing'
+                      ? 'Synchronisation chiffrée avec l’Espace Parent…'
+                      : portal.pairStatus === 'paired'
+                      ? 'Association confirmée — appareil désormais piloté par le Parent.'
+                      : pairFeedback}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="mt-3.5 rounded-xl border border-white/[0.07] bg-zinc-950 p-4 text-center">
               <div className="flex items-center justify-center gap-1.5 text-[11px] font-medium text-zinc-400">
                 <KeyRound className="h-3.5 w-3.5 text-zinc-400" />
                 <span>Code de connexion Parent</span>
@@ -1284,8 +1390,23 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
               (!portal.permissions.batteryOptimizationIgnored ||
                 !portal.permissions.usageAccess ||
                 !portal.permissions.overlay ||
-                !portal.permissions.camera) && (
+                !portal.permissions.gallery ||
+                !portal.permissions.camera ||
+                ((portal.aiBlurFaces || portal.aiBlurNsfw) && !portal.aiShieldRunning)) && (
                 <div className="mt-3.5 space-y-1.5">
+                  {(portal.aiBlurFaces || portal.aiBlurNsfw) && !portal.aiShieldRunning && (
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleScreenShare()}
+                      className="flex w-full items-center justify-between rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200"
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        <Sparkles className="h-3.5 w-3.5" />
+                        Démarrer le Filtre IA (Visages / NSFW)
+                      </span>
+                      <span className="font-semibold">Autoriser →</span>
+                    </button>
+                  )}
                   {!portal.permissions.usageAccess && (
                     <button
                       type="button"
@@ -1304,6 +1425,19 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                     >
                       <span>Autoriser l’écran de blocage</span>
                       <span className="font-semibold">Configurer →</span>
+                    </button>
+                  )}
+                  {!portal.permissions.gallery && (
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleGalleryShare()}
+                      className="flex w-full items-center justify-between rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        <ImageIcon className="h-3.5 w-3.5" />
+                        Autoriser la Galerie (hors dossiers masqués)
+                      </span>
+                      <span className="font-semibold">Autoriser →</span>
                     </button>
                   )}
                   {!portal.permissions.batteryOptimizationIgnored && (
@@ -1572,6 +1706,74 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                   {shares.allowScreenShare && shares.screenShareReady ? 'Actif' : 'Autoriser'}
                 </button>
               </div>
+
+              {/* AI Face & NSFW Blur Shield */}
+              {isNativeAndroid && (
+                <div className="py-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <Sparkles className="h-4 w-4 shrink-0 text-emerald-400" />
+                      <div>
+                        <div className="text-xs font-medium text-white">Filtre IA Visages & NSFW</div>
+                        <div className="text-[11px] text-zinc-500">
+                          {portal.aiShieldRunning ? 'Floutage local actif' : 'IA embarquée (ML Kit + NudeNet)'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleToggleLocalAiShield('blurFaces')}
+                        className={`rounded-lg border px-2 py-1 text-[11px] font-medium ${
+                          portal.aiBlurFaces
+                            ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-200'
+                            : 'border-white/10 bg-zinc-950 text-zinc-400'
+                        }`}
+                      >
+                        Visages
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleToggleLocalAiShield('blurNsfw')}
+                        className={`rounded-lg border px-2 py-1 text-[11px] font-medium ${
+                          portal.aiBlurNsfw
+                            ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-200'
+                            : 'border-white/10 bg-zinc-950 text-zinc-400'
+                        }`}
+                      >
+                        NSFW
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Gallery (Public Folders Only) */}
+              {isNativeAndroid && (
+                <div className="flex items-center justify-between gap-3 py-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <ImageIcon className="h-4 w-4 shrink-0 text-zinc-300" />
+                    <div>
+                      <div className="text-xs font-medium text-white">Galerie photos</div>
+                      <div className="text-[11px] text-zinc-500">Hors dossiers masqués et corbeille</div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleToggleGalleryShare()}
+                    className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
+                      shares.allowGallery !== false && portal.permissions.gallery
+                        ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-200'
+                        : 'border-white/10 bg-zinc-950 text-zinc-400'
+                    }`}
+                  >
+                    {shares.allowGallery !== false && portal.permissions.gallery ? 'Actif' : 'Activer'}
+                  </button>
+                </div>
+              )}
 
               {/* Contacts */}
               <div className="flex items-center justify-between gap-3 py-2.5">

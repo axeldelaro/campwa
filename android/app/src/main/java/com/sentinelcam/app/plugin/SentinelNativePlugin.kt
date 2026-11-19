@@ -26,7 +26,9 @@ import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
 import com.sentinelcam.app.control.ScreenTimeHelper
+import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.crypto.KeystoreVault
+import com.sentinelcam.app.data.GalleryHelper
 import com.sentinelcam.app.receiver.SentinelDeviceAdminReceiver
 import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.storage.PortalPreferences
@@ -71,6 +73,18 @@ import org.json.JSONObject
             alias = "sms",
             strings = [
                 Manifest.permission.SEND_SMS
+            ]
+        ),
+        Permission(
+            alias = "galleryModern",
+            strings = [
+                "android.permission.READ_MEDIA_IMAGES"
+            ]
+        ),
+        Permission(
+            alias = "galleryLegacy",
+            strings = [
+                Manifest.permission.READ_EXTERNAL_STORAGE
             ]
         )
     ]
@@ -329,6 +343,58 @@ class SentinelNativePlugin : Plugin() {
         if (call.data.has("allowDeviceControl")) {
             val enabled = call.getBoolean("allowDeviceControl", true) ?: true
             prefs.globalAllowDeviceControl = enabled
+        }
+        if (call.data.has("allowGallery")) {
+            val enabled = call.getBoolean("allowGallery", true) ?: true
+            prefs.globalAllowGallery = enabled
+        }
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun requestGalleryPermission(call: PluginCall) {
+        if (GalleryHelper.hasGalleryPermission(context)) {
+            prefs.globalAllowGallery = true
+            CameraForegroundService.syncAccessChannels(context)
+            call.resolve(buildPortalStateObject())
+            return
+        }
+        val alias = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) "galleryModern" else "galleryLegacy"
+        requestPermissionForAlias(alias, call, "galleryPermissionCallback")
+    }
+
+    @PermissionCallback
+    fun galleryPermissionCallback(call: PluginCall) {
+        if (GalleryHelper.hasGalleryPermission(context)) {
+            prefs.globalAllowGallery = true
+        }
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun pairWithParentCode(call: PluginCall) {
+        val raw = call.getString("code") ?: ""
+        val clean = CryptoProtocol.normalizePairingCode(raw)
+        if (clean.length != 6) {
+            call.reject("Code à 6 caractères requis.")
+            return
+        }
+        CameraForegroundService.pairWithParentCode(context, clean)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun setAiShieldSettings(call: PluginCall) {
+        if (call.data.has("blurFaces")) {
+            prefs.aiBlurFaces = call.getBoolean("blurFaces", false) ?: false
+        }
+        if (call.data.has("blurNsfw")) {
+            prefs.aiBlurNsfw = call.getBoolean("blurNsfw", false) ?: false
+        }
+        if (call.data.has("nsfwStrict")) {
+            prefs.aiNsfwStrict = call.getBoolean("nsfwStrict", false) ?: false
         }
         CameraForegroundService.syncAccessChannels(context)
         call.resolve(buildPortalStateObject())
@@ -653,6 +719,7 @@ class SentinelNativePlugin : Plugin() {
             put("location", locationGranted)
             put("backgroundLocation", bgLocationGranted)
             put("sms", smsGranted)
+            put("gallery", GalleryHelper.hasGalleryPermission(context))
             put("usageAccess", ScreenTimeHelper.hasUsageAccess(context))
             put("overlay", ScreenTimeHelper.hasOverlayPermission(context))
             put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
@@ -729,6 +796,7 @@ class SentinelNativePlugin : Plugin() {
             put("allowIntercom", prefs.globalAllowIntercom)
             put("allowSmsRelay", prefs.globalAllowSmsRelay)
             put("allowDeviceControl", prefs.globalAllowDeviceControl)
+            put("allowGallery", prefs.globalAllowGallery)
             put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
         }
 
@@ -766,6 +834,12 @@ class SentinelNativePlugin : Plugin() {
             put("blockSettingsAndStore", prefs.blockSettingsAndStore)
             put("schoolModeUntilMs", prefs.schoolModeUntilMs.takeIf { it > System.currentTimeMillis() } ?: 0L)
             put("securityAlertsCount", prefs.getSecurityEvents().size)
+            put("aiBlurFaces", prefs.aiBlurFaces)
+            put("aiBlurNsfw", prefs.aiBlurNsfw)
+            put("aiNsfwStrict", prefs.aiNsfwStrict)
+            put("aiShieldRunning", CameraForegroundService.aiShieldActive)
+            put("parentManaged", prefs.parentManaged)
+            put("pairStatus", CameraForegroundService.pairStatus)
             put(
                 "deviceAdminActive",
                 try {
