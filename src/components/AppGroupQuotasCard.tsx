@@ -73,27 +73,30 @@ export const AppGroupQuotasCard: React.FC<AppGroupQuotasCardProps> = ({
   const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const safeGroups = Array.isArray(groups) ? groups : [];
+  const safeApps = Array.isArray(availableApps) ? availableApps : [];
+
   const appNameMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const a of availableApps) {
-      map.set(a.packageName, a.appName);
+    for (const a of safeApps) {
+      if (a?.packageName) map.set(a.packageName, a.appName || a.packageName);
     }
     return map;
-  }, [availableApps]);
+  }, [safeApps]);
 
   const filteredApps = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const sorted = [...availableApps].sort((a, b) => {
+    const sorted = [...safeApps].sort((a, b) => {
       const aSel = selectedPkgs.includes(a.packageName) ? 1 : 0;
       const bSel = selectedPkgs.includes(b.packageName) ? 1 : 0;
       if (aSel !== bSel) return bSel - aSel;
-      return b.usageSecondsToday - a.usageSecondsToday || a.appName.localeCompare(b.appName);
+      return (b.usageSecondsToday || 0) - (a.usageSecondsToday || 0) || (a.appName || '').localeCompare(b.appName || '');
     });
     if (!q) return sorted;
     return sorted.filter(
-      (a) => a.appName.toLowerCase().includes(q) || a.packageName.toLowerCase().includes(q)
+      (a) => (a.appName || '').toLowerCase().includes(q) || (a.packageName || '').toLowerCase().includes(q)
     );
-  }, [availableApps, search, selectedPkgs]);
+  }, [safeApps, search, selectedPkgs]);
 
   const openNewEditor = () => {
     setEditingId(undefined);
@@ -194,7 +197,7 @@ export const AppGroupQuotasCard: React.FC<AppGroupQuotasCardProps> = ({
       </div>
 
       {/* Quick Presets */}
-      {!editorOpen && groups.length === 0 && (
+      {!editorOpen && safeGroups.length === 0 && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-dashed border-white/10 bg-zinc-950/60 p-3">
           <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400">
             <Sparkles className="h-3 w-3 text-sky-400" />
@@ -218,11 +221,12 @@ export const AppGroupQuotasCard: React.FC<AppGroupQuotasCardProps> = ({
       )}
 
       {/* Active Groups List */}
-      {groups.length > 0 && (
+      {safeGroups.length > 0 && (
         <div className="space-y-2">
-          {groups.map((g) => {
+          {safeGroups.map((g) => {
             const totalLimitSec = (g.dailyLimitMinutes + (g.bonusMinutesToday || 0)) * 60;
             const pct = Math.min(100, Math.round((g.usedSecondsToday / Math.max(60, totalLimitSec)) * 100));
+            const memberPkgs = Array.isArray(g.packages) ? g.packages : [];
             return (
               <div
                 key={g.id}
@@ -268,7 +272,7 @@ export const AppGroupQuotasCard: React.FC<AppGroupQuotasCardProps> = ({
 
                     {/* Member Apps */}
                     <div className="mt-2 flex flex-wrap gap-1">
-                      {g.packages.map((pkg) => (
+                      {memberPkgs.map((pkg) => (
                         <span
                           key={pkg}
                           className="rounded-md border border-white/[0.06] bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-300"

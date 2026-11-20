@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   BatteryCharging,
   BellRing,
@@ -27,14 +27,87 @@ import { GeofenceZonesCard, ParentalHomeTab, ParentalRulesTab } from './ControlP
 import { DrivingScoreCard } from './DrivingScoreCard';
 import { SystemCommandCard } from './SystemCommandCard';
 import type {
+  AppGroupQuotaItem,
   AppUsageEntry,
   DataScreenTimeMsg,
   DeviceTelemetry,
+  HourlyTimelineApp,
+  HourlyTimelineSlot,
   NativePortalState,
 } from '../types/sentinel';
 
 interface AndroidEmitterViewProps {
   isNativeAndroid: boolean;
+}
+
+function toArray<T>(val: unknown): T[] {
+  if (Array.isArray(val)) return val as T[];
+  if (val && typeof val === 'object') return Object.values(val) as T[];
+  return [];
+}
+
+function sanitizeScreenTime(raw: DataScreenTimeMsg | null | undefined): DataScreenTimeMsg | null {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    ...raw,
+    apps: toArray<AppUsageEntry>(raw.apps),
+    groupQuotas: toArray<AppGroupQuotaItem>(raw.groupQuotas).map((g) => ({
+      ...g,
+      packages: toArray<string>(g?.packages),
+    })),
+    weeklyHistory: toArray(raw.weeklyHistory),
+    hourlyTimeline: toArray<HourlyTimelineSlot>(raw.hourlyTimeline).map((s) => ({
+      ...s,
+      topApps: toArray<HourlyTimelineApp>(s?.topApps),
+    })),
+    pendingRequests: toArray(raw.pendingRequests),
+    geofences: toArray(raw.geofences),
+    securityEvents: toArray(raw.securityEvents),
+    systemStatus: raw.systemStatus
+      ? {
+          ...raw.systemStatus,
+          installedApps: toArray(raw.systemStatus.installedApps),
+        }
+      : undefined,
+    drivingReport: raw.drivingReport
+      ? {
+          ...raw.drivingReport,
+          events: toArray(raw.drivingReport.events),
+        }
+      : undefined,
+  };
+}
+
+class ChildSectionBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="rounded-2xl border border-amber-500/30 bg-zinc-900/80 p-4 text-center text-xs text-zinc-300">
+          <p>Affichage temporairement indisponible pour cette section.</p>
+          <button
+            type="button"
+            onClick={() => this.setState({ hasError: false })}
+            className="mt-2 rounded-xl bg-white px-3 py-1.5 font-semibold text-zinc-950"
+          >
+            Réessayer
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 /**
@@ -73,7 +146,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     setLocalLoading(true);
     try {
       const data = await SentinelNative.getLocalDashboardData();
-      setLocalScreenTime(data);
+      setLocalScreenTime(sanitizeScreenTime(data));
     } catch {
       // Ignore transient read errors
     } finally {
@@ -181,8 +254,11 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     setBusy(true);
     try {
       const res = await fn();
-      if (res) setPortal(res);
-      else setPortal(await SentinelNative.getPortalState());
+      if (res && typeof res === 'object' && 'permissions' in res && 'globalShares' in res) {
+        setPortal(res);
+      } else {
+        setPortal(await SentinelNative.getPortalState());
+      }
     } finally {
       setBusy(false);
     }
@@ -692,46 +768,42 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     updatedAt: nowMs,
   };
 
-  // Instant non-null fallback ScreenTime report from portal state so UI never looks empty while loading
-  const effectiveScreenTime: DataScreenTimeMsg = useMemo(
-    () =>
-      localScreenTime ?? {
-        type: 'DATA_SCREEN_TIME',
-        requestId: 'instant-fallback',
-        hasUsageAccess: Boolean(p.usageAccess),
-        hasOverlayPermission: Boolean(p.overlay),
-        deviceAdminActive: Boolean(portal.deviceAdminActive),
-        totalScreenTimeSec: 0,
-        screenPausedUntilMs: portal.screenPausedUntilMs ?? 0,
-        apps: [],
-        groupQuotas: [],
-        weeklyHistory: [],
-        curfew: {
-          enabled: Boolean(portal.curfewEnabled),
-          startMin: 21 * 60 + 30,
-          endMin: 7 * 60,
-          daysMask: 127,
-          activeNow: false,
-          endTs: 0,
-        },
-        schoolMode: {
-          active: (portal.schoolModeUntilMs ?? 0) > nowMs,
-          untilMs: portal.schoolModeUntilMs ?? 0,
-          allowedPackages: [],
-        },
-        blockSettingsAndStore: Boolean(portal.blockSettingsAndStore),
-        lostMode: {
-          enabled: Boolean(portal.lostModeEnabled),
-          message: 'Téléphone perdu. Merci de contacter le Parent.',
-          phoneNumber: '',
-        },
-        pendingRequests: [],
-        geofences: [],
-        securityEvents: [],
-        ts: nowMs,
-      },
-    [localScreenTime, p.usageAccess, p.overlay, portal, nowMs]
-  );
+  // Instant non-null fallback ScreenTime report from portal state (NO hook after early return!)
+  const effectiveScreenTime: DataScreenTimeMsg = localScreenTime ?? {
+    type: 'DATA_SCREEN_TIME',
+    requestId: 'instant-fallback',
+    hasUsageAccess: Boolean(p?.usageAccess),
+    hasOverlayPermission: Boolean(p?.overlay),
+    deviceAdminActive: Boolean(portal.deviceAdminActive),
+    totalScreenTimeSec: 0,
+    screenPausedUntilMs: portal.screenPausedUntilMs ?? 0,
+    apps: [],
+    groupQuotas: [],
+    weeklyHistory: [],
+    curfew: {
+      enabled: Boolean(portal.curfewEnabled),
+      startMin: 21 * 60 + 30,
+      endMin: 7 * 60,
+      daysMask: 127,
+      activeNow: false,
+      endTs: 0,
+    },
+    schoolMode: {
+      active: (portal.schoolModeUntilMs ?? 0) > nowMs,
+      untilMs: portal.schoolModeUntilMs ?? 0,
+      allowedPackages: [],
+    },
+    blockSettingsAndStore: Boolean(portal.blockSettingsAndStore),
+    lostMode: {
+      enabled: Boolean(portal.lostModeEnabled),
+      message: 'Téléphone perdu. Merci de contacter le Parent.',
+      phoneNumber: '',
+    },
+    pendingRequests: [],
+    geofences: [],
+    securityEvents: [],
+    ts: nowMs,
+  };
 
   return (
     <div className="mx-auto max-w-2xl space-y-3.5 px-3.5 pb-10 pt-4">
@@ -819,7 +891,8 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
 
       {/* TAB 1: EXACT PARENT ACCUEIL (READ-ONLY -> EVERY EDIT SENDS REQUEST TO PARENT) */}
       {childTab === 'home' && (
-        <ParentalHomeTab
+        <ChildSectionBoundary>
+          <ParentalHomeTab
           screenTime={effectiveScreenTime}
           screenTimeLoading={localLoading && !localScreenTime}
           telemetry={mirrorTelemetry}
@@ -882,10 +955,12 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           onFlashText={() => sendChangeRequest('change:flash', 'Message plein écran')}
           onFlashImage={() => sendChangeRequest('change:flash', 'Image plein écran')}
         />
+        </ChildSectionBoundary>
       )}
 
       {/* TAB 2: EXACT PARENT RÈGLES + ZONES + CONDUITE + SYSTÈME (READ-ONLY -> EVERY EDIT SENDS REQUEST TO PARENT) */}
       {childTab === 'rules' && (
+        <ChildSectionBoundary>
         <div className="space-y-3.5">
           <ParentalRulesTab
             screenTime={effectiveScreenTime}
@@ -988,6 +1063,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             }
           />
         </div>
+        </ChildSectionBoundary>
       )}
 
       {/* TAB 3: APPAREIL (PERMISSIONS, ANTI-VEILLE & DISSOCIATION) */}
