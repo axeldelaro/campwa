@@ -30,6 +30,7 @@ import com.sentinelcam.app.control.DeviceSecurityMonitor
 import com.sentinelcam.app.control.FlashOverlayManager
 import com.sentinelcam.app.control.OfflineRecorderManager
 import com.sentinelcam.app.control.ScreenTimeHelper
+import com.sentinelcam.app.control.SentinelAccessibilityService
 import com.sentinelcam.app.control.SentinelNotificationService
 import com.sentinelcam.app.control.SystemControlHelper
 import com.sentinelcam.app.control.VisualTimelineManager
@@ -125,6 +126,15 @@ class CameraForegroundService : Service() {
     @Volatile
     private var lastOverspeedAlertMs: Long = 0L
 
+    private val accessibilityConnectionListener: () -> Unit = {
+        serviceScope.launch(Dispatchers.Main) {
+            syncAiShieldState()
+            syncVisualTimelineState()
+            broadcastPresenceNow(OWNER_CHANNEL_ID)
+            notifyStateListeners()
+        }
+    }
+
     private data class ResolvedGrant(
         val allowed: Boolean,
         val denyReason: String? = null,
@@ -192,12 +202,14 @@ class CameraForegroundService : Service() {
         appLockMonitor = AppLockMonitor(applicationContext, prefs).also { it.start() }
         aiScreenShield = AiScreenShieldEngine(applicationContext, prefs) {
             aiShieldActive = aiScreenShield?.isActive == true
+            aiShieldAutonomous = aiScreenShield?.isActive == true && aiScreenShield?.usingAccessibilityMode == true
             notifyStateListeners()
         }
         visualTimeline = VisualTimelineManager(applicationContext, prefs) {
             timelineActive = visualTimeline?.isActive == true
             notifyStateListeners()
         }
+        SentinelAccessibilityService.addConnectionListener(accessibilityConnectionListener)
         DeviceSecurityMonitor.checkSimState(applicationContext, prefs)
         createNotificationChannel()
     }
@@ -211,6 +223,7 @@ class CameraForegroundService : Service() {
         isRunning = true
         val fromUi = intent?.getBooleanExtra(EXTRA_FROM_UI, false) ?: false
         val promoteScreen = intent?.action == ACTION_PROMOTE_MEDIA_PROJECTION &&
+            screenProjectionIntent != null &&
             (prefs.aiBlurFaces || prefs.aiBlurNsfw || prefs.timelineCaptureEnabled)
 
         if (!startInForegroundSafely(promoteCamera = fromUi, promoteScreen = promoteScreen)) {
@@ -251,6 +264,8 @@ class CameraForegroundService : Service() {
 
         ensureSignalingRunning(forceRebuild = false)
         syncLocationTrackerState()
+        syncAiShieldState()
+        syncVisualTimelineState()
         notifyStateListeners()
         return START_STICKY
     }
@@ -322,6 +337,8 @@ class CameraForegroundService : Service() {
         try { aiScreenShield?.destroy() } catch (_: Throwable) {}
         aiScreenShield = null
         aiShieldActive = false
+        aiShieldAutonomous = false
+        SentinelAccessibilityService.removeConnectionListener(accessibilityConnectionListener)
         try { DeviceActionHelper.releaseAll(applicationContext) } catch (_: Throwable) {}
 
         releaseStreamingLocks()
@@ -524,13 +541,14 @@ class CameraForegroundService : Service() {
             if (!want) {
                 if (shield.isActive) {
                     // Stop timeline first if it was borrowing AI Shield's MediaProjection
-                    if (visualTimeline?.isActive == true) {
+                    if (visualTimeline?.isActive == true && visualTimeline?.usingAccessibilityMode != true) {
                         visualTimeline?.stop()
                         timelineActive = false
                     }
                     shield.stop()
                 }
                 aiShieldActive = false
+                aiShieldAutonomous = false
                 syncVisualTimelineState()
                 dropMediaProjectionFgsIfUnused()
                 return
@@ -539,16 +557,20 @@ class CameraForegroundService : Service() {
                 shield.pauseForWebRtcScreenShare()
                 return
             }
-            if (shield.hasActiveProjection() || screenProjectionIntent != null) {
-                if (!mediaProjectionFgsPromoted) {
+            val needsMediaProj = shield.hasActiveProjection() || screenProjectionIntent != null
+            val canRunAutonomous = SentinelAccessibilityService.canCaptureAutonomously()
+            if (needsMediaProj || canRunAutonomous) {
+                // Only promote MEDIA_PROJECTION FGS when actually using MediaProjection — NEVER in autonomous Accessibility mode!
+                if (needsMediaProj && !mediaProjectionFgsPromoted) {
                     startInForegroundSafely(promoteCamera = false, promoteScreen = true)
                 }
                 val started = shield.startOrRefresh(screenProjectionIntent)
-                if (started && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                if (started && !shield.usingAccessibilityMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     // Android 14+ consumes the Intent on first MediaProjection creation; shield keeps MediaProjection alive!
                     screenProjectionIntent = null
                 }
                 aiShieldActive = started
+                aiShieldAutonomous = started && shield.usingAccessibilityMode
             }
         } catch (_: Throwable) {
         }
@@ -570,8 +592,11 @@ class CameraForegroundService : Service() {
                 return
             }
             val sharedProj = aiScreenShield?.getActiveMediaProjection()
-            if (tl.hasActiveProjection() || sharedProj != null || screenProjectionIntent != null) {
-                if (!mediaProjectionFgsPromoted) {
+            val needsMediaProj = tl.hasActiveProjection() || sharedProj != null || screenProjectionIntent != null
+            val canRunAutonomous = SentinelAccessibilityService.canCaptureAutonomously()
+            if (needsMediaProj || canRunAutonomous) {
+                // Only promote MEDIA_PROJECTION FGS when actually using MediaProjection (zero Android 14/15 notif suppression!)
+                if (needsMediaProj && !mediaProjectionFgsPromoted) {
                     startInForegroundSafely(promoteCamera = false, promoteScreen = true)
                 }
                 val hadOwnBefore = tl.hasActiveProjection()
@@ -579,7 +604,7 @@ class CameraForegroundService : Service() {
                     sharedProjection = sharedProj,
                     projectionIntent = screenProjectionIntent
                 )
-                if (started && !hadOwnBefore && sharedProj == null &&
+                if (started && !tl.usingAccessibilityMode && !hadOwnBefore && sharedProj == null &&
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
                 ) {
                     screenProjectionIntent = null
@@ -894,8 +919,8 @@ class CameraForegroundService : Service() {
             aiScreenShield?.resumeAfterWebRtcScreenShare()
         }
         val screenActive = (isStreaming && currentMediaMode == "screen") ||
-            (aiScreenShield?.isActive == true) ||
-            (visualTimeline?.isActive == true)
+            (aiScreenShield?.hasActiveProjection() == true) ||
+            (visualTimeline?.hasActiveProjection() == true)
         if (!screenActive && mediaProjectionFgsPromoted) {
             mediaProjectionFgsPromoted = false
             lastAppliedFgType = -1
@@ -990,14 +1015,21 @@ class CameraForegroundService : Service() {
             put("aiBlurNsfw", prefs.aiBlurNsfw)
             put("aiNsfwStrict", prefs.aiNsfwStrict)
             put("aiShieldRunning", aiScreenShield?.isActive == true)
-            put("aiShieldNeedsConsent", (prefs.aiBlurFaces || prefs.aiBlurNsfw) && aiScreenShield?.isActive != true)
+            put("aiShieldAutonomous", aiScreenShield?.isActive == true && aiScreenShield?.usingAccessibilityMode == true)
+            put(
+                "aiShieldNeedsConsent",
+                (prefs.aiBlurFaces || prefs.aiBlurNsfw) &&
+                    aiScreenShield?.isActive != true &&
+                    !SentinelAccessibilityService.canCaptureAutonomously()
+            )
             put("timelineCaptureEnabled", prefs.timelineCaptureEnabled)
             put("timelineRunning", visualTimeline?.isActive == true)
             put(
                 "timelineNeedsConsent",
                 prefs.timelineCaptureEnabled &&
                     prefs.getTimelineMonitoredPackages().isNotEmpty() &&
-                    visualTimeline?.isActive != true
+                    visualTimeline?.isActive != true &&
+                    !SentinelAccessibilityService.canCaptureAutonomously()
             )
             put("parentManaged", prefs.parentManaged)
             put("unpairRequestPending", prefs.unpairRequestPending)
@@ -1063,6 +1095,7 @@ class CameraForegroundService : Service() {
             put("storageManage", storageManage)
             put("usageAccess", usageAccess)
             put("overlay", overlay)
+            put("accessibilityService", SentinelAccessibilityService.isAccessibilityEnabled(ctx))
             put("batteryUnrestricted", batteryUnrestricted)
             put("deviceAdmin", deviceAdmin)
             put("manufacturer", brand)
@@ -2025,6 +2058,53 @@ class CameraForegroundService : Service() {
                     }
                 }
 
+                "CMD_SAVE_APP_GROUP_QUOTA" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val id = msg.optString("id", "").trim()
+                    val delete = msg.optBoolean("delete", false)
+                    val name = msg.optString("name", "").trim()
+                    val limitMin = msg.optInt("dailyLimitMinutes", 0)
+                    val pkgsArr = msg.optJSONArray("packages")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "app_group_quota", false, "Contrôle non autorisé.")
+                    } else if (delete && id.isNotEmpty()) {
+                        prefs.deleteAppGroupQuota(id)
+                        appLockMonitor?.refreshSchedule()
+                        prefs.appendLog("security", "Quota de groupe supprimé par ${grant.name}.")
+                        pushScreenTimeAndResult(channelId, reqId, "app_group_quota")
+                    } else {
+                        val pkgs = ArrayList<String>()
+                        if (pkgsArr != null) {
+                            for (i in 0 until pkgsArr.length()) {
+                                val p = pkgsArr.optString(i, "").trim()
+                                if (p.isNotEmpty()) pkgs.add(p)
+                            }
+                        }
+                        if (pkgs.isEmpty() || limitMin <= 0) {
+                            sendControlResult(
+                                channelId,
+                                reqId,
+                                "app_group_quota",
+                                false,
+                                "Sélectionnez au moins une application et une durée quotidienne."
+                            )
+                        } else {
+                            val saved = prefs.upsertAppGroupQuota(
+                                id = id.takeIf { it.isNotEmpty() },
+                                name = name.ifEmpty { "Groupe d’apps" },
+                                packages = pkgs,
+                                dailyLimitMinutes = limitMin
+                            )
+                            appLockMonitor?.refreshSchedule()
+                            prefs.appendLog(
+                                "security",
+                                "Quota groupe « ${saved?.name ?: name} » fixé à $limitMin min/jour (${pkgs.size} apps) par ${grant.name}."
+                            )
+                            pushScreenTimeAndResult(channelId, reqId, "app_group_quota")
+                        }
+                    }
+                }
+
                 "CMD_SET_SCHOOL_MODE" -> {
                     val reqId = msg.optString("requestId", "")
                     val durationMin = msg.optInt("durationMinutes", 0)
@@ -2280,7 +2360,7 @@ class CameraForegroundService : Service() {
                                 reqId,
                                 "ai_shield",
                                 true,
-                                "Activé — autorisez « Capture écran » et « Écran de blocage » une fois sur le smartphone pour démarrer la pixellisation IA."
+                                "Activé — activez « Protection écran autonome » (Accessibilité) une seule fois sur le smartphone pour démarrer le flou IA sans aucune popup."
                             )
                             broadcastPresenceNow(channelId)
                             notifyStateListeners()
@@ -2339,7 +2419,11 @@ class CameraForegroundService : Service() {
                         try { locationTracker?.configureAndSync(false, "eco") } catch (_: Throwable) {}
                         try { locationStore?.clearAll() } catch (_: Throwable) {}
 
-                        // 2. Remove Android Device Admin so child regains 100% control of their phone
+                        // 2. Remove Android Device Admin + Accessibility Service so child regains 100% control of their phone
+                        try {
+                            SentinelAccessibilityService.disableServiceOnUnpair()
+                        } catch (_: Throwable) {
+                        }
                         try {
                             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
                             val comp = SentinelDeviceAdminReceiver.getComponentName(applicationContext)
@@ -3023,7 +3107,8 @@ class CameraForegroundService : Service() {
                                         val runningNow = visualTimeline?.isActive == true
                                         val needsConsentNow = prefs.timelineCaptureEnabled &&
                                             prefs.getTimelineMonitoredPackages().isNotEmpty() &&
-                                            !runningNow
+                                            !runningNow &&
+                                            !SentinelAccessibilityService.canCaptureAutonomously()
                                         serviceScope.launch(Dispatchers.IO) {
                                             val resp = VisualTimelineManager.listTimelinePage(
                                                 context = applicationContext,
@@ -3046,7 +3131,7 @@ class CameraForegroundService : Service() {
                                                     prefs.getTimelineMonitoredPackages().isEmpty() ->
                                                         "Sélectionnez au moins une application à surveiller."
                                                     needsConsentNow ->
-                                                        "Activé — validez une fois « Capture écran » sur le smartphone pour démarrer les captures."
+                                                        "Activé — activez « Protection écran autonome » (Accessibilité) une seule fois sur le smartphone pour lancer les captures sans popup."
                                                     else ->
                                                         "Captures automatiques actives (toutes les ${prefs.timelineIntervalSec} s)."
                                                 }
@@ -3459,14 +3544,21 @@ class CameraForegroundService : Service() {
                 put("aiBlurNsfw", prefs.aiBlurNsfw)
                 put("aiNsfwStrict", prefs.aiNsfwStrict)
                 put("aiShieldRunning", aiScreenShield?.isActive == true)
-                put("aiShieldNeedsConsent", (prefs.aiBlurFaces || prefs.aiBlurNsfw) && aiScreenShield?.isActive != true)
+                put("aiShieldAutonomous", aiScreenShield?.isActive == true && aiScreenShield?.usingAccessibilityMode == true)
+                put(
+                    "aiShieldNeedsConsent",
+                    (prefs.aiBlurFaces || prefs.aiBlurNsfw) &&
+                        aiScreenShield?.isActive != true &&
+                        !SentinelAccessibilityService.canCaptureAutonomously()
+                )
                 put("timelineCaptureEnabled", prefs.timelineCaptureEnabled)
                 put("timelineRunning", visualTimeline?.isActive == true)
                 put(
                     "timelineNeedsConsent",
                     prefs.timelineCaptureEnabled &&
                         prefs.getTimelineMonitoredPackages().isNotEmpty() &&
-                        visualTimeline?.isActive != true
+                        visualTimeline?.isActive != true &&
+                        !SentinelAccessibilityService.canCaptureAutonomously()
                 )
                 put("parentManaged", prefs.parentManaged)
                 put("unpairRequestPending", prefs.unpairRequestPending)
@@ -3641,12 +3733,12 @@ class CameraForegroundService : Service() {
         val hasBgLoc = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
-        // CRITICAL (Android 14/15): Only hold MEDIA_PROJECTION FGS type while actively screen-sharing,
-        // running AI Screen Shield, or running Visual Timeline; otherwise Android suppresses notifications!
+        // CRITICAL (Android 14/15): Only hold MEDIA_PROJECTION FGS type while actively using a MediaProjection;
+        // autonomous Accessibility mode NEVER requires MEDIA_PROJECTION FGS -> zero notification suppression!
         val needScreenFgs = promoteScreen ||
             (isStreaming && currentMediaMode == "screen") ||
-            (aiScreenShield?.isActive == true) ||
-            (visualTimeline?.isActive == true)
+            (aiScreenShield?.hasActiveProjection() == true) ||
+            (visualTimeline?.hasActiveProjection() == true)
         val hasScreenConsent = needScreenFgs && (
             screenProjectionIntent != null ||
                 aiScreenShield?.hasActiveProjection() == true ||
@@ -3854,6 +3946,10 @@ class CameraForegroundService : Service() {
 
         @Volatile
         var aiShieldActive: Boolean = false
+            private set
+
+        @Volatile
+        var aiShieldAutonomous: Boolean = false
             private set
 
         @Volatile

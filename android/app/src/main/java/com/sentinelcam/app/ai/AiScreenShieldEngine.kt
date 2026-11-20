@@ -23,6 +23,7 @@ import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.WindowManager
 import com.sentinelcam.app.control.ScreenTimeHelper
+import com.sentinelcam.app.control.SentinelAccessibilityService
 import com.sentinelcam.app.storage.PortalPreferences
 import kotlin.math.abs
 
@@ -45,6 +46,7 @@ class AiScreenShieldEngine(
 
     private val detector = AiVisionDetector(appContext)
     private var overlayView: AiShieldOverlayView? = null
+    private var attachedWindowManager: WindowManager? = null
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -61,12 +63,18 @@ class AiScreenShieldEngine(
         private set
 
     @Volatile
+    var usingAccessibilityMode: Boolean = false
+        private set
+
+    @Volatile
     private var screenOn: Boolean = true
 
     @Volatile
     private var pausedForWebRtcScreen: Boolean = false
 
     private var receiverRegistered = false
+    private var windowListenerRegistered = false
+    private var screenHeightPx = 1920f
     private var prevRowSig = FloatArray(ROW_SIG_BINS)
     private var hasPrevRowSig = false
     private var lastBgHash = IntArray(BG_GRID_W * BG_GRID_H)
@@ -76,6 +84,24 @@ class AiScreenShieldEngine(
     private var lastFgPkgCheckMs = 0L
     private var isSelfInForeground = false
     private var lastFrameStatic = false
+
+    private val accessibilityWindowListener = object : SentinelAccessibilityService.WindowEventListener {
+        override fun onWindowChanged(packageName: String) {
+            isSelfInForeground = packageName == appContext.packageName
+            hasPrevBgHash = false
+            hasPrevRowSig = false
+            lastFrameStatic = false
+            overlayView?.clearAllMasks()
+        }
+
+        override fun onScrollDeltaPx(deltaYPx: Int) {
+            if (!isActive || !screenOn || pausedForWebRtcScreen) return
+            val dyNorm = (-deltaYPx.toFloat() / screenHeightPx.coerceAtLeast(640f)).coerceIn(-0.45f, 0.45f)
+            if (abs(dyNorm) >= 0.004f) {
+                overlayView?.shiftMasksVertically(dyNorm)
+            }
+        }
+    }
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -109,6 +135,32 @@ class AiScreenShieldEngine(
             }
 
             val startNs = System.nanoTime()
+            if (usingAccessibilityMode && mediaProjection == null) {
+                if (!SentinelAccessibilityService.canCaptureAutonomously()) {
+                    stop()
+                    return
+                }
+                if (isSelfInForeground) {
+                    overlayView?.clearAllMasks()
+                } else {
+                    SentinelAccessibilityService.captureScreenBitmap(maxWidth = 320) { bmp ->
+                        if (bmp != null) {
+                            workerHandler?.post {
+                                if (isActive && screenOn && !pausedForWebRtcScreen) {
+                                    processBitmapFrame(bmp, blurFaces, blurNsfw, prefs.aiNsfwStrict, recycleAfter = true)
+                                } else if (!bmp.isRecycled) {
+                                    bmp.recycle()
+                                }
+                            }
+                        }
+                    }
+                }
+                if (isActive && screenOn && !pausedForWebRtcScreen) {
+                    workerHandler?.postDelayed(this, 1_080L)
+                }
+                return
+            }
+
             try {
                 processLatestScreenFrame(blurFaces, blurNsfw, prefs.aiNsfwStrict)
             } catch (_: Throwable) {
@@ -128,6 +180,9 @@ class AiScreenShieldEngine(
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(appContext)
     }
 
+    fun hasOverlayCapability(): Boolean =
+        hasOverlayPermission() || SentinelAccessibilityService.isActiveNow()
+
     fun hasActiveProjection(): Boolean = mediaProjection != null
 
     fun getActiveMediaProjection(): MediaProjection? = mediaProjection
@@ -138,29 +193,49 @@ class AiScreenShieldEngine(
             stop()
             return false
         }
-        if (!hasOverlayPermission()) {
+        if (!hasOverlayCapability()) {
             return false
         }
 
-        if (mediaProjection == null) {
-            val intent = projectionIntent ?: return false
+        if (mediaProjection == null && projectionIntent != null) {
             val mpm = appContext.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val proj = try {
-                mpm.getMediaProjection(Activity.RESULT_OK, intent)
+                mpm.getMediaProjection(Activity.RESULT_OK, projectionIntent)
             } catch (_: Throwable) {
                 null
-            } ?: return false
-
-            proj.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    mainHandler.post { stop() }
-                }
-            }, mainHandler)
-            mediaProjection = proj
+            }
+            if (proj != null) {
+                proj.registerCallback(object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        mainHandler.post { stop() }
+                    }
+                }, mainHandler)
+                mediaProjection = proj
+                usingAccessibilityMode = false
+            }
         }
 
+        if (mediaProjection == null) {
+            if (!SentinelAccessibilityService.canCaptureAutonomously()) {
+                return false
+            }
+            usingAccessibilityMode = true
+        }
+
+        val dm = appContext.resources.displayMetrics
+        screenHeightPx = dm.heightPixels.toFloat().coerceAtLeast(640f)
+
         attachOverlayIfNeeded()
-        startCapturePipelineIfNeeded()
+        if (mediaProjection != null) {
+            startCapturePipelineIfNeeded()
+        } else {
+            ensureWorkerThreadOnly()
+        }
+
+        if (!windowListenerRegistered && SentinelAccessibilityService.isActiveNow()) {
+            SentinelAccessibilityService.addWindowListener(accessibilityWindowListener)
+            windowListenerRegistered = true
+        }
 
         screenOn = try {
             powerManager.isInteractive
@@ -210,8 +285,13 @@ class AiScreenShieldEngine(
 
     fun stop() {
         isActive = false
+        usingAccessibilityMode = false
         pausedForWebRtcScreen = false
         workerHandler?.removeCallbacks(inferenceTick)
+        if (windowListenerRegistered) {
+            SentinelAccessibilityService.removeWindowListener(accessibilityWindowListener)
+            windowListenerRegistered = false
+        }
         detachOverlay()
         teardownCapturePipeline()
 
@@ -236,17 +316,32 @@ class AiScreenShieldEngine(
         detector.close()
     }
 
+    private fun ensureWorkerThreadOnly() {
+        if (workerThread != null && workerHandler != null) return
+        val thread = HandlerThread("SentinelAiShield").apply { start() }
+        workerThread = thread
+        workerHandler = Handler(thread.looper)
+    }
+
     private fun attachOverlayIfNeeded() {
         if (overlayView != null) return
         mainHandler.post {
-            if (overlayView != null || !hasOverlayPermission()) return@post
+            if (overlayView != null || !hasOverlayCapability()) return@post
             try {
-                val view = AiShieldOverlayView(appContext)
-                val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                } else {
-                    @Suppress("DEPRECATION")
-                    WindowManager.LayoutParams.TYPE_PHONE
+                // Prefer TYPE_ACCESSIBILITY_OVERLAY when Protection Service is enabled ->
+                // works completely in background WITHOUT needing SYSTEM_ALERT_WINDOW or child action!
+                val accCtx = SentinelAccessibilityService.getServiceContext()
+                val accWm = SentinelAccessibilityService.getOverlayWindowManager()
+                val useAccessibilityOverlay = Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1 &&
+                    accCtx != null && accWm != null
+
+                val targetCtx = if (useAccessibilityOverlay) accCtx!! else appContext
+                val targetWm = if (useAccessibilityOverlay) accWm!! else windowManager
+                val view = AiShieldOverlayView(targetCtx)
+                val type = when {
+                    useAccessibilityOverlay -> WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                    else -> @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
                 }
                 val params = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
@@ -259,8 +354,9 @@ class AiScreenShieldEngine(
                 ).apply {
                     gravity = Gravity.TOP or Gravity.START
                 }
-                windowManager.addView(view, params)
+                targetWm.addView(view, params)
                 overlayView = view
+                attachedWindowManager = targetWm
             } catch (_: Throwable) {
             }
         }
@@ -268,10 +364,12 @@ class AiScreenShieldEngine(
 
     private fun detachOverlay() {
         val v = overlayView ?: return
+        val wm = attachedWindowManager ?: windowManager
         overlayView = null
+        attachedWindowManager = null
         mainHandler.post {
             try {
-                windowManager.removeViewImmediate(v)
+                wm.removeViewImmediate(v)
             } catch (_: Throwable) {
             }
         }
@@ -374,7 +472,17 @@ class AiScreenShieldEngine(
 
         if (frameBitmap == null) return
         val shouldRecycleCopy = frameBitmap !== reusableBitmap
+        processBitmapFrame(frameBitmap, blurFaces, blurNsfw, nsfwStrict, recycleAfter = shouldRecycleCopy)
+    }
 
+    private fun processBitmapFrame(
+        frameBitmap: Bitmap,
+        blurFaces: Boolean,
+        blurNsfw: Boolean,
+        nsfwStrict: Boolean,
+        recycleAfter: Boolean
+    ) {
+        val now = System.currentTimeMillis()
         try {
             val view = overlayView
             val existingBoxes = view?.getCurrentNormalizedBoxes().orEmpty()
@@ -456,7 +564,7 @@ class AiScreenShieldEngine(
                 view?.updateDetections(emptyList(), now)
             }
         } finally {
-            if (shouldRecycleCopy) {
+            if (recycleAfter && !frameBitmap.isRecycled) {
                 frameBitmap.recycle()
             }
         }

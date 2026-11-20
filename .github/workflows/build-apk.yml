@@ -130,20 +130,19 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v25.0.${{ github.run_number }}
-          name: "SentinelCam v25.0.${{ github.run_number }} (Score Conduite • Timeline Lieux & Chaleur • Fond d’Écran à Distance • Notifs & Réponse Rapide Corrigées • Eco-Batterie Pro)"
+          tag_name: v26.0.${{ github.run_number }}
+          name: "SentinelCam v26.0.${{ github.run_number }} (Flou IA Autonome Sans Popup • Quotas de Groupe • Frise Horaire 24h Liée aux Captures • Déverrouillages & Tendances 7j)"
           body: |
-            ### SentinelCam v25.0 (`v25.0.${{ github.run_number }}`)
+            ### SentinelCam v26.0 (`v26.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Score de conduite complet (0–100)** : détection intelligente (0 % capteur à l’arrêt) des freinages brusques, accélérations brutales, virages secs, utilisation du téléphone en roulant (> 30 km/h) et excès > 130 km/h, cliquables directement sur la carte.
-            - **Timeline intelligente des lieux & Carte de chaleur (Heatmap)** : journal automatique des visites/arrêts avec détection des nouveaux lieux, nommage en zone de sécurité en 1 clic et calque de chaleur des lieux les plus fréquentés.
-            - **Changement de fond d’écran à distance** : appliquez une photo ou un message personnalisé sur l’écran d’accueil, de verrouillage ou les deux en 1 clic depuis *Règles → Système & Fond d’écran*.
-            - **Notifications détaillées & Réponse rapide réparées** : extraction complète `MessagingStyle` (groupe vs auteur, sous-texte, badges photo/vocal/vidéo, aperçu image) et réponse directe via notifications actives Android 8–15 + retour immédiat dans l’onglet *Réseaux*.
-            - **Quotas quotidiens fiables & persistants** : suivi temps réel corrigé (ne décroche plus après 60 s dans une appli), récurrence garantie chaque jour jusqu’à désactivation manuelle, avec saisie personnalisée en minutes.
-            - **Optimisation batterie avancée (~55–75 % d’économie en veille)** : socket adaptatif avec bascule instantanée, détection incrémentale basse conso, pause totale écran éteint pour les captures auto & blocages, et cadence adaptative du Filtre IA sans perte de service.
-            - **Stabilité site web & interface réorganisée** : correction du crash sur l’analyse des messages, fin de l’écran noir en quittant le site (ErrorBoundary + reconnexion live + cache SW propre), suppression définitive des enfants retirés de l’historique, et 5 onglets réorganisés sans doublons.
+            - **Superposition & Flou IA 100 % autonomes en arrière-plan (Android 11+)** : activée une seule fois par le Parent via le service officiel Android *Protection écran autonome*, la pixellisation des visages / contenus sensibles et les captures automatiques démarrent immédiatement en tâche de fond sans aucune popup ni intervention de l’enfant, sans bloquer les notifications Android 14/15, et se désactivent automatiquement lors d’une dissociation.
+            - **Quotas par Groupe d’Applications (récurrents)** : regroupez plusieurs applications sous un même plafond quotidien (ex. *Réseaux sociaux : TikTok + Instagram + Snapchat = 60 min/jour*) avec modèles 1-clic et suivi cumulé en direct.
+            - **Frise Horaire Visuelle 00h–23h reliée aux Captures automatiques** : visualisez l’activité heure par heure (jour, cours, nuit) et cliquez directement sur une heure pour voir les applications utilisées et ouvrir les captures prises sur ce créneau exact.
+            - **Compteur de Déverrouillages & Indice de Compulsion** : nombre de déverrouillages du jour, micro-consultations (< 45 s), amplitude (1re → dernière heure), déverrouillages pendant les cours et jauge de compulsion 0–100.
+            - **Tendances Semaine vs Semaine (%)** : comparez automatiquement le temps d’écran moyen, les déverrouillages et l’activité nocturne (22h–6h) par rapport à la semaine précédente.
+            - **Interface web modernisée** : tableau de bord plus lisible, cartes enrichies et zéro surcharge.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

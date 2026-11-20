@@ -21,6 +21,8 @@ interface TimelineTabProps {
   data: DataTimelineMsg | null;
   availableApps: AppUsageEntry[];
   loading: boolean;
+  hourFilter?: number | null;
+  onClearHourFilter?: () => void;
   lightbox: {
     item: TimelineCaptureItem;
     base64?: string;
@@ -54,6 +56,8 @@ export const TimelineTab: React.FC<TimelineTabProps> = ({
   data,
   availableApps,
   loading,
+  hourFilter = null,
+  onClearHourFilter,
   lightbox,
   onRefresh,
   onConfigure,
@@ -77,7 +81,23 @@ export const TimelineTab: React.FC<TimelineTabProps> = ({
     setSelectedPkgs(data.monitoredPackages ?? []);
   }, [data?.enabled, data?.intervalSec, JSON.stringify(data?.monitoredPackages ?? [])]);
 
-  const items = data?.items ?? [];
+  const allItems = data?.items ?? [];
+  const items = useMemo(() => {
+    if (hourFilter === null || hourFilter === undefined) return allItems;
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = today.getMonth();
+    const day = today.getDate();
+    return allItems.filter((it) => {
+      const d = new Date(it.timestamp);
+      return (
+        d.getFullYear() === y &&
+        d.getMonth() === m &&
+        d.getDate() === day &&
+        d.getHours() === hourFilter
+      );
+    });
+  }, [allItems, hourFilter]);
 
   const filteredApps = useMemo(() => {
     const q = appSearch.trim().toLowerCase();
@@ -211,11 +231,35 @@ export const TimelineTab: React.FC<TimelineTabProps> = ({
         <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
           <div>
-            <p className="font-medium text-amber-100">Autorisation capture écran requise une fois</p>
+            <p className="font-medium text-amber-100">Protection écran autonome à activer une fois</p>
             <p className="mt-0.5 text-[11px] text-amber-200/80">
-              Ouvrez l’application sur le smartphone de l’enfant et appuyez une fois sur « Autoriser capture écran » pour démarrer les captures automatiques.
+              Activez « Protection écran autonome » une seule fois sur le téléphone pour lancer les captures automatiques en tâche de fond sans aucune popup.
             </p>
           </div>
+        </div>
+      )}
+
+      {/* Active Hour Filter Banner (from Frise Horaire) */}
+      {hourFilter !== null && hourFilter !== undefined && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-500/35 bg-sky-500/12 px-3 py-2 text-xs text-sky-100">
+          <span className="inline-flex items-center gap-1.5 font-medium">
+            <Clock className="h-3.5 w-3.5 text-sky-400" />
+            Tranche filtrée :{' '}
+            <strong className="font-mono">
+              {hourFilter.toString().padStart(2, '0')}h00 – {((hourFilter + 1) % 24).toString().padStart(2, '0')}h00
+            </strong>{' '}
+            ({items.length} capture{items.length > 1 ? 's' : ''})
+          </span>
+          {onClearHourFilter && (
+            <button
+              type="button"
+              onClick={onClearHourFilter}
+              className="inline-flex items-center gap-1 rounded-lg bg-sky-500/20 px-2.5 py-1 text-[11px] font-semibold text-sky-200 hover:bg-sky-500/30"
+            >
+              <X className="h-3 w-3" />
+              Afficher toutes les captures
+            </button>
+          )}
         </div>
       )}
 

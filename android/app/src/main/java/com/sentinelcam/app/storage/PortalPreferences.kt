@@ -30,6 +30,13 @@ data class AppQuotaRule(
     val dailyLimitMinutes: Int
 )
 
+data class AppGroupQuota(
+    val id: String,
+    val name: String,
+    val packages: List<String>,
+    val dailyLimitMinutes: Int
+)
+
 data class GeofenceZone(
     val id: String,
     val name: String,
@@ -458,6 +465,86 @@ class PortalPreferences(context: Context) {
             }
             prefs.edit().putString(KEY_APP_QUOTAS, arr.toString()).commit()
         }
+    }
+
+    fun getAppGroupQuotas(): List<AppGroupQuota> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_APP_GROUP_QUOTAS, null) ?: return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                val out = ArrayList<AppGroupQuota>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val id = o.optString("id", "").trim()
+                    val name = o.optString("name", "").trim()
+                    val lim = o.optInt("dailyLimitMinutes", 0)
+                    val pkgsArr = o.optJSONArray("packages")
+                    val pkgs = ArrayList<String>()
+                    if (pkgsArr != null) {
+                        for (j in 0 until pkgsArr.length()) {
+                            val p = pkgsArr.optString(j, "").trim()
+                            if (p.isNotEmpty()) pkgs.add(p)
+                        }
+                    }
+                    if (id.isNotEmpty() && name.isNotEmpty() && pkgs.isNotEmpty() && lim > 0) {
+                        out.add(AppGroupQuota(id, name, pkgs.distinct(), lim))
+                    }
+                }
+                out
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+    }
+
+    fun upsertAppGroupQuota(
+        id: String?,
+        name: String,
+        packages: List<String>,
+        dailyLimitMinutes: Int
+    ): AppGroupQuota? {
+        synchronized(LOCK) {
+            val cleanPkgs = packages.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+            val cleanId = if (!id.isNullOrBlank()) id.trim() else "grp_${CryptoProtocol.randomHex(5)}"
+            val cleanName = name.trim().take(40).ifEmpty { "Groupe" }
+            val list = getAppGroupQuotas().filter { it.id != cleanId }.toMutableList()
+            val added = if (cleanPkgs.isNotEmpty() && dailyLimitMinutes > 0) {
+                AppGroupQuota(
+                    id = cleanId,
+                    name = cleanName,
+                    packages = cleanPkgs,
+                    dailyLimitMinutes = dailyLimitMinutes.coerceIn(5, 720)
+                ).also { list.add(it) }
+            } else {
+                null
+            }
+            saveAppGroupQuotasLocked(list)
+            return added
+        }
+    }
+
+    fun deleteAppGroupQuota(id: String) {
+        synchronized(LOCK) {
+            val list = getAppGroupQuotas().filter { it.id != id }
+            saveAppGroupQuotasLocked(list)
+        }
+    }
+
+    private fun saveAppGroupQuotasLocked(list: List<AppGroupQuota>) {
+        val arr = JSONArray()
+        for (g in list) {
+            val pkgsArr = JSONArray()
+            for (p in g.packages) pkgsArr.put(p)
+            arr.put(
+                JSONObject().apply {
+                    put("id", g.id)
+                    put("name", g.name)
+                    put("packages", pkgsArr)
+                    put("dailyLimitMinutes", g.dailyLimitMinutes)
+                }
+            )
+        }
+        prefs.edit().putString(KEY_APP_GROUP_QUOTAS, arr.toString()).commit()
     }
 
     private fun todayDateKey(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
@@ -1135,6 +1222,7 @@ class PortalPreferences(context: Context) {
                 .putLong(KEY_SCHOOL_MODE_UNTIL, 0L)
                 .remove(KEY_SCHOOL_ALLOWED_PKGS)
                 .remove(KEY_APP_QUOTAS)
+                .remove(KEY_APP_GROUP_QUOTAS)
                 .remove(KEY_APP_BONUS_TODAY)
                 .putBoolean(KEY_CURFEW_ENABLED, false)
                 .putLong(KEY_CURFEW_BYPASS_UNTIL, 0L)
@@ -1420,6 +1508,7 @@ class PortalPreferences(context: Context) {
         private const val KEY_CURFEW_DAYS_MASK = "curfew_days_mask_v13"
         private const val KEY_CURFEW_BYPASS_UNTIL = "curfew_bypass_until_v13"
         private const val KEY_APP_QUOTAS = "app_quotas_v13"
+        private const val KEY_APP_GROUP_QUOTAS = "app_group_quotas_v26"
         private const val KEY_APP_BONUS_TODAY = "app_bonus_today_v13"
         private const val KEY_SCHOOL_MODE_UNTIL = "school_mode_until_v13"
         private const val KEY_SCHOOL_ALLOWED_PKGS = "school_allowed_pkgs_v13"

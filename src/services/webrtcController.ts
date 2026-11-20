@@ -744,6 +744,25 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async saveRemoteAppGroupQuota(opts: {
+    id?: string;
+    name?: string;
+    packages?: string[];
+    dailyLimitMinutes?: number;
+    delete?: boolean;
+  }): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_SAVE_APP_GROUP_QUOTA',
+        requestId: randomHex(8),
+        ...opts,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   public async setRemoteSchoolMode(opts: {
     durationMinutes?: number;
     allowedPackages?: string[];
@@ -1526,6 +1545,7 @@ export class SentinelWebRtcController {
       aiBlurNsfw: msg.aiBlurNsfw,
       aiNsfwStrict: msg.aiNsfwStrict,
       aiShieldRunning: msg.aiShieldRunning,
+      aiShieldAutonomous: msg.aiShieldAutonomous,
       aiShieldNeedsConsent: msg.aiShieldNeedsConsent,
       timelineCaptureEnabled: msg.timelineCaptureEnabled,
       timelineRunning: msg.timelineRunning,
@@ -1613,6 +1633,7 @@ export class SentinelWebRtcController {
       aiBlurNsfw: msg.aiBlurNsfw,
       aiNsfwStrict: msg.aiNsfwStrict,
       aiShieldRunning: msg.aiShieldRunning,
+      aiShieldAutonomous: msg.aiShieldAutonomous,
       aiShieldNeedsConsent: msg.aiShieldNeedsConsent,
       timelineCaptureEnabled: msg.timelineCaptureEnabled,
       timelineRunning: msg.timelineRunning,

@@ -24,6 +24,7 @@ export interface SentinelNativePluginContract {
   requestStorageManagePermission(): Promise<NativePortalState>;
   requestUsageAccessPermission(): Promise<NativePortalState>;
   requestOverlayPermission(): Promise<NativePortalState>;
+  requestAccessibilityPermission(): Promise<NativePortalState>;
   requestDeviceAdmin(): Promise<NativePortalState>;
   pairWithParentCode(options: { code: string }): Promise<NativePortalState>;
   requestParentUnpair(): Promise<NativePortalState>;

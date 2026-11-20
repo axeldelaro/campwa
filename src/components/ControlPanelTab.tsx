@@ -31,6 +31,8 @@ import type {
   SharedLocationData,
 } from '../types/sentinel';
 import { ScreenFlashCard } from './ScreenFlashCard';
+import { ActivityPulseCard } from './ActivityPulseCard';
+import { AppGroupQuotasCard } from './AppGroupQuotasCard';
 
 export interface ParentalCommonProps {
   screenTime: DataScreenTimeMsg | null;
@@ -48,6 +50,14 @@ interface ParentalHomeTabProps extends ParentalCommonProps {
   onApplyAppLock: (app: AppUsageEntry, minutes: number, explicitUntilMs?: number) => Promise<void>;
   onClearAllAppLocks: () => Promise<void>;
   onSetAppQuota: (app: AppUsageEntry, dailyLimitMinutes: number) => Promise<void>;
+  onSaveAppGroupQuota: (opts: {
+    id?: string;
+    name?: string;
+    packages?: string[];
+    dailyLimitMinutes?: number;
+    delete?: boolean;
+  }) => Promise<void>;
+  onJumpToCapturesHour: (hour: number) => void;
   onSetSchoolMode: (opts: { durationMinutes?: number; allowedPackages?: string[] }) => Promise<void>;
   onRespondTimeRequest: (timeRequestId: string, approve: boolean, grantMinutes?: number) => Promise<void>;
   onRespondUnpair: (approve: boolean) => Promise<void>;
@@ -151,6 +161,8 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
   onApplyAppLock,
   onClearAllAppLocks,
   onSetAppQuota,
+  onSaveAppGroupQuota,
+  onJumpToCapturesHour,
   onSetSchoolMode,
   onRespondTimeRequest,
   onRespondUnpair,
@@ -179,6 +191,9 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
         { key: 'battery', label: 'Batterie illimitée', ok: ph.batteryUnrestricted },
         { key: 'usage', label: 'Temps d’écran', ok: ph.usageAccess },
         { key: 'overlay', label: 'Affichage superposé', ok: ph.overlay },
+        ...(ph.accessibilityService !== undefined
+          ? [{ key: 'a11y', label: 'Protection écran autonome', ok: ph.accessibilityService }]
+          : []),
         { key: 'camera', label: 'Caméra', ok: ph.camera },
         { key: 'mic', label: 'Micro', ok: ph.microphone },
         { key: 'gps', label: 'Position GPS', ok: ph.location },
@@ -335,15 +350,15 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
         ))}
 
       {/* Hero: Screen Time + 7-Day Trend */}
-      <div className="grid gap-4 rounded-2xl border border-white/[0.07] bg-zinc-900/65 p-4 sm:p-5 md:grid-cols-[1fr_1.3fr]">
+      <div className="grid gap-4 rounded-2xl border border-white/[0.09] bg-gradient-to-br from-zinc-900/90 via-zinc-900/75 to-zinc-950/90 p-4 shadow-[0_8px_30px_rgba(0,0,0,0.28)] sm:p-5 md:grid-cols-[1fr_1.35fr]">
         <div className="flex flex-col justify-between gap-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs text-zinc-400">Temps d’écran aujourd’hui</span>
+            <span className="text-xs font-medium text-zinc-400">Temps d’écran aujourd’hui</span>
             <button
               type="button"
               disabled={screenTimeLoading}
               onClick={() => void onRefresh()}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-white/[0.06] hover:text-white"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-zinc-400 transition hover:border-white/15 hover:bg-white/[0.07] hover:text-white"
               title="Actualiser"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${screenTimeLoading ? 'animate-spin' : ''}`} />
@@ -352,7 +367,12 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
           <div className="font-mono text-3xl font-semibold tracking-tight text-white">
             {formatUsageDuration(screenTime?.totalScreenTimeSec ?? 0)}
           </div>
-          <div className="text-xs text-zinc-400">
+          <div className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                screenTime?.currentAppName ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'
+              }`}
+            />
             {screenTime?.currentAppName ? (
               <>
                 En cours : <span className="font-medium text-emerald-300">{screenTime.currentAppName}</span>
@@ -378,9 +398,13 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
                           ? `${(day.totalSeconds / 3600).toFixed(1)}h`
                           : `${Math.round(day.totalSeconds / 60)}m`}
                       </span>
-                      <div className="flex h-14 w-full items-end rounded-md bg-zinc-950/90 p-0.5">
+                      <div className="flex h-14 w-full items-end rounded-lg bg-zinc-950/90 p-0.5 ring-1 ring-white/[0.04]">
                         <div
-                          className={`w-full rounded ${day.isToday ? 'bg-emerald-400' : 'bg-zinc-600'}`}
+                          className={`w-full rounded-md transition-all ${
+                            day.isToday
+                              ? 'bg-gradient-to-t from-emerald-500 to-emerald-300 shadow-[0_0_12px_rgba(52,211,153,0.35)]'
+                              : 'bg-zinc-600/80'
+                          }`}
                           style={{ height: `${pct}%` }}
                         />
                       </div>
@@ -491,6 +515,21 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
           </div>
         )}
       </div>
+
+      {/* Activity Pulse (#6 Pickups/Compulsion + #4 Weekly Trends + #2 Hourly Visual Timeline) */}
+      <ActivityPulseCard
+        unlockMetrics={screenTime?.unlockMetrics}
+        hourlyTimeline={screenTime?.hourlyTimeline}
+        weeklyTrends={screenTime?.weeklyTrends}
+        onJumpToCapturesHour={onJumpToCapturesHour}
+      />
+
+      {/* #1 App Group Quotas (Combined Daily Pool across Multiple Apps) */}
+      <AppGroupQuotasCard
+        groups={screenTime?.groupQuotas ?? []}
+        availableApps={screenTime?.apps ?? []}
+        onSaveGroup={onSaveAppGroupQuota}
+      />
 
       {/* Flash Message (Black Screen 3s) or Fullscreen Image Overlay */}
       <ScreenFlashCard onFlashText={onFlashText} onFlashImage={onFlashImage} />
@@ -864,12 +903,20 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
             }`}
           >
             {telemetry?.aiShieldRunning
-              ? 'Actif'
+              ? telemetry?.aiShieldAutonomous
+                ? 'Autonome · Arrière-plan'
+                : 'Actif'
               : telemetry?.aiShieldNeedsConsent
-              ? 'Validation requise'
+              ? 'Configuration 1 fois requise'
               : 'Inactif'}
           </span>
         </div>
+
+        {telemetry?.aiShieldNeedsConsent && (
+          <div className="mt-2.5 rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-3 py-2 text-[11px] text-amber-200/90">
+            Activez « Protection écran autonome » une seule fois dans l’application sur le smartphone pour démarrer le flou en arrière-plan sans aucune intervention de l’enfant.
+          </div>
+        )}
 
         <div className="mt-3 grid grid-cols-2 gap-2">
           <button

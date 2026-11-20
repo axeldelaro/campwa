@@ -559,6 +559,45 @@ object ScreenTimeHelper {
             })
         }
 
+        // #1: App Group Quotas (combined pool across multiple apps, persistent every day!)
+        val groupQuotasArr = JSONArray()
+        for (g in prefs.getAppGroupQuotas()) {
+            var groupUsedSec = 0L
+            val pkgsArr = JSONArray()
+            for (p in g.packages) {
+                pkgsArr.put(p)
+                groupUsedSec += (usageMsByPkg[p] ?: 0L) / 1000L
+            }
+            val bonusMin = prefs.getDailyBonusMinutes("group:${g.id}")
+            val exceeded = groupUsedSec >= (g.dailyLimitMinutes + bonusMin) * 60L
+            groupQuotasArr.put(
+                JSONObject().apply {
+                    put("id", g.id)
+                    put("name", g.name)
+                    put("packages", pkgsArr)
+                    put("dailyLimitMinutes", g.dailyLimitMinutes)
+                    put("usedSecondsToday", groupUsedSec)
+                    put("bonusMinutesToday", bonusMin)
+                    put("quotaExceeded", exceeded)
+                }
+            )
+        }
+
+        // #6 Pickups & Compulsion + #2 Hourly Visual Timeline (linked with Auto-Screenshots!) + #4 Weekly Trends
+        val (unlockMetricsJson, hourlyTimelineArr) = computeUnlockMetricsAndHourlyTimeline(
+            context = context,
+            pm = pm,
+            appLabels = appLabels,
+            now = now
+        )
+        val weeklyHistoryArr = read7DayHistory(context, totalScreenTimeSec)
+        val weeklyTrendsJson = computeWeeklyTrends(
+            context = context,
+            todayTotalSec = totalScreenTimeSec,
+            unlocksToday = unlockMetricsJson.optInt("unlocksToday", 0),
+            now = now
+        )
+
         return JSONObject().apply {
             put("hasUsageAccess", usageGranted)
             put("hasOverlayPermission", overlayGranted)
@@ -568,7 +607,11 @@ object ScreenTimeHelper {
             put("currentAppName", currentAppName ?: JSONObject.NULL)
             put("screenPausedUntilMs", screenPausedUntil)
             put("apps", appsArray)
-            put("weeklyHistory", read7DayHistory(context, totalScreenTimeSec))
+            put("groupQuotas", groupQuotasArr)
+            put("weeklyHistory", weeklyHistoryArr)
+            put("unlockMetrics", unlockMetricsJson)
+            put("hourlyTimeline", hourlyTimelineArr)
+            put("weeklyTrends", weeklyTrendsJson)
             put("curfew", curfewJson)
             put("schoolMode", schoolJson)
             put("blockSettingsAndStore", prefs.blockSettingsAndStore)
@@ -576,6 +619,334 @@ object ScreenTimeHelper {
             put("pendingRequests", reqsArr)
             put("geofences", geoArr)
             put("securityEvents", eventsArr)
+        }
+    }
+
+    /**
+     * #6 Pickups & Compulsion Index + #2 Hour-by-Hour Visual Timeline (linked to Auto-Screenshots).
+     */
+    private fun computeUnlockMetricsAndHourlyTimeline(
+        context: Context,
+        pm: PackageManager,
+        appLabels: Map<String, String>,
+        now: Long
+    ): Pair<JSONObject, JSONArray> {
+        val unlocksByHour = IntArray(24)
+        val hourTotalSec = LongArray(24)
+        val hourAppsSec = Array(24) { HashMap<String, Long>() }
+        var totalUnlocks = 0
+        var firstUnlockTs = 0L
+        var lastUnlockTs = 0L
+        var sessionCount = 0
+        var sessionTotalSec = 0L
+        var shortChecksCount = 0
+
+        if (hasUsageAccess(context)) {
+            try {
+                val cal = Calendar.getInstance().apply {
+                    timeInMillis = now
+                    set(Calendar.HOUR_OF_DAY, 0)
+                    set(Calendar.MINUTE, 0)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                val startOfDay = cal.timeInMillis
+                val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+                val events = usm.queryEvents(startOfDay, now)
+                val ev = UsageEvents.Event()
+                val evCal = Calendar.getInstance()
+
+                var screenOnStartMs = 0L
+                var lastUnlockEventMs = 0L
+                val activeAppStart = HashMap<String, Long>()
+
+                while (events.hasNextEvent()) {
+                    events.getNextEvent(ev)
+                    val ts = ev.timeStamp
+                    val pkg = ev.packageName
+                    evCal.timeInMillis = ts
+                    val hr = evCal.get(Calendar.HOUR_OF_DAY).coerceIn(0, 23)
+
+                    when (ev.eventType) {
+                        UsageEvents.Event.KEYGUARD_HIDDEN,
+                        UsageEvents.Event.SCREEN_INTERACTIVE -> {
+                            // Deduplicate SCREEN_INTERACTIVE + KEYGUARD_HIDDEN arriving within 8s of each other
+                            if (ts - lastUnlockEventMs > 8_000L) {
+                                lastUnlockEventMs = ts
+                                totalUnlocks++
+                                unlocksByHour[hr]++
+                                if (firstUnlockTs == 0L) firstUnlockTs = ts
+                                lastUnlockTs = ts
+                                if (screenOnStartMs == 0L) screenOnStartMs = ts
+                            }
+                        }
+
+                        UsageEvents.Event.SCREEN_NON_INTERACTIVE -> {
+                            if (screenOnStartMs > 0L && ts > screenOnStartMs) {
+                                val sessSec = ((ts - screenOnStartMs) / 1000L).coerceAtMost(4 * 3600L)
+                                sessionCount++
+                                sessionTotalSec += sessSec
+                                if (sessSec in 2..45) shortChecksCount++
+                            }
+                            screenOnStartMs = 0L
+                            // Close any open app intervals at screen off
+                            for ((openPkg, startTs) in activeAppStart) {
+                                if (ts > startTs && !isProtectedSystemPackage(context, openPkg)) {
+                                    addIntervalToHours(startTs, ts, openPkg, hourTotalSec, hourAppsSec)
+                                }
+                            }
+                            activeAppStart.clear()
+                        }
+
+                        UsageEvents.Event.ACTIVITY_RESUMED,
+                        @Suppress("DEPRECATION") UsageEvents.Event.MOVE_TO_FOREGROUND -> {
+                            if (!pkg.isNullOrEmpty() && !isProtectedSystemPackage(context, pkg)) {
+                                activeAppStart[pkg] = ts
+                                if (firstUnlockTs == 0L) firstUnlockTs = ts
+                                if (ts > lastUnlockTs) lastUnlockTs = ts
+                            }
+                        }
+
+                        UsageEvents.Event.ACTIVITY_PAUSED,
+                        @Suppress("DEPRECATION") UsageEvents.Event.MOVE_TO_BACKGROUND -> {
+                            if (!pkg.isNullOrEmpty()) {
+                                val startTs = activeAppStart.remove(pkg)
+                                if (startTs != null && ts > startTs && !isProtectedSystemPackage(context, pkg)) {
+                                    addIntervalToHours(startTs, ts, pkg, hourTotalSec, hourAppsSec)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Close still-active foreground apps up to now
+                for ((openPkg, startTs) in activeAppStart) {
+                    if (now > startTs && !isProtectedSystemPackage(context, openPkg)) {
+                        addIntervalToHours(startTs, now, openPkg, hourTotalSec, hourAppsSec)
+                    }
+                }
+                if (screenOnStartMs > 0L && now > screenOnStartMs) {
+                    val sessSec = ((now - screenOnStartMs) / 1000L).coerceAtMost(4 * 3600L)
+                    sessionCount++
+                    sessionTotalSec += sessSec
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
+        val schoolHoursUnlocks =
+            unlocksByHour[8] + unlocksByHour[9] + unlocksByHour[10] + unlocksByHour[11] +
+                unlocksByHour[14] + unlocksByHour[15] + unlocksByHour[16]
+        val avgSessionSec = if (sessionCount > 0) (sessionTotalSec / sessionCount).toInt() else 0
+
+        // Compulsion score 0..100 combining total pickups + short compulsive micro-checks
+        val compulsionRaw = ((totalUnlocks * 0.85) + (shortChecksCount * 1.4)).toInt().coerceIn(0, 100)
+        val compulsionLabel = when {
+            compulsionRaw >= 75 -> "Compulsif"
+            compulsionRaw >= 50 -> "Élevé"
+            compulsionRaw >= 25 -> "Modéré"
+            else -> "Calme"
+        }
+
+        val byHourArr = JSONArray()
+        for (h in 0 until 24) byHourArr.put(unlocksByHour[h])
+
+        val unlockJson = JSONObject().apply {
+            put("unlocksToday", totalUnlocks)
+            put("unlocksByHour", byHourArr)
+            put("firstUnlockTs", firstUnlockTs)
+            put("lastUnlockTs", lastUnlockTs)
+            put("avgSessionSeconds", avgSessionSec)
+            put("shortChecksCount", shortChecksCount)
+            put("schoolHoursUnlocks", schoolHoursUnlocks)
+            put("compulsionIndex", compulsionRaw)
+            put("compulsionLabel", compulsionLabel)
+        }
+
+        // Build Hour-by-Hour Visual Timeline linked with VisualTimelineManager captures!
+        val capturesByHour = VisualTimelineManager.countCapturesByHourToday(context)
+        val timelineArr = JSONArray()
+        for (h in 0 until 24) {
+            val topAppsArr = JSONArray()
+            for ((pkg, sec) in hourAppsSec[h].entries.sortedByDescending { it.value }.take(4)) {
+                if (sec < 10L) continue
+                topAppsArr.put(
+                    JSONObject().apply {
+                        put("packageName", pkg)
+                        put("appName", appLabels[pkg] ?: resolveAppName(pm, pkg))
+                        put("seconds", sec)
+                    }
+                )
+            }
+            timelineArr.put(
+                JSONObject().apply {
+                    put("hour", h)
+                    put("totalSeconds", hourTotalSec[h])
+                    put("unlocks", unlocksByHour[h])
+                    put("isNight", h >= 22 || h < 6)
+                    put("isSchoolHour", h in 8..11 || h in 14..16)
+                    put("captureCount", capturesByHour[h])
+                    put("topApps", topAppsArr)
+                }
+            )
+        }
+
+        return Pair(unlockJson, timelineArr)
+    }
+
+    private fun addIntervalToHours(
+        startTs: Long,
+        endTs: Long,
+        pkg: String,
+        hourTotalSec: LongArray,
+        hourAppsSec: Array<HashMap<String, Long>>
+    ) {
+        val safeEnd = minOf(endTs, startTs + 4 * 3600_000L)
+        if (safeEnd <= startTs) return
+        val cal = Calendar.getInstance()
+        var cursor = startTs
+        while (cursor < safeEnd) {
+            cal.timeInMillis = cursor
+            val hr = cal.get(Calendar.HOUR_OF_DAY).coerceIn(0, 23)
+            cal.set(Calendar.MINUTE, 59)
+            cal.set(Calendar.SECOND, 59)
+            cal.set(Calendar.MILLISECOND, 999)
+            val sliceEnd = minOf(safeEnd, cal.timeInMillis + 1L)
+            val sec = ((sliceEnd - cursor) / 1000L).coerceAtLeast(0L)
+            if (sec > 0L) {
+                hourTotalSec[hr] = (hourTotalSec[hr] + sec).coerceAtMost(3600L)
+                hourAppsSec[hr][pkg] = (hourAppsSec[hr][pkg] ?: 0L) + sec
+            }
+            cursor = sliceEnd
+        }
+    }
+
+    /**
+     * #4 Week-over-Week Trends: compares last 7 days vs previous 7 days (days -14..-7).
+     */
+    private fun computeWeeklyTrends(
+        context: Context,
+        todayTotalSec: Long,
+        unlocksToday: Int,
+        now: Long
+    ): JSONObject {
+        var thisWeekSec = todayTotalSec
+        var prevWeekSec = 0L
+        var nightThisWeekMin = 0
+        var nightPrevWeekMin = 0
+        var avgDailyUnlocks7d = unlocksToday
+
+        if (hasUsageAccess(context)) {
+            try {
+                val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+                val cal = Calendar.getInstance().apply {
+                    timeInMillis = now
+                    set(Calendar.HOUR_OF_DAY, 0)
+                    set(Calendar.MINUTE, 0)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                val startToday = cal.timeInMillis
+
+                // Sum days -6..-1 for this week, and days -13..-7 for previous week
+                for (offset in 1..13) {
+                    val dStart = startToday - offset * 86_400_000L
+                    val dEnd = dStart + 86_400_000L - 1L
+                    val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, dStart, dEnd)
+                    var sumMs = 0L
+                    for (s in stats) {
+                        val pkg = s.packageName ?: continue
+                        if (isProtectedSystemPackage(context, pkg)) continue
+                        if (s.firstTimeStamp >= dStart - 3_600_000L && s.lastTimeUsed <= dEnd + 3_600_000L) {
+                            sumMs += s.totalTimeInForeground.coerceAtMost(14 * 3600_000L)
+                        }
+                    }
+                    val daySec = (sumMs / 1000L).coerceAtMost(20 * 3600L)
+                    if (offset <= 6) {
+                        thisWeekSec += daySec
+                    } else {
+                        prevWeekSec += daySec
+                    }
+                }
+
+                // Estimate 7-day average unlocks + night activity using UsageEvents (Android retains ~7-10d of events)
+                val sevenDaysAgo = now - 7L * 86_400_000L
+                val fourteenDaysAgo = now - 14L * 86_400_000L
+                val evs = usm.queryEvents(fourteenDaysAgo, now)
+                val ev = UsageEvents.Event()
+                val evCal = Calendar.getInstance()
+                val activeStart = HashMap<String, Long>()
+                var nightThisMs = 0L
+                var nightPrevMs = 0L
+                var unlocks7d = 0
+                var lastUnlockMs = 0L
+
+                while (evs.hasNextEvent()) {
+                    evs.getNextEvent(ev)
+                    val ts = ev.timeStamp
+                    val pkg = ev.packageName
+                    if ((ev.eventType == UsageEvents.Event.KEYGUARD_HIDDEN ||
+                            ev.eventType == UsageEvents.Event.SCREEN_INTERACTIVE) &&
+                        ts >= sevenDaysAgo && (ts - lastUnlockMs > 8_000L)
+                    ) {
+                        lastUnlockMs = ts
+                        unlocks7d++
+                    }
+                    if (pkg.isNullOrEmpty() || isProtectedSystemPackage(context, pkg)) continue
+                    val isRes = ev.eventType == UsageEvents.Event.ACTIVITY_RESUMED ||
+                        @Suppress("DEPRECATION") (ev.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND)
+                    val isPau = ev.eventType == UsageEvents.Event.ACTIVITY_PAUSED ||
+                        @Suppress("DEPRECATION") (ev.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND)
+                    if (isRes) {
+                        activeStart[pkg] = ts
+                    } else if (isPau) {
+                        val st = activeStart.remove(pkg) ?: continue
+                        if (ts > st) {
+                            evCal.timeInMillis = st
+                            val hr = evCal.get(Calendar.HOUR_OF_DAY)
+                            if (hr >= 22 || hr < 6) {
+                                val delta = (ts - st).coerceAtMost(2 * 3600_000L)
+                                if (st >= sevenDaysAgo) nightThisMs += delta else nightPrevMs += delta
+                            }
+                        }
+                    }
+                }
+                nightThisWeekMin = (nightThisMs / 60_000L).toInt()
+                nightPrevWeekMin = (nightPrevMs / 60_000L).toInt()
+                if (unlocks7d > 0) avgDailyUnlocks7d = (unlocks7d / 7).coerceAtLeast(1)
+            } catch (_: Throwable) {
+            }
+        }
+
+        val thisWeekMin = (thisWeekSec / 60L).toInt()
+        val prevWeekMin = (prevWeekSec / 60L).toInt()
+        val screenDeltaPct: Int? = if (prevWeekMin >= 30) {
+            (((thisWeekMin - prevWeekMin) * 100.0) / prevWeekMin.toDouble()).toInt().coerceIn(-99, 300)
+        } else {
+            null
+        }
+        val nightDeltaPct: Int? = if (nightPrevWeekMin >= 10) {
+            (((nightThisWeekMin - nightPrevWeekMin) * 100.0) / nightPrevWeekMin.toDouble()).toInt().coerceIn(-99, 300)
+        } else {
+            null
+        }
+        val unlocksDeltaPct: Int? = if (avgDailyUnlocks7d >= 5) {
+            (((unlocksToday - avgDailyUnlocks7d) * 100.0) / avgDailyUnlocks7d.toDouble()).toInt().coerceIn(-99, 300)
+        } else {
+            null
+        }
+
+        return JSONObject().apply {
+            put("screenTimeThisWeekMin", thisWeekMin)
+            put("screenTimePrevWeekMin", prevWeekMin)
+            if (screenDeltaPct != null) put("screenTimeDeltaPct", screenDeltaPct)
+            put("avgDailyMinutesThisWeek", thisWeekMin / 7)
+            put("avgDailyMinutesPrevWeek", prevWeekMin / 7)
+            put("nightMinutesThisWeek", nightThisWeekMin)
+            put("nightMinutesPrevWeek", nightPrevWeekMin)
+            if (nightDeltaPct != null) put("nightDeltaPct", nightDeltaPct)
+            put("avgDailyUnlocks7d", avgDailyUnlocks7d)
+            if (unlocksDeltaPct != null) put("unlocksDeltaPct", unlocksDeltaPct)
         }
     }
 

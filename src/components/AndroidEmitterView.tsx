@@ -158,6 +158,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   const p = portal.permissions;
+  const hasAutonomousScreenProtection = Boolean(p.accessibilityService);
   const aiNeedsScreenCapture = Boolean((portal.aiBlurFaces || portal.aiBlurNsfw) && !portal.aiShieldRunning);
   const timelineNeedsScreenCapture = Boolean(portal.timelineCaptureEnabled && !portal.timelineRunning);
   const needsDeviceAdmin = !portal.deviceAdminActive;
@@ -170,7 +171,15 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     action: () => Promise<void>;
   }> = [];
 
-  if (aiNeedsScreenCapture || timelineNeedsScreenCapture) {
+  if (!hasAutonomousScreenProtection) {
+    missingOsSteps.push({
+      key: 'a11y-autonomous',
+      label: 'Protection écran autonome (Flou IA & Captures sans popup)',
+      highlight: true,
+      icon: Sparkles,
+      action: () => runAction(() => SentinelNative.requestAccessibilityPermission()),
+    });
+  } else if (aiNeedsScreenCapture || timelineNeedsScreenCapture) {
     missingOsSteps.push({
       key: 'ai-screen',
       label:
@@ -266,9 +275,11 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       icon: MessageSquare,
       action: () => runAction(() => SentinelNative.requestSmsPermission()),
     });
+  }
+  if (!p.sms || !p.readSms || !hasAutonomousScreenProtection) {
     missingOsSteps.push({
-      key: 'sms-settings',
-      label: 'Paramètres de l’appli (si SMS bloqué : ⋮ → Paramètres restreints)',
+      key: 'restricted-settings',
+      label: 'Paramètres appli (si grisé sur Android 13+ : ⋮ → Paramètres restreints)',
       icon: ShieldAlert,
       action: () => runAction(() => SentinelNative.openAppPermissionsSettings()),
     });
@@ -497,7 +508,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           {portal.aiShieldRunning && (
             <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/15 px-2.5 py-1 text-emerald-300">
               <Sparkles className="h-3 w-3" />
-              Filtre IA actif
+              {portal.aiShieldAutonomous ? 'Filtre IA autonome' : 'Filtre IA actif'}
             </span>
           )}
           {portal.curfewEnabled && (

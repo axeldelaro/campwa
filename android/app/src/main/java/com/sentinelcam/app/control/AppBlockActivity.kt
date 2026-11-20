@@ -70,13 +70,27 @@ class AppBlockActivity : AppCompatActivity() {
                     blockedUntilMs > now
                 }
                 MODE_QUOTA -> {
-                    val q = prefs.getAppQuotas().firstOrNull { it.packageName == blockedPackage }
-                    if (q == null) {
-                        false
+                    if (blockedPackage.startsWith("group:")) {
+                        val gid = blockedPackage.removePrefix("group:")
+                        val g = prefs.getAppGroupQuotas().firstOrNull { it.id == gid }
+                        if (g == null) {
+                            false
+                        } else {
+                            val map = ScreenTimeHelper.computeTodayUsageSecByPackage(applicationContext)
+                            var sum = 0L
+                            for (p in g.packages) sum += map[p] ?: 0L
+                            val allowed = (g.dailyLimitMinutes + prefs.getDailyBonusMinutes(blockedPackage)) * 60L
+                            sum >= allowed
+                        }
                     } else {
-                        val used = ScreenTimeHelper.computeTodayUsageSecByPackage(applicationContext)[blockedPackage] ?: 0L
-                        val allowed = (q.dailyLimitMinutes + prefs.getDailyBonusMinutes(blockedPackage)) * 60L
-                        used >= allowed
+                        val q = prefs.getAppQuotas().firstOrNull { it.packageName == blockedPackage }
+                        if (q == null) {
+                            false
+                        } else {
+                            val used = ScreenTimeHelper.computeTodayUsageSecByPackage(applicationContext)[blockedPackage] ?: 0L
+                            val allowed = (q.dailyLimitMinutes + prefs.getDailyBonusMinutes(blockedPackage)) * 60L
+                            used >= allowed
+                        }
                     }
                 }
                 else -> {

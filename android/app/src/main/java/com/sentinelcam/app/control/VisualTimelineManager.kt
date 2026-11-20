@@ -69,6 +69,10 @@ class VisualTimelineManager(
         private set
 
     @Volatile
+    var usingAccessibilityMode: Boolean = false
+        private set
+
+    @Volatile
     private var screenInteractive: Boolean = true
     private var receiverRegistered: Boolean = false
 
@@ -124,25 +128,42 @@ class VisualTimelineManager(
             if (sharedProjection != null) {
                 mediaProjection = sharedProjection
                 ownsProjection = false
-            } else {
-                val intent = projectionIntent ?: return false
+                usingAccessibilityMode = false
+            } else if (projectionIntent != null) {
                 val mpm = appContext.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 val proj = try {
-                    mpm.getMediaProjection(Activity.RESULT_OK, intent)
+                    mpm.getMediaProjection(Activity.RESULT_OK, projectionIntent)
                 } catch (_: Throwable) {
                     null
-                } ?: return false
-                proj.registerCallback(object : MediaProjection.Callback() {
-                    override fun onStop() {
-                        mainHandler.post { stop() }
-                    }
-                }, mainHandler)
-                mediaProjection = proj
-                ownsProjection = true
+                }
+                if (proj != null) {
+                    proj.registerCallback(object : MediaProjection.Callback() {
+                        override fun onStop() {
+                            mainHandler.post { stop() }
+                        }
+                    }, mainHandler)
+                    mediaProjection = proj
+                    ownsProjection = true
+                    usingAccessibilityMode = false
+                }
             }
         }
 
-        startPipelineIfNeeded()
+        if (mediaProjection == null) {
+            if (!SentinelAccessibilityService.canCaptureAutonomously()) {
+                return false
+            }
+            usingAccessibilityMode = true
+        }
+
+        if (mediaProjection != null) {
+            startPipelineIfNeeded()
+        } else if (workerThread == null || workerHandler == null) {
+            val thread = HandlerThread("SentinelVisualTimeline").apply { start() }
+            workerThread = thread
+            workerHandler = Handler(thread.looper)
+        }
+
         screenInteractive = try { powerManager.isInteractive } catch (_: Throwable) { true }
         if (!receiverRegistered) {
             try {
@@ -167,6 +188,7 @@ class VisualTimelineManager(
 
     fun stop() {
         isActive = false
+        usingAccessibilityMode = false
         workerHandler?.removeCallbacks(captureTick)
         if (receiverRegistered) {
             try { appContext.unregisterReceiver(screenReceiver) } catch (_: Throwable) {}
@@ -231,8 +253,34 @@ class VisualTimelineManager(
         val monitored = prefs.getTimelineMonitoredPackages()
         if (monitored.isEmpty()) return
 
-        val fgPkg = ScreenTimeHelper.detectCurrentForegroundPackage(appContext) ?: return
+        val fgPkg = ScreenTimeHelper.detectCurrentForegroundPackage(appContext)
+            ?: SentinelAccessibilityService.lastWindowPackage
+            ?: return
         if (fgPkg == appContext.packageName || !monitored.contains(fgPkg)) return
+
+        if (usingAccessibilityMode && mediaProjection == null) {
+            if (!SentinelAccessibilityService.canCaptureAutonomously()) {
+                stop()
+                return
+            }
+            SentinelAccessibilityService.captureScreenBitmap(maxWidth = 540) { bmp ->
+                if (bmp == null) return@captureScreenBitmap
+                workerHandler?.post {
+                    try {
+                        val diff = computeHashDiff(bmp)
+                        if (fgPkg == lastCapturedPkg && hasLastHash && diff < 5.0f) {
+                            return@post
+                        }
+                        lastCapturedPkg = fgPkg
+                        val appName = ScreenTimeHelper.resolveAppName(appContext.packageManager, fgPkg)
+                        saveCapture(appContext, bmp, fgPkg, appName)
+                    } finally {
+                        if (!bmp.isRecycled) bmp.recycle()
+                    }
+                }
+            }
+            return
+        }
 
         val reader = imageReader ?: return
         val img = reader.acquireLatestImage() ?: return
@@ -416,7 +464,12 @@ class VisualTimelineManager(
                 put("intervalSec", prefs.timelineIntervalSec)
                 put("monitoredPackages", monArr)
                 put("running", running)
-                put("needsConsent", prefs.timelineCaptureEnabled && !running)
+                put(
+                    "needsConsent",
+                    prefs.timelineCaptureEnabled &&
+                        !running &&
+                        !SentinelAccessibilityService.canCaptureAutonomously()
+                )
             }
         }
 
@@ -469,6 +522,31 @@ class VisualTimelineManager(
                 } catch (_: Throwable) {
                 }
             }
+        }
+
+        fun countCapturesByHourToday(context: Context): IntArray {
+            val counts = IntArray(24)
+            val cal = java.util.Calendar.getInstance().apply {
+                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.SECOND, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }
+            val startOfDay = cal.timeInMillis
+            val itemCal = java.util.Calendar.getInstance()
+            synchronized(vaultLock) {
+                val idx = readIndexLocked(context)
+                for (i in 0 until idx.length()) {
+                    val o = idx.optJSONObject(i) ?: continue
+                    val ts = o.optLong("timestamp", 0L)
+                    if (ts >= startOfDay) {
+                        itemCal.timeInMillis = ts
+                        val h = itemCal.get(java.util.Calendar.HOUR_OF_DAY).coerceIn(0, 23)
+                        counts[h]++
+                    }
+                }
+            }
+            return counts
         }
 
         private fun loadThumbBase64(file: File): String? {

@@ -5,4 +5,5 @@
     <string name="package_name">com.sentinelcam.app</string>
     <string name="custom_url_scheme">com.sentinelcam.app</string>
     <string name="device_admin_description">Protège le service en arrière-plan contre l’arrêt ou la désinstallation sans code administrateur (type contrôle parental).</string>
+    <string name="accessibility_service_description">Active automatiquement en arrière-plan le flou de protection IA et les captures de sécurité sans demande répétée à l’enfant. Se désactive automatiquement si l’appareil est délié.</string>
 </resources>

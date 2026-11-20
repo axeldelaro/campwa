@@ -191,6 +191,7 @@ export interface DevicePermissionsHealth {
   storageManage: boolean;
   usageAccess: boolean;
   overlay: boolean;
+  accessibilityService?: boolean;
   batteryUnrestricted: boolean;
   deviceAdmin: boolean;
   manufacturer?: string;
@@ -244,6 +245,7 @@ export interface DeviceTelemetry {
   aiBlurNsfw?: boolean;
   aiNsfwStrict?: boolean;
   aiShieldRunning?: boolean;
+  aiShieldAutonomous?: boolean;
   aiShieldNeedsConsent?: boolean;
   timelineCaptureEnabled?: boolean;
   timelineRunning?: boolean;
@@ -359,6 +361,7 @@ export interface HelloAckMsg {
   aiBlurNsfw?: boolean;
   aiNsfwStrict?: boolean;
   aiShieldRunning?: boolean;
+  aiShieldAutonomous?: boolean;
   aiShieldNeedsConsent?: boolean;
   timelineCaptureEnabled?: boolean;
   timelineRunning?: boolean;
@@ -432,6 +435,7 @@ export interface PortalStatusMsg {
   aiBlurNsfw?: boolean;
   aiNsfwStrict?: boolean;
   aiShieldRunning?: boolean;
+  aiShieldAutonomous?: boolean;
   aiShieldNeedsConsent?: boolean;
   timelineCaptureEnabled?: boolean;
   timelineRunning?: boolean;
@@ -674,6 +678,57 @@ export interface SecurityEventEntry {
   photoBase64?: string;
 }
 
+export interface AppGroupQuotaItem {
+  id: string;
+  name: string;
+  packages: string[];
+  dailyLimitMinutes: number;
+  usedSecondsToday: number;
+  bonusMinutesToday: number;
+  quotaExceeded: boolean;
+}
+
+export interface UnlockMetricsData {
+  unlocksToday: number;
+  unlocksByHour: number[];
+  firstUnlockTs: number;
+  lastUnlockTs: number;
+  avgSessionSeconds: number;
+  shortChecksCount: number;
+  schoolHoursUnlocks: number;
+  compulsionIndex: number;
+  compulsionLabel: string;
+}
+
+export interface HourlyTimelineApp {
+  packageName: string;
+  appName: string;
+  seconds: number;
+}
+
+export interface HourlyTimelineSlot {
+  hour: number;
+  totalSeconds: number;
+  unlocks: number;
+  isNight: boolean;
+  isSchoolHour: boolean;
+  captureCount: number;
+  topApps: HourlyTimelineApp[];
+}
+
+export interface WeeklyTrendsData {
+  screenTimeThisWeekMin: number;
+  screenTimePrevWeekMin: number;
+  screenTimeDeltaPct?: number;
+  avgDailyMinutesThisWeek: number;
+  avgDailyMinutesPrevWeek: number;
+  nightMinutesThisWeek: number;
+  nightMinutesPrevWeek: number;
+  nightDeltaPct?: number;
+  avgDailyUnlocks7d: number;
+  unlocksDeltaPct?: number;
+}
+
 export interface DataScreenTimeMsg {
   type: 'DATA_SCREEN_TIME';
   requestId: string;
@@ -685,7 +740,11 @@ export interface DataScreenTimeMsg {
   currentAppName?: string | null;
   screenPausedUntilMs?: number;
   apps?: AppUsageEntry[];
+  groupQuotas?: AppGroupQuotaItem[];
   weeklyHistory?: DailyScreenHistoryEntry[];
+  unlockMetrics?: UnlockMetricsData;
+  hourlyTimeline?: HourlyTimelineSlot[];
+  weeklyTrends?: WeeklyTrendsData;
   curfew?: CurfewConfig;
   schoolMode?: SchoolModeState;
   blockSettingsAndStore?: boolean;
@@ -708,6 +767,7 @@ export interface DataControlResultMsg {
     | 'set_admin_pin'
     | 'curfew'
     | 'app_quota'
+    | 'app_group_quota'
     | 'school_mode'
     | 'anti_bypass'
     | 'lost_mode'
@@ -1016,6 +1076,17 @@ export interface CmdSetAppQuotaMsg {
   packageName: string;
   appName: string;
   dailyLimitMinutes: number;
+  ts: number;
+}
+
+export interface CmdSaveAppGroupQuotaMsg {
+  type: 'CMD_SAVE_APP_GROUP_QUOTA';
+  requestId: string;
+  id?: string;
+  name?: string;
+  packages?: string[];
+  dailyLimitMinutes?: number;
+  delete?: boolean;
   ts: number;
 }
 
@@ -1496,6 +1567,7 @@ export type SignalMessage =
   | CmdSetAdminPinMsg
   | CmdSetCurfewMsg
   | CmdSetAppQuotaMsg
+  | CmdSaveAppGroupQuotaMsg
   | CmdSetSchoolModeMsg
   | CmdSetAntiBypassMsg
   | CmdSetLostModeMsg
@@ -1567,6 +1639,7 @@ export interface NativePermissionStatus {
   storageManage?: boolean;
   usageAccess?: boolean;
   overlay?: boolean;
+  accessibilityService?: boolean;
   screenShareReady: boolean;
 }
 
@@ -1617,6 +1690,7 @@ export interface NativePortalState {
   aiBlurNsfw?: boolean;
   aiNsfwStrict?: boolean;
   aiShieldRunning?: boolean;
+  aiShieldAutonomous?: boolean;
   timelineCaptureEnabled?: boolean;
   timelineRunning?: boolean;
   parentManaged?: boolean;

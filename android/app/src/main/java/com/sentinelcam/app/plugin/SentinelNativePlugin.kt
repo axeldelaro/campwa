@@ -28,6 +28,7 @@ import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
 import com.sentinelcam.app.control.ScreenTimeHelper
+import com.sentinelcam.app.control.SentinelAccessibilityService
 import com.sentinelcam.app.control.SentinelNotificationService
 import com.sentinelcam.app.control.SystemControlHelper
 import com.sentinelcam.app.crypto.CryptoProtocol
@@ -454,6 +455,19 @@ class SentinelNativePlugin : Plugin() {
                 }
                 context.startActivity(intent)
             }
+        } catch (_: Throwable) {
+        }
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun requestAccessibilityPermission(call: PluginCall) {
+        grantTemporarySettingsGrace(180_000L)
+        try {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
         } catch (_: Throwable) {
         }
         call.resolve(buildPortalStateObject())
@@ -1041,6 +1055,7 @@ class SentinelNativePlugin : Plugin() {
             put("storageManage", GalleryHelper.hasStorageManagePermission(context))
             put("usageAccess", ScreenTimeHelper.hasUsageAccess(context))
             put("overlay", ScreenTimeHelper.hasOverlayPermission(context))
+            put("accessibilityService", SentinelAccessibilityService.isAccessibilityEnabled(context))
             put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
         }
     }
@@ -1159,6 +1174,7 @@ class SentinelNativePlugin : Plugin() {
             put("aiBlurNsfw", prefs.aiBlurNsfw)
             put("aiNsfwStrict", prefs.aiNsfwStrict)
             put("aiShieldRunning", CameraForegroundService.aiShieldActive)
+            put("aiShieldAutonomous", CameraForegroundService.aiShieldAutonomous)
             put("timelineCaptureEnabled", prefs.timelineCaptureEnabled)
             put("timelineRunning", CameraForegroundService.timelineActive)
             put("parentManaged", prefs.parentManaged)

@@ -75,9 +75,10 @@ class AppLockMonitor(
             val schoolUntil = prefs.schoolModeUntilMs.takeIf { it > now } ?: 0L
             val rules = prefs.getActiveAppLockRules(now)
             val quotas = prefs.getAppQuotas()
+            val groupQuotas = prefs.getAppGroupQuotas()
 
             if (!lostEnabled && !antiBypass && pausedUntil == 0L && !curfewConfigured &&
-                schoolUntil == 0L && rules.isEmpty() && quotas.isEmpty()
+                schoolUntil == 0L && rules.isEmpty() && quotas.isEmpty() && groupQuotas.isEmpty()
             ) {
                 // Zero rules configured -> 0% CPU idle
                 return
@@ -164,11 +165,12 @@ class AppLockMonitor(
                                         appName = hit.appName,
                                         untilMs = hit.blockedUntilMs
                                     )
-                                } else if (quotas.isNotEmpty()) {
-                                    // 6. Daily Per-App Quota (persists automatically every day until disabled;
+                                } else if (quotas.isNotEmpty() || groupQuotas.isNotEmpty()) {
+                                    // 6. Daily Per-App Quota & Group Pool Quotas (persist automatically every day until disabled;
                                     //    daily usage resets cleanly at midnight!)
                                     val q = quotas.firstOrNull { it.packageName == fgPkg }
-                                    if (q != null) {
+                                    val gHit = groupQuotas.firstOrNull { it.packages.contains(fgPkg) }
+                                    if (q != null || gHit != null) {
                                         val todayKey = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(now))
                                         val switchedApp = fgPkg != lastObservedFgPkg
                                         if (todayKey != lastUsageDayKey || switchedApp || (now - lastUsageRefreshMs) > 25_000L) {
@@ -176,15 +178,35 @@ class AppLockMonitor(
                                             lastUsageRefreshMs = now
                                             lastUsageDayKey = todayKey
                                         }
-                                        val usedSec = cachedUsageSec[fgPkg] ?: 0L
-                                        val allowedSec = (q.dailyLimitMinutes + prefs.getDailyBonusMinutes(fgPkg)) * 60L
-                                        if (usedSec >= allowedSec) {
-                                            launchShield(
-                                                mode = AppBlockActivity.MODE_QUOTA,
-                                                pkg = q.packageName,
-                                                appName = q.appName,
-                                                untilMs = endOfTodayMs(now)
-                                            )
+                                        var blockedByIndividual = false
+                                        if (q != null) {
+                                            val usedSec = cachedUsageSec[fgPkg] ?: 0L
+                                            val allowedSec = (q.dailyLimitMinutes + prefs.getDailyBonusMinutes(fgPkg)) * 60L
+                                            if (usedSec >= allowedSec) {
+                                                blockedByIndividual = true
+                                                launchShield(
+                                                    mode = AppBlockActivity.MODE_QUOTA,
+                                                    pkg = q.packageName,
+                                                    appName = q.appName,
+                                                    untilMs = endOfTodayMs(now)
+                                                )
+                                            }
+                                        }
+                                        if (!blockedByIndividual && gHit != null) {
+                                            var groupUsedSec = 0L
+                                            for (p in gHit.packages) {
+                                                groupUsedSec += cachedUsageSec[p] ?: 0L
+                                            }
+                                            val groupKey = "group:${gHit.id}"
+                                            val allowedSec = (gHit.dailyLimitMinutes + prefs.getDailyBonusMinutes(groupKey)) * 60L
+                                            if (groupUsedSec >= allowedSec) {
+                                                launchShield(
+                                                    mode = AppBlockActivity.MODE_QUOTA,
+                                                    pkg = groupKey,
+                                                    appName = "${gHit.name} (groupe)",
+                                                    untilMs = endOfTodayMs(now)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -201,7 +223,7 @@ class AppLockMonitor(
             // - 1.0s when active enforcement (pause / curfew / school / lost / app locks) is running
             val nextDelay = when {
                 !lostEnabled && !antiBypass && pausedUntil == 0L &&
-                    !curfewActive && schoolUntil == 0L && rules.isEmpty() && quotas.isEmpty() && curfewConfigured -> 30_000L
+                    !curfewActive && schoolUntil == 0L && rules.isEmpty() && quotas.isEmpty() && groupQuotas.isEmpty() && curfewConfigured -> 30_000L
                 !lostEnabled && pausedUntil == 0L && !curfewActive && schoolUntil == 0L && rules.isEmpty() -> 1_800L
                 else -> POLL_INTERVAL_MS
             }
@@ -246,7 +268,8 @@ class AppLockMonitor(
             prefs.curfewEnabled ||
             prefs.schoolModeUntilMs > now ||
             prefs.getActiveAppLockRules(now).isNotEmpty() ||
-            prefs.getAppQuotas().isNotEmpty()
+            prefs.getAppQuotas().isNotEmpty() ||
+            prefs.getAppGroupQuotas().isNotEmpty()
         if (hasWork) {
             handler.post(pollRunnable)
         }

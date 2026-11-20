@@ -155,9 +155,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [drivingLoading, setDrivingLoading] = useState(false);
   const [drivingDays, setDrivingDays] = useState(7);
 
-  // Visual Activity Timeline State (v24)
+  // Visual Activity Timeline State (v24/v26)
   const [timelineData, setTimelineData] = useState<DataTimelineMsg | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineHourFilter, setTimelineHourFilter] = useState<number | null>(null);
   const [timelineLightbox, setTimelineLightbox] = useState<{
     item: TimelineCaptureItem;
     base64?: string;
@@ -466,6 +467,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             set_admin_pin: 'Code administrateur mis à jour.',
             curfew: 'Couvre-feu enregistré.',
             app_quota: 'Quota quotidien mis à jour.',
+            app_group_quota: 'Quota de groupe enregistré.',
             school_mode: 'Mode École mis à jour.',
             anti_bypass: 'Protection Paramètres mise à jour.',
             lost_mode: 'Mode Perdu mis à jour.',
@@ -653,6 +655,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setSocialReplyFeedback(null);
     setInsightsData(null);
     setDrivingReport(null);
+    setTimelineHourFilter(null);
     setTimelineData(null);
     setTimelineLightbox(null);
     setContacts([]);
@@ -1175,7 +1178,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   return (
     <div className="mx-auto max-w-5xl space-y-3.5 px-3.5 pb-24 pt-3.5 sm:space-y-4 sm:px-6 sm:pb-10 sm:pt-5">
       {/* Minimal Device Status Header (Zero Technical Jargon) */}
-      <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.07] bg-zinc-900/70 px-3.5 py-2.5 sm:px-4 sm:py-3">
+      <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.09] bg-gradient-to-r from-zinc-900/90 via-zinc-900/75 to-zinc-950/90 px-3.5 py-2.5 shadow-[0_6px_24px_rgba(0,0,0,0.28)] backdrop-blur-md sm:px-4 sm:py-3">
         <div className="flex min-w-0 items-center gap-2.5">
           <span
             className={`h-2 w-2 shrink-0 rounded-full ${
@@ -1243,7 +1246,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       </div>
 
       {/* Desktop Top 5-Tab Bar */}
-      <div className="hidden grid-cols-5 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1.5 sm:grid">
+      <div className="hidden grid-cols-5 gap-1.5 rounded-2xl border border-white/[0.08] bg-zinc-900/80 p-1.5 shadow-[0_4px_20px_rgba(0,0,0,0.25)] backdrop-blur-md sm:grid">
         <button
           type="button"
           disabled={!canUseDeviceControl}
@@ -1444,6 +1447,22 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               appName: app.appName,
               dailyLimitMinutes,
             });
+          }}
+          onSaveAppGroupQuota={async (opts) => {
+            setControlFeedback(null);
+            await controllerRef.current?.saveRemoteAppGroupQuota(opts);
+          }}
+          onJumpToCapturesHour={(hour) => {
+            setTimelineHourFilter(hour);
+            setViewerTab('media');
+            setMediaSubTab('timeline');
+            setTimelineLoading(true);
+            void controllerRef.current?.performTimelineAction({
+              action: 'list',
+              page: 0,
+              pageSize: 40,
+            });
+            window.setTimeout(() => setTimelineLoading(false), 10000);
           }}
           onSetSchoolMode={async (opts) => {
             setControlFeedback(null);
@@ -1760,6 +1779,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               data={timelineData}
               availableApps={screenTime?.apps ?? []}
               loading={timelineLoading}
+              hourFilter={timelineHourFilter}
+              onClearHourFilter={() => setTimelineHourFilter(null)}
               lightbox={timelineLightbox}
               onRefresh={async (page = 0) => {
                 setTimelineLoading(true);
