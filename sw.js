@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sentinelcam-pwa-v26.2.0';
+const CACHE_NAME = 'sentinelcam-pwa-v26.3.0';
 const CORE_ASSETS = [
   './',
   './index.html',
