@@ -1,6 +1,7 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import type {
   AccessProfileInput,
+  DataScreenTimeMsg,
   GpsTrackingMode,
   NativePermissionStatus,
   NativePortalState,
@@ -29,6 +30,12 @@ export interface SentinelNativePluginContract {
   pairWithParentCode(options: { code: string }): Promise<NativePortalState>;
   requestParentUnpair(): Promise<NativePortalState>;
   unpairFromParent(options: { pin: string }): Promise<NativePortalState>;
+  getLocalDashboardData(): Promise<DataScreenTimeMsg>;
+  submitChildChangeRequest(options: {
+    targetKey: string;
+    label: string;
+    requestedMinutes?: number;
+  }): Promise<NativePortalState>;
   setAiShieldSettings(options: {
     blurFaces?: boolean;
     blurNsfw?: boolean;

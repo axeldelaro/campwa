@@ -696,6 +696,30 @@ class SentinelNativePlugin : Plugin() {
     }
 
     @PluginMethod
+    fun getLocalDashboardData(call: PluginCall) {
+        Thread {
+            try {
+                val report = ScreenTimeHelper.readScreenTimeReport(context, prefs)
+                report.put("type", "DATA_SCREEN_TIME")
+                report.put("requestId", "local")
+                report.put("ts", System.currentTimeMillis())
+                call.resolve(JSObject(report.toString()))
+            } catch (t: Throwable) {
+                call.reject(t.message ?: "Lecture impossible.")
+            }
+        }.start()
+    }
+
+    @PluginMethod
+    fun submitChildChangeRequest(call: PluginCall) {
+        val targetKey = call.getString("targetKey")?.trim().orEmpty().ifEmpty { "change:general" }
+        val label = call.getString("label")?.trim().orEmpty().ifEmpty { "Modification demandée" }
+        val minutes = (call.getInt("requestedMinutes", 15) ?: 15).coerceIn(5, 120)
+        CameraForegroundService.submitTimeExtensionRequest(context, targetKey, label, minutes)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
     fun setAiShieldSettings(call: PluginCall) {
         if (prefs.parentManaged) {
             call.reject("Géré à distance par le Parent.")

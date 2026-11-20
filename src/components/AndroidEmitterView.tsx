@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Clock,
   Image as ImageIcon,
+  LayoutDashboard,
   Lock,
   MapPin,
   MessageSquare,
@@ -20,7 +21,13 @@ import {
 } from 'lucide-react';
 import { normalizePairingCode } from '../crypto/cryptoEngine';
 import { SentinelNative } from '../native/sentinelPlugin';
-import type { NativePortalState } from '../types/sentinel';
+import { ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
+import type {
+  AppUsageEntry,
+  DataScreenTimeMsg,
+  DeviceTelemetry,
+  NativePortalState,
+} from '../types/sentinel';
 
 interface AndroidEmitterViewProps {
   isNativeAndroid: boolean;
@@ -42,6 +49,31 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const [pairCode, setPairCode] = useState('');
   const [pairMessage, setPairMessage] = useState<string | null>(null);
   const [confirmUnpairAsk, setConfirmUnpairAsk] = useState(false);
+
+  // Child Read-Only Mirror Dashboard State (reuses Parent tabs; any edit sends request to Parent)
+  const [childTab, setChildTab] = useState<'home' | 'rules' | 'device'>('home');
+  const [localScreenTime, setLocalScreenTime] = useState<DataScreenTimeMsg | null>(null);
+  const [localLoading, setLocalLoading] = useState(false);
+  const [childFeedback, setChildFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const refreshLocalDashboard = async () => {
+    if (!isNativeAndroid) return;
+    setLocalLoading(true);
+    try {
+      const data = await SentinelNative.getLocalDashboardData();
+      setLocalScreenTime(data);
+    } catch {
+      // Ignore transient read errors
+    } finally {
+      setLocalLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isNativeAndroid && portal?.parentManaged && !localScreenTime && !localLoading) {
+      void refreshLocalDashboard();
+    }
+  }, [isNativeAndroid, portal?.parentManaged]);
 
   useEffect(() => {
     const t = window.setInterval(() => setNowMs(Date.now()), 5000);
@@ -466,196 +498,410 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     );
   }
 
-  /* ==================== MODE B: PARENT-MANAGED PROTECTED DEVICE ==================== */
+  /* ==================== MODE B: PARENT-MANAGED PROTECTED DEVICE (READ-ONLY MIRROR) ==================== */
+  const sendChangeRequest = async (targetKey: string, label: string, requestedMinutes = 15) => {
+    try {
+      const next = await SentinelNative.submitChildChangeRequest({
+        targetKey,
+        label,
+        requestedMinutes,
+      });
+      setPortal(next);
+      setChildFeedback({
+        ok: true,
+        text: `Modification verrouillée — demande envoyée au Parent : ${label}`,
+      });
+      void refreshLocalDashboard();
+    } catch {
+      setChildFeedback({ ok: false, text: 'Impossible d’envoyer la demande au Parent.' });
+    }
+  };
+
+  const mirrorTelemetry: DeviceTelemetry = {
+    deviceId: portal.deviceId,
+    deviceName: portal.deviceName,
+    portalState: portal.portalState === 'stopped' ? 'standby' : portal.portalState,
+    paired: portal.paired,
+    pairedTokenId: portal.pairedTokenId,
+    lockoutRemainingMs: portal.lockoutRemainingMs,
+    failedAttempts: portal.failedAttempts,
+    batteryLevel: portal.batteryLevel,
+    isCharging: portal.isCharging,
+    networkType: portal.mqttConnected ? 'Connecté' : 'Hors ligne',
+    cameraFacing: portal.cameraFacing,
+    mediaMode: portal.mediaMode,
+    micEnabled: portal.micEnabled,
+    uptimeSec: 0,
+    allowLocation: portal.globalShares.allowLocation,
+    allowGallery: portal.globalShares.allowGallery,
+    allowContacts: portal.globalShares.allowContacts,
+    allowSmsRelay: portal.globalShares.allowSmsRelay,
+    allowIntercom: portal.globalShares.allowIntercom,
+    allowDeviceInfo: portal.globalShares.allowDeviceInfo,
+    activeAppLocksCount: portal.activeAppLocksCount,
+    screenPausedUntilMs: portal.screenPausedUntilMs,
+    adminProtectionEnabled: portal.adminProtectionEnabled,
+    hasAdminPin: portal.hasAdminPin,
+    deviceAdminActive: portal.deviceAdminActive,
+    lostModeEnabled: portal.lostModeEnabled,
+    curfewEnabled: portal.curfewEnabled,
+    schoolModeUntilMs: portal.schoolModeUntilMs,
+    blockSettingsAndStore: portal.blockSettingsAndStore,
+    securityAlertsCount: portal.securityAlertsCount,
+    aiBlurFaces: portal.aiBlurFaces,
+    aiBlurNsfw: portal.aiBlurNsfw,
+    aiNsfwStrict: portal.aiNsfwStrict,
+    aiShieldRunning: portal.aiShieldRunning,
+    aiShieldAutonomous: portal.aiShieldAutonomous,
+    timelineCaptureEnabled: portal.timelineCaptureEnabled,
+    timelineRunning: portal.timelineRunning,
+    parentManaged: portal.parentManaged,
+    unpairRequestPending: portal.unpairRequestPending,
+    unpairRequestedAt: portal.unpairRequestedAt,
+    permissionsHealth: {
+      camera: p.camera,
+      microphone: p.microphone,
+      location: p.location,
+      backgroundLocation: Boolean(p.backgroundLocation),
+      contacts: p.contacts,
+      readSms: Boolean(p.readSms),
+      sendSms: Boolean(p.sms),
+      callLog: p.callLog,
+      callScreening: p.callScreening,
+      notificationListener: p.notificationListener,
+      writeSettings: p.writeSettings,
+      gallery: Boolean(p.gallery),
+      storageManage: Boolean(p.storageManage),
+      usageAccess: Boolean(p.usageAccess),
+      overlay: Boolean(p.overlay),
+      accessibilityService: p.accessibilityService,
+      batteryUnrestricted: p.batteryOptimizationIgnored,
+      deviceAdmin: Boolean(portal.deviceAdminActive),
+      manufacturer: portal.deviceManufacturer,
+    },
+    updatedAt: nowMs,
+  };
+
   return (
-    <div className="mx-auto max-w-md space-y-4 px-4 py-6">
-      {/* Main Read-Only Status Card */}
-      <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/15 ring-1 ring-emerald-500/30">
-              <ShieldCheck className="h-5 w-5 text-emerald-400" />
-            </div>
-            <div>
-              <h1 className="text-sm font-semibold text-white">Appareil protégé</h1>
-              <p className="text-[11px] text-zinc-400">Piloté à distance par le Parent</p>
-            </div>
+    <div className="mx-auto max-w-2xl space-y-3.5 px-3.5 pb-10 pt-4">
+      {/* Compact Read-Only Header */}
+      <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.08] bg-zinc-900/80 px-4 py-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/15 ring-1 ring-emerald-500/30">
+            <ShieldCheck className="h-4 w-4 text-emerald-400" />
           </div>
-          <span
-            className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[10px] ${
-              portal.mqttConnected
-                ? 'bg-emerald-500/15 text-emerald-300'
-                : 'bg-amber-500/15 text-amber-300'
-            }`}
-          >
-            <Wifi className="h-3 w-3" />
-            {portal.mqttConnected ? 'En ligne' : 'Hors ligne'}
-          </span>
-        </div>
-
-        {/* Active Protections Read-Only Summary */}
-        <div className="mt-4 flex flex-wrap gap-1.5 text-[11px]">
-          {portal.deviceAdminActive && (
-            <span className="rounded-lg bg-emerald-500/15 px-2.5 py-1 text-emerald-300">
-              Admin verrouillé
-            </span>
-          )}
-          {portal.blockSettingsAndStore && (
-            <span className="rounded-lg bg-white/[0.06] px-2.5 py-1 text-zinc-200">
-              Paramètres bloqués
-            </span>
-          )}
-          {portal.aiShieldRunning && (
-            <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/15 px-2.5 py-1 text-emerald-300">
-              <Sparkles className="h-3 w-3" />
-              {portal.aiShieldAutonomous ? 'Filtre IA autonome' : 'Filtre IA actif'}
-            </span>
-          )}
-          {portal.curfewEnabled && (
-            <span className="rounded-lg bg-white/[0.06] px-2.5 py-1 text-zinc-200">Couvre-feu</span>
-          )}
-          {(portal.schoolModeUntilMs ?? 0) > nowMs && (
-            <span className="rounded-lg bg-emerald-500/15 px-2.5 py-1 text-emerald-200">Mode École</span>
-          )}
-          {portal.lostModeEnabled && (
-            <span className="rounded-lg bg-rose-500/20 px-2.5 py-1 text-rose-200">Mode Perdu</span>
-          )}
-          {(portal.activeAppLocksCount ?? 0) > 0 && (
-            <span className="rounded-lg bg-rose-500/15 px-2.5 py-1 text-rose-200">
-              {portal.activeAppLocksCount} appli(s) verrouillée(s)
-            </span>
-          )}
-        </div>
-
-        {missingOsSteps.length === 0 && !needsDeviceAdmin && (
-          <div className="mt-4 flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.07] px-3 py-2 text-xs text-emerald-300">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
-            <span>Toutes les autorisations sont actives.</span>
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-semibold text-white">{portal.deviceName}</h1>
+            <p className="truncate text-[11px] text-zinc-400">
+              Mode lecture seule · toute modification demande l’accord du Parent
+            </p>
           </div>
-        )}
+        </div>
+        <span
+          className={`inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[10px] ${
+            portal.mqttConnected
+              ? 'bg-emerald-500/15 text-emerald-300'
+              : 'bg-amber-500/15 text-amber-300'
+          }`}
+        >
+          <Wifi className="h-3 w-3" />
+          {portal.mqttConnected ? 'En ligne' : 'Hors ligne'}
+        </span>
       </div>
 
-      {/* Missing OS Permissions (One-Tap Grants Only — Never Any Off Switch) */}
-      {(missingOsSteps.length > 0 || needsDeviceAdmin) && (
-        <div className="rounded-2xl border border-amber-500/25 bg-zinc-900/75 p-4">
-          <div className="flex items-center gap-2 text-xs font-semibold text-amber-200">
-            <ShieldAlert className="h-4 w-4 text-amber-400" />
-            <span>Autorisations à finaliser</span>
-          </div>
-          <div className="mt-2.5 space-y-1.5">
-            {needsDeviceAdmin && (
+      {/* 3-Tab Child Navigation (Accueil / Règles / Appareil) */}
+      <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-1.5">
+        <button
+          type="button"
+          onClick={() => setChildTab('home')}
+          className={`flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-medium transition ${
+            childTab === 'home' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+          }`}
+        >
+          <LayoutDashboard className="h-3.5 w-3.5" />
+          Accueil
+        </button>
+        <button
+          type="button"
+          onClick={() => setChildTab('rules')}
+          className={`flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-medium transition ${
+            childTab === 'rules' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+          }`}
+        >
+          <ShieldCheck className="h-3.5 w-3.5" />
+          Règles
+        </button>
+        <button
+          type="button"
+          onClick={() => setChildTab('device')}
+          className={`flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-medium transition ${
+            childTab === 'device' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+          }`}
+        >
+          <Smartphone className="h-3.5 w-3.5" />
+          Appareil
+          {(missingOsSteps.length > 0 || needsDeviceAdmin) && (
+            <span className="rounded-full bg-amber-400 px-1.5 font-mono text-[9px] font-bold text-zinc-950">
+              {missingOsSteps.length + (needsDeviceAdmin ? 1 : 0)}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* TAB 1: EXACT PARENT ACCUEIL (READ-ONLY -> EVERY EDIT SENDS REQUEST TO PARENT) */}
+      {childTab === 'home' && (
+        <ParentalHomeTab
+          screenTime={localScreenTime}
+          screenTimeLoading={localLoading}
+          telemetry={mirrorTelemetry}
+          nowMs={nowMs}
+          feedback={childFeedback}
+          onDismissFeedback={() => setChildFeedback(null)}
+          onRefresh={refreshLocalDashboard}
+          onLockScreenNow={() => sendChangeRequest('change:lock', 'Verrouillage écran')}
+          onSetScreenPause={(mins) =>
+            sendChangeRequest(
+              'change:pause',
+              mins === 0 ? 'Arrêter la pause écran' : `Modifier la pause écran (${mins} min)`
+            )
+          }
+          onApplyAppLock={(app: AppUsageEntry, mins: number) =>
+            sendChangeRequest(
+              `change:app:${app.packageName}`,
+              mins === 0 ? `Débloquer ${app.appName}` : `Modifier le blocage de ${app.appName}`
+            )
+          }
+          onClearAllAppLocks={() => sendChangeRequest('__global__', 'Débloquer toutes les applications')}
+          onSetAppQuota={(app: AppUsageEntry, limit: number) =>
+            sendChangeRequest(
+              `change:app:${app.packageName}`,
+              limit === 0
+                ? `Retirer le quota de ${app.appName}`
+                : `Modifier le quota de ${app.appName} (${limit} min/j)`
+            )
+          }
+          onSaveAppGroupQuota={(opts) =>
+            sendChangeRequest(
+              opts.id ? `change:group:${opts.id}` : 'change:group:new',
+              opts.delete
+                ? 'Supprimer un quota de groupe'
+                : `Modifier le groupe « ${opts.name || 'Apps'} »`
+            )
+          }
+          onJumpToCapturesHour={() =>
+            setChildFeedback({
+              ok: true,
+              text: 'Les captures automatiques sont consultables uniquement depuis l’Espace Parent.',
+            })
+          }
+          onSetSchoolMode={(opts) =>
+            sendChangeRequest(
+              'change:school',
+              opts.durationMinutes === 0 ? 'Désactiver le Mode École' : 'Modifier le Mode École'
+            )
+          }
+          onRespondTimeRequest={async () => {
+            setChildFeedback({
+              ok: false,
+              text: 'Seul le Parent peut accepter ou refuser une demande en attente.',
+            });
+          }}
+          onRespondUnpair={async (approve) => {
+            if (approve) await handleRequestParentUnpair();
+            else setChildFeedback({ ok: false, text: 'Seul le Parent peut décider de la dissociation.' });
+          }}
+          onFlashText={() => sendChangeRequest('change:flash', 'Message plein écran')}
+          onFlashImage={() => sendChangeRequest('change:flash', 'Image plein écran')}
+        />
+      )}
+
+      {/* TAB 2: EXACT PARENT RÈGLES (READ-ONLY -> EVERY EDIT SENDS REQUEST TO PARENT) */}
+      {childTab === 'rules' && (
+        <ParentalRulesTab
+          screenTime={localScreenTime}
+          screenTimeLoading={localLoading}
+          telemetry={mirrorTelemetry}
+          nowMs={nowMs}
+          feedback={childFeedback}
+          onDismissFeedback={() => setChildFeedback(null)}
+          onRefresh={refreshLocalDashboard}
+          onSetCurfew={(opts) =>
+            sendChangeRequest(
+              'change:curfew',
+              opts.enabled ? 'Modifier les horaires du Couvre-feu' : 'Désactiver le Couvre-feu'
+            )
+          }
+          onSetSchoolMode={(opts) =>
+            sendChangeRequest(
+              'change:school',
+              opts.durationMinutes === 0 ? 'Désactiver le Mode École' : 'Modifier la liste blanche École'
+            )
+          }
+          onSetAntiBypass={(enabled) =>
+            sendChangeRequest(
+              'change:anti_bypass',
+              enabled ? 'Verrouiller Paramètres & Play Store' : 'Débloquer Paramètres & Play Store'
+            )
+          }
+          onSetLostMode={(opts) =>
+            sendChangeRequest(
+              'change:lost_mode',
+              opts.enabled ? 'Modifier le Mode Perdu' : 'Désactiver le Mode Perdu'
+            )
+          }
+          onClearSecurityEvents={() =>
+            sendChangeRequest('change:journal', 'Effacer le journal de sécurité')
+          }
+          onSetAdminPin={() =>
+            sendChangeRequest('change:pin', 'Modifier le code administrateur')
+          }
+          onSetAiShield={() =>
+            sendChangeRequest('change:ai_shield', 'Modifier le Filtre d’écran IA')
+          }
+          onSetRemotePolicy={() =>
+            sendChangeRequest('change:policy', 'Modifier les autorisations à distance')
+          }
+          onRespondUnpair={async () => {
+            await handleRequestParentUnpair();
+            setChildFeedback({
+              ok: true,
+              text: 'Demande de dissociation envoyée au Parent.',
+            });
+          }}
+        />
+      )}
+
+      {/* TAB 3: APPAREIL (PERMISSIONS, ANTI-VEILLE & DISSOCIATION) */}
+      {childTab === 'device' && (
+        <div className="space-y-4">
+          {/* Missing OS Permissions (One-Tap Grants Only — Never Any Off Switch) */}
+          {(missingOsSteps.length > 0 || needsDeviceAdmin) ? (
+            <div className="rounded-2xl border border-amber-500/25 bg-zinc-900/75 p-4">
+              <div className="flex items-center gap-2 text-xs font-semibold text-amber-200">
+                <ShieldAlert className="h-4 w-4 text-amber-400" />
+                <span>Autorisations à finaliser</span>
+              </div>
+              <div className="mt-2.5 space-y-1.5">
+                {needsDeviceAdmin && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleRequestDeviceAdmin()}
+                    className="flex w-full items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-left text-xs text-amber-100"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Lock className="h-3.5 w-3.5 text-amber-300" />
+                      <span>Activer les droits administrateur</span>
+                    </span>
+                    <span className="shrink-0 font-semibold">Activer</span>
+                  </button>
+                )}
+                {missingOsSteps.map((step) => {
+                  const Icon = step.icon;
+                  return (
+                    <button
+                      key={step.key}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void step.action()}
+                      className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left text-xs transition ${
+                        step.highlight
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                          : 'border-white/[0.07] bg-zinc-950 text-zinc-200 hover:border-white/20'
+                      }`}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Icon className="h-3.5 w-3.5 opacity-80" />
+                        <span>{step.label}</span>
+                      </span>
+                      <span className="shrink-0 font-semibold text-emerald-400">Autoriser</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 rounded-2xl border border-emerald-500/20 bg-emerald-500/[0.07] px-4 py-3 text-xs text-emerald-300">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <span>Toutes les autorisations système sont actives.</span>
+            </div>
+          )}
+
+          {/* Brand-Smart Manufacturer Anti-Sleep Assistant */}
+          <div className="rounded-2xl border border-white/[0.07] bg-zinc-900/55 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
+                  <BatteryCharging className="h-3.5 w-3.5 text-emerald-400" />
+                  <span>Assistant anti-veille ({portal.deviceManufacturer || 'Android'})</span>
+                </div>
+                <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
+                  {portal.manufacturerTip ||
+                    'Réglez la batterie sur « Non restreinte » pour empêcher la coupure en arrière-plan.'}
+                </p>
+              </div>
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void handleRequestDeviceAdmin()}
-                className="flex w-full items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-left text-xs text-amber-100"
+                onClick={() => void runAction(() => SentinelNative.openManufacturerBatterySettings())}
+                className="shrink-0 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-[11px] font-medium text-emerald-300 hover:border-white/25"
               >
-                <span className="inline-flex items-center gap-2">
-                  <Lock className="h-3.5 w-3.5 text-amber-300" />
-                  <span>Activer les droits administrateur</span>
-                </span>
-                <span className="shrink-0 font-semibold">Activer</span>
+                Ouvrir
               </button>
-            )}
-            {missingOsSteps.map((step) => {
-              const Icon = step.icon;
-              return (
+            </div>
+          </div>
+
+          {/* Parent-Authorized Unpair Request ONLY */}
+          <div className="rounded-2xl border border-white/[0.07] bg-zinc-900/50 p-4">
+            {portal.unpairRequestPending ? (
+              <div className="flex items-start gap-2.5 text-xs text-amber-200">
+                <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                <div>
+                  <div className="font-medium">Demande envoyée au Parent</div>
+                  <p className="mt-0.5 text-[11px] text-zinc-400">
+                    La dissociation de cet appareil attend l’autorisation du Parent depuis le site Web.
+                  </p>
+                </div>
+              </div>
+            ) : confirmUnpairAsk ? (
+              <div className="space-y-2.5 text-xs">
+                <p className="text-zinc-300">
+                  Envoyer une demande au Parent pour délier cet appareil ? Le Parent devra l’autoriser
+                  depuis son espace.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleRequestParentUnpair()}
+                    className="flex-1 rounded-xl bg-white py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
+                  >
+                    Envoyer la demande
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmUnpairAsk(false)}
+                    className="rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-400 hover:text-white"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="text-zinc-500">Dissocier l’appareil</span>
                 <button
-                  key={step.key}
                   type="button"
-                  disabled={busy}
-                  onClick={() => void step.action()}
-                  className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left text-xs transition ${
-                    step.highlight
-                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
-                      : 'border-white/[0.07] bg-zinc-950 text-zinc-200 hover:border-white/20'
-                  }`}
+                  onClick={() => setConfirmUnpairAsk(true)}
+                  className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-1.5 text-[11px] font-medium text-zinc-300 hover:text-white"
                 >
-                  <span className="inline-flex items-center gap-2">
-                    <Icon className="h-3.5 w-3.5 opacity-80" />
-                    <span>{step.label}</span>
-                  </span>
-                  <span className="shrink-0 font-semibold text-emerald-400">Autoriser</span>
+                  Demander au parent
                 </button>
-              );
-            })}
+              </div>
+            )}
           </div>
         </div>
       )}
-
-      {/* Brand-Smart Manufacturer Anti-Sleep Assistant (Always accessible for 1-tap tuning) */}
-      <div className="rounded-2xl border border-white/[0.07] bg-zinc-900/55 p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
-              <BatteryCharging className="h-3.5 w-3.5 text-emerald-400" />
-              <span>Assistant anti-veille ({portal.deviceManufacturer || 'Android'})</span>
-            </div>
-            <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
-              {portal.manufacturerTip ||
-                'Réglez la batterie sur « Non restreinte » pour empêcher la coupure en arrière-plan.'}
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void runAction(() => SentinelNative.openManufacturerBatterySettings())}
-            className="shrink-0 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-[11px] font-medium text-emerald-300 hover:border-white/25"
-          >
-            Ouvrir
-          </button>
-        </div>
-      </div>
-
-      {/* Parent-Authorized Unpair Request ONLY (Child Cannot Unpair Locally) */}
-      <div className="rounded-2xl border border-white/[0.07] bg-zinc-900/50 p-4">
-        {portal.unpairRequestPending ? (
-          <div className="flex items-start gap-2.5 text-xs text-amber-200">
-            <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
-            <div>
-              <div className="font-medium">Demande envoyée au Parent</div>
-              <p className="mt-0.5 text-[11px] text-zinc-400">
-                La dissociation de cet appareil attend l’autorisation du Parent depuis le site Web.
-              </p>
-            </div>
-          </div>
-        ) : confirmUnpairAsk ? (
-          <div className="space-y-2.5 text-xs">
-            <p className="text-zinc-300">
-              Envoyer une demande au Parent pour délier cet appareil ? Le Parent devra l’autoriser
-              depuis son espace.
-            </p>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void handleRequestParentUnpair()}
-                className="flex-1 rounded-xl bg-white py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
-              >
-                Envoyer la demande
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmUnpairAsk(false)}
-                className="rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-400 hover:text-white"
-              >
-                Annuler
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center justify-between gap-2 text-xs">
-            <span className="text-zinc-500">Dissocier l’appareil</span>
-            <button
-              type="button"
-              onClick={() => setConfirmUnpairAsk(true)}
-              className="rounded-lg border border-white/10 bg-zinc-950 px-3 py-1.5 text-[11px] font-medium text-zinc-300 hover:text-white"
-            >
-              Demander au parent
-            </button>
-          </div>
-        )}
-      </div>
     </div>
   );
 };

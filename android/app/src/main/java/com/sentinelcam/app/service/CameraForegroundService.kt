@@ -2190,22 +2190,57 @@ class CameraForegroundService : Service() {
                         val removed = prefs.removeTimeExtensionRequest(targetRequestId)
                         if (approve && removed != null) {
                             val now = System.currentTimeMillis()
-                            if (removed.packageName == "__global__") {
-                                if (prefs.screenPausedUntilMs > now) prefs.screenPausedUntilMs = 0L
-                                if (prefs.isCurfewActiveNow(now)) prefs.curfewBypassUntilMs = now + grantMinutes * 60_000L
-                            } else {
-                                prefs.removeAppLockRule(removed.packageName)
-                                prefs.addDailyBonusMinutes(removed.packageName, grantMinutes)
-                                if (prefs.schoolModeUntilMs > now) {
-                                    val set = prefs.getSchoolAllowedPackages().toMutableSet()
-                                    set.add(removed.packageName)
-                                    prefs.setSchoolAllowedPackages(set)
+                            when {
+                                removed.packageName == "__global__" -> {
+                                    if (prefs.screenPausedUntilMs > now) prefs.screenPausedUntilMs = 0L
+                                    if (prefs.isCurfewActiveNow(now)) prefs.curfewBypassUntilMs = now + grantMinutes * 60_000L
+                                }
+                                removed.packageName == "change:curfew" -> {
+                                    prefs.curfewEnabled = false
+                                }
+                                removed.packageName == "change:school" -> {
+                                    prefs.schoolModeUntilMs = 0L
+                                }
+                                removed.packageName == "change:pause" -> {
+                                    prefs.screenPausedUntilMs = 0L
+                                }
+                                removed.packageName == "change:anti_bypass" -> {
+                                    prefs.blockSettingsAndStore = false
+                                }
+                                removed.packageName == "change:ai_shield" -> {
+                                    prefs.aiBlurFaces = false
+                                    prefs.aiBlurNsfw = false
+                                    syncAiShieldState()
+                                }
+                                removed.packageName == "change:lost_mode" -> {
+                                    prefs.lostModeEnabled = false
+                                }
+                                removed.packageName.startsWith("change:group:") -> {
+                                    val gid = removed.packageName.removePrefix("change:group:")
+                                    prefs.addDailyBonusMinutes("group:$gid", grantMinutes)
+                                }
+                                removed.packageName.startsWith("change:app:") -> {
+                                    val pkg = removed.packageName.removePrefix("change:app:")
+                                    prefs.removeAppLockRule(pkg)
+                                    prefs.addDailyBonusMinutes(pkg, grantMinutes)
+                                }
+                                removed.packageName.startsWith("change:") -> {
+                                    // Informational change request approved by parent
+                                }
+                                else -> {
+                                    prefs.removeAppLockRule(removed.packageName)
+                                    prefs.addDailyBonusMinutes(removed.packageName, grantMinutes)
+                                    if (prefs.schoolModeUntilMs > now) {
+                                        val set = prefs.getSchoolAllowedPackages().toMutableSet()
+                                        set.add(removed.packageName)
+                                        prefs.setSchoolAllowedPackages(set)
+                                    }
                                 }
                             }
                             appLockMonitor?.refreshSchedule()
-                            prefs.appendLog("security", "+$grantMinutes min accordées pour ${removed.appName} par ${grant.name}.")
+                            prefs.appendLog("security", "Demande acceptée (${removed.appName}) par ${grant.name}.")
                         } else if (removed != null) {
-                            prefs.appendLog("security", "Demande de temps refusée pour ${removed.appName} par ${grant.name}.")
+                            prefs.appendLog("security", "Demande refusée (${removed.appName}) par ${grant.name}.")
                         }
                         pushScreenTimeAndResult(channelId, reqId, "time_request")
                     }

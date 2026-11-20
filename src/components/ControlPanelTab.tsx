@@ -273,7 +273,15 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
           {pendingReqs.map((req) => (
             <div key={req.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <div className="text-emerald-100">
-                <span className="font-semibold">+{req.requestedMinutes} min demandées</span> · {req.appName}
+                {req.packageName.startsWith('change:') ? (
+                  <>
+                    <span className="font-semibold">Demande enfant</span> · {req.appName}
+                  </>
+                ) : (
+                  <>
+                    <span className="font-semibold">+{req.requestedMinutes} min demandées</span> · {req.appName}
+                  </>
+                )}
               </div>
               <div className="flex items-center gap-1.5">
                 <button
