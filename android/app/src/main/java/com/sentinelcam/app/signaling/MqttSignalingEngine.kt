@@ -277,12 +277,12 @@ class MqttSignalingEngine(
                         val now = System.currentTimeMillis()
                         if (primaryNode.mqttReady || failoverNode.mqttReady) {
                             reconnectBackoffMs = 2_500L
-                            val pingEveryMs = if (highAvailabilityMode) 35_000L else 55_000L
+                            val pingEveryMs = if (highAvailabilityMode) 35_000L else 75_000L
                             if (now - lastPingMs >= pingEveryMs) {
                                 sendMqttPingActive()
                                 lastPingMs = now
                             }
-                            nextSleepMs = if (highAvailabilityMode) 15_000L else 25_000L
+                            nextSleepMs = if (highAvailabilityMode) 15_000L else 40_000L
                         } else {
                             nextSleepMs = reconnectBackoffMs
                             reconnectBackoffMs = (reconnectBackoffMs * 2L).coerceAtMost(25_000L)
@@ -362,7 +362,7 @@ class MqttSignalingEngine(
     private fun maintainEcoSockets() {
         if (destroyed) return
         val now = System.currentTimeMillis()
-        val staleTimeoutMs = if (highAvailabilityMode) 95_000L else 135_000L
+        val staleTimeoutMs = if (highAvailabilityMode) 95_000L else 175_000L
 
         // Always keep primary broker (EMQX) hot; only hold failover (HiveMQ) + ntfy simultaneously
         // when actively streaming/viewing OR whenever primary is disconnected -> ~55% lower idle battery drain
@@ -419,7 +419,7 @@ class MqttSignalingEngine(
                     }
                     node.lastActivityMs = System.currentTimeMillis()
                     val clientId = "sc_d_${CryptoProtocol.randomHex(5)}"
-                    val connectPacket = buildMqttConnectPacket(clientId, keepAliveSec = 90)
+                    val connectPacket = buildMqttConnectPacket(clientId, keepAliveSec = 120)
                     webSocket.send(connectPacket.toByteString())
                 }
 

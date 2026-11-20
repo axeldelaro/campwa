@@ -27,6 +27,7 @@ import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
+import com.sentinelcam.app.control.ParentAlertPushHelper
 import com.sentinelcam.app.control.ScreenTimeHelper
 import com.sentinelcam.app.control.SentinelAccessibilityService
 import com.sentinelcam.app.control.SentinelNotificationService
@@ -35,6 +36,7 @@ import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.crypto.KeystoreVault
 import com.sentinelcam.app.data.CallLogHelper
 import com.sentinelcam.app.data.GalleryHelper
+import com.sentinelcam.app.location.DrivingBehaviorMonitor
 import com.sentinelcam.app.receiver.SentinelDeviceAdminReceiver
 import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.storage.PortalPreferences
@@ -703,11 +705,63 @@ class SentinelNativePlugin : Plugin() {
                 report.put("type", "DATA_SCREEN_TIME")
                 report.put("requestId", "local")
                 report.put("ts", System.currentTimeMillis())
+                try {
+                    report.put("systemStatus", SystemControlHelper.readSystemSnapshot(context))
+                } catch (_: Throwable) {
+                }
+                try {
+                    report.put("drivingReport", DrivingBehaviorMonitor.buildDrivingReport(context, null, 7))
+                } catch (_: Throwable) {
+                }
                 call.resolve(JSObject(report.toString()))
             } catch (t: Throwable) {
                 call.reject(t.message ?: "Lecture impossible.")
             }
         }.start()
+    }
+
+    @PluginMethod
+    fun configureParentPhoneNotifications(call: PluginCall) {
+        if (prefs.parentManaged) {
+            call.reject("Cet appareil est configuré comme appareil enfant.")
+            return
+        }
+        val clear = call.getBoolean("clear", false) ?: false
+        if (clear) {
+            prefs.setParentSubscribedTopics(emptyList())
+            ParentAlertPushHelper.stopSubscriber()
+            call.resolve(buildPortalStateObject())
+            return
+        }
+        val childCode = call.getString("childCode")?.trim().orEmpty()
+        val familyKey = call.getString("familyKey")?.trim().orEmpty()
+        val test = call.getBoolean("test", false) ?: false
+
+        val current = prefs.getParentSubscribedTopics().toMutableSet()
+        var latestTopic = ""
+        if (childCode.isNotEmpty()) {
+            val t = ParentAlertPushHelper.deriveChildAlertTopic(childCode)
+            if (t.isNotEmpty()) {
+                current.add(t)
+                latestTopic = t
+            }
+        }
+        if (familyKey.isNotEmpty()) {
+            val t = ParentAlertPushHelper.deriveFamilyAlertTopic(familyKey)
+            if (t.isNotEmpty()) {
+                current.add(t)
+                latestTopic = t
+            }
+        }
+        prefs.setParentSubscribedTopics(current)
+        CameraForegroundService.startFromUi(context)
+        ParentAlertPushHelper.syncParentPhoneSubscriber(context, prefs)
+        if (test && latestTopic.isNotEmpty()) {
+            ParentAlertPushHelper.sendTestAlertAsync(latestTopic)
+        } else if (test && current.isNotEmpty()) {
+            ParentAlertPushHelper.sendTestAlertAsync(current.first())
+        }
+        call.resolve(buildPortalStateObject())
     }
 
     @PluginMethod
@@ -1202,6 +1256,9 @@ class SentinelNativePlugin : Plugin() {
             put("timelineCaptureEnabled", prefs.timelineCaptureEnabled)
             put("timelineRunning", CameraForegroundService.timelineActive)
             put("parentManaged", prefs.parentManaged)
+            put("parentSubscribedTopicsCount", prefs.getParentSubscribedTopics().size)
+            put("parentPushConnected", ParentAlertPushHelper.subscriberConnected)
+            put("childAlertTopic", ParentAlertPushHelper.deriveChildAlertTopic(prefs.pairingCode))
             put("unpairRequestPending", prefs.unpairRequestPending)
             put("unpairRequestedAt", prefs.unpairRequestedAt)
             put("pairStatus", CameraForegroundService.pairStatus)

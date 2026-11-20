@@ -752,6 +752,8 @@ export interface DataScreenTimeMsg {
   pendingRequests?: TimeExtensionRequestItem[];
   geofences?: GeofenceZoneItem[];
   securityEvents?: SecurityEventEntry[];
+  systemStatus?: DataSystemStatusMsg;
+  drivingReport?: DataDrivingReportMsg;
   error?: string;
   ts: number;
 }
@@ -1694,6 +1696,9 @@ export interface NativePortalState {
   timelineCaptureEnabled?: boolean;
   timelineRunning?: boolean;
   parentManaged?: boolean;
+  parentSubscribedTopicsCount?: number;
+  parentPushConnected?: boolean;
+  childAlertTopic?: string;
   unpairRequestPending?: boolean;
   unpairRequestedAt?: number;
   pairStatus?: 'idle' | 'pairing' | 'paired' | 'timeout' | 'error';

@@ -1004,7 +1004,16 @@ export const ParentalRulesTab: React.FC<ParentalRulesTabProps> = ({
                 <span className="text-xs font-semibold text-white">Couvre-feu / Mode Nuit</span>
                 <button
                   type="button"
-                  onClick={() => setCurfewEnabled((v) => !v)}
+                  onClick={() => {
+                    const next = !curfewEnabled;
+                    setCurfewEnabled(next);
+                    void onSetCurfew({
+                      enabled: next,
+                      startMin: timeStrToMin(curfewStart, 21 * 60 + 30),
+                      endMin: timeStrToMin(curfewEnd, 7 * 60),
+                      daysMask: curfewMask,
+                    });
+                  }}
                   className={`rounded-lg border px-2.5 py-1 text-xs font-medium ${
                     curfewEnabled
                       ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'

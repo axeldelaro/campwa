@@ -97,6 +97,7 @@ import { GalleryTab } from './GalleryTab';
 import { GpsTrailMap } from './GpsTrailMap';
 import { InsightsCard } from './InsightsCard';
 import { ParentFamilyHub } from './ParentFamilyHub';
+import { ParentPushAlertsCard } from './ParentPushAlertsCard';
 import { RecordingsTab } from './RecordingsTab';
 import { SmsMessagesTab } from './SmsMessagesTab';
 import { SocialMessagesTab } from './SocialMessagesTab';
@@ -817,6 +818,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     if (canUseDeviceControl && !screenTime && !screenTimeLoading) {
       void handleFetchScreenTime();
     }
+    if (tab === 'rules' && rulesSubTab === 'system' && !systemStatus && !systemStatusLoading) {
+      setSystemStatusLoading(true);
+      void controllerRef.current?.sendSystemControl({ action: 'get_status' });
+      window.setTimeout(() => setSystemStatusLoading(false), 10000);
+    }
   };
 
   const handleFetchSmsThreads = async () => {
@@ -828,8 +834,20 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
   const handleOpenMessagesTab = () => {
     setViewerTab('messages');
-    if (smsThreads.length === 0 && !smsThreadsLoading) {
+    if (messagesSubTab === 'sms' && smsThreads.length === 0 && !smsThreadsLoading) {
       void handleFetchSmsThreads();
+    } else if (messagesSubTab === 'social' && !socialThreadsData && !socialThreadsLoading) {
+      setSocialThreadsLoading(true);
+      void controllerRef.current?.performSocialAction({ action: 'list_threads' });
+      window.setTimeout(() => setSocialThreadsLoading(false), 10000);
+    } else if (messagesSubTab === 'calls' && !callLogData && !callLogLoading) {
+      setCallLogLoading(true);
+      void controllerRef.current?.requestCallLog();
+      window.setTimeout(() => setCallLogLoading(false), 10000);
+    } else if (messagesSubTab === 'insights' && !insightsData && !insightsLoading) {
+      setInsightsLoading(true);
+      void controllerRef.current?.requestInsights();
+      window.setTimeout(() => setInsightsLoading(false), 10000);
     }
   };
 
@@ -872,6 +890,14 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setViewerTab('media');
     if (mediaSubTab === 'photos' && galleryItems.length === 0 && !galleryLoading) {
       void handleFetchGallery(0, '');
+    } else if (mediaSubTab === 'timeline' && !timelineData && !timelineLoading) {
+      setTimelineLoading(true);
+      void controllerRef.current?.performTimelineAction({ action: 'list', page: 0 });
+      window.setTimeout(() => setTimelineLoading(false), 10000);
+    } else if (mediaSubTab === 'recordings' && !recordingsData && !recordingsLoading) {
+      setRecordingsLoading(true);
+      void controllerRef.current?.performRecordingAction({ action: 'list' });
+      window.setTimeout(() => setRecordingsLoading(false), 10000);
     }
   };
 
@@ -1408,6 +1434,13 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           </button>
         </div>
       </nav>
+
+      {/* Instant Phone Notifications Without Opening the Website */}
+      <ParentPushAlertsCard
+        familyKey={account?.familyKey}
+        childCode={activeCode}
+        compact
+      />
 
       {/* ==================== TAB 1: ACCUEIL ==================== */}
       {viewerTab === 'home' && (

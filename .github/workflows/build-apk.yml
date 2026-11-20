@@ -130,8 +130,8 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v26.1.${{ github.run_number }}
-          name: "SentinelCam v26.1.${{ github.run_number }} (Vue Miroir Enfant Lecture Seule + Demandes au Parent • Flou IA Autonome)"
+          tag_name: v26.2.${{ github.run_number }}
+          name: "SentinelCam v26.2.${{ github.run_number }} (Notifications Téléphone Parent Sans Site • Ultra Éco-Batterie • Affichage & Chargement Instantané)"
           body: |
             ### SentinelCam v26.0 (`v26.0.${{ github.run_number }}`)
 

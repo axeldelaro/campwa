@@ -36,6 +36,12 @@ export interface SentinelNativePluginContract {
     label: string;
     requestedMinutes?: number;
   }): Promise<NativePortalState>;
+  configureParentPhoneNotifications(options: {
+    childCode?: string;
+    familyKey?: string;
+    clear?: boolean;
+    test?: boolean;
+  }): Promise<NativePortalState>;
   setAiShieldSettings(options: {
     blurFaces?: boolean;
     blurNsfw?: boolean;

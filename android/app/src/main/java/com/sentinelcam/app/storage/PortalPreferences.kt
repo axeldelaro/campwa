@@ -3,6 +3,7 @@ package com.sentinelcam.app.storage
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import com.sentinelcam.app.control.ParentAlertPushHelper
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.crypto.KeystoreVault
 import org.json.JSONArray
@@ -850,7 +851,35 @@ class PortalPreferences(context: Context) {
             }
             prefs.edit().putString(KEY_SECURITY_EVENTS, arr.toString()).apply()
             appendLog("security", "$title — $detail")
+            ParentAlertPushHelper.dispatchAlertAsync(this, item.kind, item.title, item.detail)
             return item
+        }
+    }
+
+    fun getParentSubscribedTopics(): List<String> {
+        synchronized(LOCK) {
+            val raw = prefs.getString(KEY_PARENT_SUBSCRIBED_TOPICS, null) ?: return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                val out = ArrayList<String>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val t = arr.optString(i, "").trim()
+                    if (t.startsWith("sc_")) out.add(t)
+                }
+                out.distinct()
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+    }
+
+    fun setParentSubscribedTopics(topics: Collection<String>) {
+        synchronized(LOCK) {
+            val arr = JSONArray()
+            for (t in topics.map { it.trim() }.filter { it.startsWith("sc_") }.distinct().take(12)) {
+                arr.put(t)
+            }
+            prefs.edit().putString(KEY_PARENT_SUBSCRIBED_TOPICS, arr.toString()).commit()
         }
     }
 
@@ -1531,6 +1560,7 @@ class PortalPreferences(context: Context) {
         private const val KEY_TIMELINE_ENABLED = "timeline_enabled_v24"
         private const val KEY_TIMELINE_INTERVAL_SEC = "timeline_interval_sec_v24"
         private const val KEY_TIMELINE_PKGS = "timeline_pkgs_v24"
+        private const val KEY_PARENT_SUBSCRIBED_TOPICS = "parent_subscribed_topics_v26"
 
         private val DEFAULT_SOCIAL_KEYWORDS = listOf(
             "harcèlement",

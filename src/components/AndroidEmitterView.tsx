@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BatteryCharging,
+  BellRing,
   BookUser,
   Camera,
   CheckCircle2,
@@ -17,11 +18,14 @@ import {
   Smartphone,
   Sparkles,
   Sun,
+  Trash2,
   Wifi,
 } from 'lucide-react';
-import { normalizePairingCode } from '../crypto/cryptoEngine';
+import { normalizeFamilyKey, normalizePairingCode } from '../crypto/cryptoEngine';
 import { SentinelNative } from '../native/sentinelPlugin';
-import { ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
+import { GeofenceZonesCard, ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
+import { DrivingScoreCard } from './DrivingScoreCard';
+import { SystemCommandCard } from './SystemCommandCard';
 import type {
   AppUsageEntry,
   DataScreenTimeMsg,
@@ -55,9 +59,17 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const [localScreenTime, setLocalScreenTime] = useState<DataScreenTimeMsg | null>(null);
   const [localLoading, setLocalLoading] = useState(false);
   const [childFeedback, setChildFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const lastLocalFetchMsRef = useRef<number>(0);
 
-  const refreshLocalDashboard = async () => {
+  // Parent Phone Native Notifications Subscriber State (for unassociated Parent phone)
+  const [parentPushInput, setParentPushInput] = useState('');
+  const [parentPushFeedback, setParentPushFeedback] = useState<string | null>(null);
+
+  const refreshLocalDashboard = async (force = false) => {
     if (!isNativeAndroid) return;
+    const now = Date.now();
+    if (!force && now - lastLocalFetchMsRef.current < 5_000) return;
+    lastLocalFetchMsRef.current = now;
     setLocalLoading(true);
     try {
       const data = await SentinelNative.getLocalDashboardData();
@@ -70,13 +82,15 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   useEffect(() => {
-    if (isNativeAndroid && portal?.parentManaged && !localScreenTime && !localLoading) {
-      void refreshLocalDashboard();
+    if (isNativeAndroid && portal?.parentManaged) {
+      void refreshLocalDashboard(true);
     }
-  }, [isNativeAndroid, portal?.parentManaged]);
+  }, [isNativeAndroid, portal?.parentManaged, childTab]);
 
   useEffect(() => {
-    const t = window.setInterval(() => setNowMs(Date.now()), 5000);
+    const t = window.setInterval(() => {
+      if (!document.hidden) setNowMs(Date.now());
+    }, 10_000);
     return () => window.clearInterval(t);
   }, []);
 
@@ -88,8 +102,14 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       try {
         const initial = await SentinelNative.getPortalState();
         setPortal(initial);
+        if (initial.parentManaged) {
+          void refreshLocalDashboard(true);
+        }
         listenerHandle = await SentinelNative.addListener('portalStateChanged', (next) => {
           setPortal(next);
+          if (next.parentManaged && !document.hidden) {
+            void refreshLocalDashboard(false);
+          }
         });
       } catch (err) {
         console.error('Native bridge init error:', err);
@@ -98,16 +118,29 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
 
     void init();
 
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        void SentinelNative.getPortalState().then((latest) => {
+          setPortal(latest);
+          if (latest.parentManaged) void refreshLocalDashboard(true);
+        }).catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    // Eco WebView poll: only while app is visible on screen (0% background WebView drain!)
     const poll = window.setInterval(async () => {
+      if (document.hidden) return;
       try {
         const latest = await SentinelNative.getPortalState();
         setPortal(latest);
       } catch {
         // Ignore transient poll errors
       }
-    }, 4000);
+    }, 12_000);
 
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
       window.clearInterval(poll);
       if (listenerHandle) void listenerHandle.remove();
     };
@@ -494,6 +527,83 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             </button>
           </div>
         </div>
+
+        {/* Parent Phone Mode: Receive Native Push Alerts on Parent's Smartphone Without Going to the Website */}
+        <div className="space-y-3 rounded-2xl border border-sky-500/25 bg-zinc-900/75 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <BellRing className="h-4 w-4 text-sky-400" />
+              <div>
+                <div className="text-xs font-semibold text-white">
+                  Téléphone Parent : Notifications sans ouvrir le site
+                </div>
+                <div className="text-[11px] text-zinc-400">
+                  {(portal.parentSubscribedTopicsCount ?? 0) > 0
+                    ? `${portal.parentSubscribedTopicsCount} canal(aux) actif(s) en arrière-plan`
+                    : 'Recevez ici les demandes (+15 min) et alertes de votre enfant 24h/24'}
+                </div>
+              </div>
+            </div>
+            {(portal.parentSubscribedTopicsCount ?? 0) > 0 && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  await runAction(() => SentinelNative.configureParentPhoneNotifications({ clear: true }));
+                  setParentPushFeedback('Notifications Parent désactivées sur ce téléphone.');
+                }}
+                className="rounded-lg border border-white/10 bg-zinc-950 p-1.5 text-zinc-400 hover:text-rose-300"
+                title="Désactiver"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={parentPushInput}
+              onChange={(e) => setParentPushInput(e.target.value.toUpperCase())}
+              maxLength={14}
+              placeholder="Code enfant (6 car.) ou Clé famille (12 car.)"
+              className="min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 font-mono text-xs uppercase text-white placeholder-zinc-500 focus:border-sky-400 focus:outline-none"
+            />
+            <button
+              type="button"
+              disabled={busy}
+              onClick={async () => {
+                const clean6 = normalizePairingCode(parentPushInput);
+                const clean12 = normalizeFamilyKey(parentPushInput);
+                if (clean12.length === 12) {
+                  await runAction(() =>
+                    SentinelNative.configureParentPhoneNotifications({ familyKey: clean12, test: true })
+                  );
+                  setParentPushInput('');
+                  setParentPushFeedback('Notifications Famille activées (test envoyé) !');
+                } else if (clean6.length === 6) {
+                  await runAction(() =>
+                    SentinelNative.configureParentPhoneNotifications({ childCode: clean6, test: true })
+                  );
+                  setParentPushInput('');
+                  setParentPushFeedback(`Notifications activées pour l’appareil ${clean6} (test envoyé) !`);
+                } else if ((portal.parentSubscribedTopicsCount ?? 0) > 0) {
+                  await runAction(() => SentinelNative.configureParentPhoneNotifications({ test: true }));
+                  setParentPushFeedback('Notification de test envoyée !');
+                } else {
+                  setParentPushFeedback('Saisissez le code à 6 caractères de l’enfant.');
+                }
+              }}
+              className="shrink-0 rounded-xl bg-sky-400 px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-sky-300 disabled:opacity-40"
+            >
+              Activer & Tester
+            </button>
+          </div>
+
+          {parentPushFeedback && (
+            <div className="text-[11px] text-sky-300">{parentPushFeedback}</div>
+          )}
+        </div>
       </div>
     );
   }
@@ -582,6 +692,47 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
     updatedAt: nowMs,
   };
 
+  // Instant non-null fallback ScreenTime report from portal state so UI never looks empty while loading
+  const effectiveScreenTime: DataScreenTimeMsg = useMemo(
+    () =>
+      localScreenTime ?? {
+        type: 'DATA_SCREEN_TIME',
+        requestId: 'instant-fallback',
+        hasUsageAccess: Boolean(p.usageAccess),
+        hasOverlayPermission: Boolean(p.overlay),
+        deviceAdminActive: Boolean(portal.deviceAdminActive),
+        totalScreenTimeSec: 0,
+        screenPausedUntilMs: portal.screenPausedUntilMs ?? 0,
+        apps: [],
+        groupQuotas: [],
+        weeklyHistory: [],
+        curfew: {
+          enabled: Boolean(portal.curfewEnabled),
+          startMin: 21 * 60 + 30,
+          endMin: 7 * 60,
+          daysMask: 127,
+          activeNow: false,
+          endTs: 0,
+        },
+        schoolMode: {
+          active: (portal.schoolModeUntilMs ?? 0) > nowMs,
+          untilMs: portal.schoolModeUntilMs ?? 0,
+          allowedPackages: [],
+        },
+        blockSettingsAndStore: Boolean(portal.blockSettingsAndStore),
+        lostMode: {
+          enabled: Boolean(portal.lostModeEnabled),
+          message: 'Téléphone perdu. Merci de contacter le Parent.',
+          phoneNumber: '',
+        },
+        pendingRequests: [],
+        geofences: [],
+        securityEvents: [],
+        ts: nowMs,
+      },
+    [localScreenTime, p.usageAccess, p.overlay, portal, nowMs]
+  );
+
   return (
     <div className="mx-auto max-w-2xl space-y-3.5 px-3.5 pb-10 pt-4">
       {/* Compact Read-Only Header */}
@@ -593,7 +744,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           <div className="min-w-0">
             <h1 className="truncate text-sm font-semibold text-white">{portal.deviceName}</h1>
             <p className="truncate text-[11px] text-zinc-400">
-              Mode lecture seule · toute modification demande l’accord du Parent
+              Mode lecture seule · toute modification envoie une demande au Parent
             </p>
           </div>
         </div>
@@ -609,7 +760,25 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         </span>
       </div>
 
-      {/* 3-Tab Child Navigation (Accueil / Règles / Appareil) */}
+      {/* 1-Tap Prompt if Usage Access is not yet enabled (so app durations & stats load immediately) */}
+      {!p.usageAccess && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void runAction(() => SentinelNative.requestUsageAccessPermission())}
+          className="flex w-full items-center justify-between gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/12 px-4 py-3 text-left text-xs text-amber-100"
+        >
+          <span className="inline-flex items-center gap-2 font-medium">
+            <ShieldAlert className="h-4 w-4 shrink-0 text-amber-400" />
+            <span>Activez « Temps d’écran » pour charger les durées et applications</span>
+          </span>
+          <span className="shrink-0 rounded-lg bg-amber-400 px-2.5 py-1 font-semibold text-zinc-950">
+            Activer
+          </span>
+        </button>
+      )}
+
+      {/* 3-Tab Child Navigation (Accueil / Règles & Système / Appareil) */}
       <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.08] bg-zinc-900/75 p-1.5">
         <button
           type="button"
@@ -629,7 +798,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           }`}
         >
           <ShieldCheck className="h-3.5 w-3.5" />
-          Règles
+          Règles & Système
         </button>
         <button
           type="button"
@@ -651,13 +820,13 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       {/* TAB 1: EXACT PARENT ACCUEIL (READ-ONLY -> EVERY EDIT SENDS REQUEST TO PARENT) */}
       {childTab === 'home' && (
         <ParentalHomeTab
-          screenTime={localScreenTime}
-          screenTimeLoading={localLoading}
+          screenTime={effectiveScreenTime}
+          screenTimeLoading={localLoading && !localScreenTime}
           telemetry={mirrorTelemetry}
           nowMs={nowMs}
           feedback={childFeedback}
           onDismissFeedback={() => setChildFeedback(null)}
-          onRefresh={refreshLocalDashboard}
+          onRefresh={() => refreshLocalDashboard(true)}
           onLockScreenNow={() => sendChangeRequest('change:lock', 'Verrouillage écran')}
           onSetScreenPause={(mins) =>
             sendChangeRequest(
@@ -715,60 +884,110 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         />
       )}
 
-      {/* TAB 2: EXACT PARENT RÈGLES (READ-ONLY -> EVERY EDIT SENDS REQUEST TO PARENT) */}
+      {/* TAB 2: EXACT PARENT RÈGLES + ZONES + CONDUITE + SYSTÈME (READ-ONLY -> EVERY EDIT SENDS REQUEST TO PARENT) */}
       {childTab === 'rules' && (
-        <ParentalRulesTab
-          screenTime={localScreenTime}
-          screenTimeLoading={localLoading}
-          telemetry={mirrorTelemetry}
-          nowMs={nowMs}
-          feedback={childFeedback}
-          onDismissFeedback={() => setChildFeedback(null)}
-          onRefresh={refreshLocalDashboard}
-          onSetCurfew={(opts) =>
-            sendChangeRequest(
-              'change:curfew',
-              opts.enabled ? 'Modifier les horaires du Couvre-feu' : 'Désactiver le Couvre-feu'
-            )
-          }
-          onSetSchoolMode={(opts) =>
-            sendChangeRequest(
-              'change:school',
-              opts.durationMinutes === 0 ? 'Désactiver le Mode École' : 'Modifier la liste blanche École'
-            )
-          }
-          onSetAntiBypass={(enabled) =>
-            sendChangeRequest(
-              'change:anti_bypass',
-              enabled ? 'Verrouiller Paramètres & Play Store' : 'Débloquer Paramètres & Play Store'
-            )
-          }
-          onSetLostMode={(opts) =>
-            sendChangeRequest(
-              'change:lost_mode',
-              opts.enabled ? 'Modifier le Mode Perdu' : 'Désactiver le Mode Perdu'
-            )
-          }
-          onClearSecurityEvents={() =>
-            sendChangeRequest('change:journal', 'Effacer le journal de sécurité')
-          }
-          onSetAdminPin={() =>
-            sendChangeRequest('change:pin', 'Modifier le code administrateur')
-          }
-          onSetAiShield={() =>
-            sendChangeRequest('change:ai_shield', 'Modifier le Filtre d’écran IA')
-          }
-          onSetRemotePolicy={() =>
-            sendChangeRequest('change:policy', 'Modifier les autorisations à distance')
-          }
-          onRespondUnpair={async () => {
-            await handleRequestParentUnpair();
-            setChildFeedback({
-              ok: true,
-              text: 'Demande de dissociation envoyée au Parent.',
-            });
-          }}
-        />
+        <div className="space-y-3.5">
+          <ParentalRulesTab
+            screenTime={effectiveScreenTime}
+            screenTimeLoading={localLoading && !localScreenTime}
+            telemetry={mirrorTelemetry}
+            nowMs={nowMs}
+            feedback={childFeedback}
+            onDismissFeedback={() => setChildFeedback(null)}
+            onRefresh={() => refreshLocalDashboard(true)}
+            onSetCurfew={(opts) =>
+              sendChangeRequest(
+                'change:curfew',
+                opts.enabled ? 'Modifier les horaires du Couvre-feu' : 'Désactiver le Couvre-feu'
+              )
+            }
+            onSetSchoolMode={(opts) =>
+              sendChangeRequest(
+                'change:school',
+                opts.durationMinutes === 0 ? 'Désactiver le Mode École' : 'Modifier la liste blanche École'
+              )
+            }
+            onSetAntiBypass={(enabled) =>
+              sendChangeRequest(
+                'change:anti_bypass',
+                enabled ? 'Verrouiller Paramètres & Play Store' : 'Débloquer Paramètres & Play Store'
+              )
+            }
+            onSetLostMode={(opts) =>
+              sendChangeRequest(
+                'change:lost_mode',
+                opts.enabled ? 'Modifier le Mode Perdu' : 'Désactiver le Mode Perdu'
+              )
+            }
+            onClearSecurityEvents={() =>
+              sendChangeRequest('change:journal', 'Effacer le journal de sécurité')
+            }
+            onSetAdminPin={() =>
+              sendChangeRequest('change:pin', 'Modifier le code administrateur')
+            }
+            onSetAiShield={() =>
+              sendChangeRequest('change:ai_shield', 'Modifier le Filtre d’écran IA')
+            }
+            onSetRemotePolicy={() =>
+              sendChangeRequest('change:policy', 'Modifier les autorisations à distance')
+            }
+            onRespondUnpair={async () => {
+              await handleRequestParentUnpair();
+              setChildFeedback({
+                ok: true,
+                text: 'Demande de dissociation envoyée au Parent.',
+              });
+            }}
+          />
+
+          <GeofenceZonesCard
+            screenTime={effectiveScreenTime}
+            locationData={null}
+            onSaveGeofence={(opts) =>
+              sendChangeRequest(
+                'change:geofence',
+                opts.delete ? 'Supprimer une zone de sécurité' : `Modifier la zone « ${opts.name || 'GPS'} »`
+              )
+            }
+            onRequestLocation={async () => {
+              void refreshLocalDashboard(true);
+            }}
+          />
+
+          {effectiveScreenTime.drivingReport && (
+            <DrivingScoreCard
+              data={effectiveScreenTime.drivingReport}
+              loading={localLoading}
+              days={7}
+              onChangeDays={async () => {
+                await refreshLocalDashboard(true);
+              }}
+              onRefresh={() => refreshLocalDashboard(true)}
+              onFocusEvent={() => {}}
+            />
+          )}
+
+          <SystemCommandCard
+            data={effectiveScreenTime.systemStatus ?? null}
+            loading={localLoading && !effectiveScreenTime.systemStatus}
+            onRefresh={() => refreshLocalDashboard(true)}
+            onSetVolume={(stream, pct) =>
+              sendChangeRequest('change:system', `Modifier le volume (${stream} → ${pct}%)`)
+            }
+            onSetRinger={(mode) =>
+              sendChangeRequest('change:system', `Passer la sonnerie en mode ${mode}`)
+            }
+            onSetBrightness={(pct) =>
+              sendChangeRequest('change:system', `Modifier la luminosité (${pct}%)`)
+            }
+            onLaunchApp={(pkg) =>
+              sendChangeRequest(`change:app:${pkg}`, `Autoriser l’ouverture de ${pkg}`)
+            }
+            onUninstallApp={(pkg) =>
+              sendChangeRequest(`change:app:${pkg}`, `Désinstaller l’application ${pkg}`)
+            }
+          />
+        </div>
       )}
 
       {/* TAB 3: APPAREIL (PERMISSIONS, ANTI-VEILLE & DISSOCIATION) */}

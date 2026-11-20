@@ -43,6 +43,19 @@ class AppLockMonitor(
     private var lastUsageDayKey = ""
     private var lastObservedFgPkg: String? = null
     private val lastBypassLogByPkg = HashMap<String, Long>()
+    private var a11yListenerRegistered = false
+
+    private val a11yWindowListener = object : SentinelAccessibilityService.WindowEventListener {
+        override fun onWindowChanged(packageName: String) {
+            if (!started || !screenInteractive) return
+            if (packageName != lastObservedFgPkg) {
+                handler.removeCallbacks(pollRunnable)
+                handler.post(pollRunnable)
+            }
+        }
+
+        override fun onScrollDeltaPx(deltaYPx: Int) {}
+    }
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -219,12 +232,15 @@ class AppLockMonitor(
 
             // Adaptive battery-friendly cadence:
             // - 30s when only inactive curfew is configured
-            // - 1.8s when only passive rules (anti-bypass / quotas) are watching
-            // - 1.0s when active enforcement (pause / curfew / school / lost / app locks) is running
+            // - 6.0s when SentinelAccessibilityService is active (0ms instant trigger on window change!)
+            // - 3.0s when only passive rules (anti-bypass / quotas) are watching without Accessibility
+            // - 1.2s when active enforcement (pause / curfew / school / lost / app locks) is running without Accessibility
+            val a11yInstant = SentinelAccessibilityService.isActiveNow()
             val nextDelay = when {
                 !lostEnabled && !antiBypass && pausedUntil == 0L &&
                     !curfewActive && schoolUntil == 0L && rules.isEmpty() && quotas.isEmpty() && groupQuotas.isEmpty() && curfewConfigured -> 30_000L
-                !lostEnabled && pausedUntil == 0L && !curfewActive && schoolUntil == 0L && rules.isEmpty() -> 1_800L
+                a11yInstant -> 6_000L
+                !lostEnabled && pausedUntil == 0L && !curfewActive && schoolUntil == 0L && rules.isEmpty() -> 3_000L
                 else -> POLL_INTERVAL_MS
             }
             handler.postDelayed(this, nextDelay)
@@ -254,6 +270,10 @@ class AppLockMonitor(
             } catch (_: Throwable) {
             }
         }
+        if (!a11yListenerRegistered) {
+            SentinelAccessibilityService.addWindowListener(a11yWindowListener)
+            a11yListenerRegistered = true
+        }
         refreshSchedule()
     }
 
@@ -278,6 +298,10 @@ class AppLockMonitor(
     fun destroy() {
         started = false
         handler.removeCallbacks(pollRunnable)
+        if (a11yListenerRegistered) {
+            SentinelAccessibilityService.removeWindowListener(a11yWindowListener)
+            a11yListenerRegistered = false
+        }
         if (receiverRegistered) {
             try {
                 appContext.unregisterReceiver(screenReceiver)

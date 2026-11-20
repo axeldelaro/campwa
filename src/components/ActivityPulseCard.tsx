@@ -181,13 +181,13 @@ export const ActivityPulseCard: React.FC<ActivityPulseCardProps> = ({
 
           <div className="rounded-xl border border-white/[0.06] bg-zinc-950/75 p-2.5">
             <div className="flex items-center gap-1 text-[10px] text-zinc-400">
-              <Clock className="h-3 w-3 text-sky-400" />
-              Amplitude du jour
+              <Clock className="h-3 w-3 shrink-0 text-sky-400" />
+              <span className="truncate">Amplitude du jour</span>
             </div>
-            <div className="mt-1.5 font-mono text-sm font-semibold text-white">
+            <div className="mt-1.5 truncate font-mono text-xs font-semibold text-white sm:text-sm">
               {formatClock(unlockMetrics.firstUnlockTs)} → {formatClock(unlockMetrics.lastUnlockTs)}
             </div>
-            <div className="mt-0.5 text-[10px] text-zinc-500">
+            <div className="mt-0.5 truncate text-[10px] text-zinc-500">
               Moy. {formatShortDuration(unlockMetrics.avgSessionSeconds)} / session
             </div>
           </div>
@@ -279,8 +279,8 @@ export const ActivityPulseCard: React.FC<ActivityPulseCardProps> = ({
         </div>
 
         {/* 24-Bar Interactive Chart */}
-        <div className="rounded-xl border border-white/[0.06] bg-zinc-950/80 px-2 pb-2 pt-3">
-          <div className="grid h-20 grid-cols-[repeat(24,minmax(0,1fr))] items-end gap-[3px]">
+        <div className="rounded-xl border border-white/[0.06] bg-zinc-950/80 px-1.5 pb-2 pt-3 sm:px-2">
+          <div className="grid h-20 grid-cols-[repeat(24,minmax(0,1fr))] items-end gap-[2px] sm:gap-[3px]">
             {slots.map((slot) => {
               const isSelected = slot.hour === activeHour;
               const pct =

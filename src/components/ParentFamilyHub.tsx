@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { normalizePairingCode } from '../crypto/cryptoEngine';
+import { ParentPushAlertsCard } from './ParentPushAlertsCard';
 import type {
   ChildLiveStatus,
   ParentAccountSession,
@@ -372,6 +373,12 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
       </div>
 
       {renderConnectingBar()}
+
+      {/* Instant Phone Notifications Without Opening the Website */}
+      <ParentPushAlertsCard
+        familyKey={account.familyKey}
+        childCodes={account.children.map((c) => c.pairingCode)}
+      />
 
       {pushSentFeedback && (
         <div className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">

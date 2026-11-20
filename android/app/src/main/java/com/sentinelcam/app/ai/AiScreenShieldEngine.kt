@@ -156,7 +156,8 @@ class AiScreenShieldEngine(
                     }
                 }
                 if (isActive && screenOn && !pausedForWebRtcScreen) {
-                    workerHandler?.postDelayed(this, 1_080L)
+                    val nextDelay = if (lastFrameStatic) 3_200L else 1_250L
+                    workerHandler?.postDelayed(this, nextDelay)
                 }
                 return
             }
@@ -167,9 +168,9 @@ class AiScreenShieldEngine(
             }
 
             val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
-            // Eco-adaptive cadence: 160ms when screen is completely still, snapping instantly to 42ms (~24 Hz) on motion!
-            val targetPeriod = if (lastFrameStatic) 160L else 42L
-            val delay = (targetPeriod - elapsedMs).coerceIn(16L, 180L)
+            // Eco-adaptive cadence: 420ms when screen is completely still, snapping to 85ms (~12 Hz) on motion!
+            val targetPeriod = if (lastFrameStatic) 420L else 85L
+            val delay = (targetPeriod - elapsedMs).coerceIn(32L, 450L)
             if (isActive && screenOn && !pausedForWebRtcScreen) {
                 workerHandler?.postDelayed(this, delay)
             }
@@ -509,13 +510,13 @@ class AiScreenShieldEngine(
                     return
                 }
 
-                // 3. Static screen -> keep colorful mosaic rock-steady (0 flicker!)
-                if (bgDiff < 5.5f && (now - lastFullScanMs) < 850L) {
+                // 3. Static screen -> keep colorful mosaic rock-steady (0 flicker & 0 neural CPU drain!)
+                if (bgDiff < 4.5f && (now - lastFullScanMs) < 4_500L) {
                     lastFrameStatic = true
                     return
                 }
-            } else if (bgDiff < 2.2f && (now - lastFullScanMs) < 900L) {
-                // Static clean screen (e.g. reading text) -> skip redundant ML inference to save ~75% battery!
+            } else if (bgDiff < 2.8f && (now - lastFullScanMs) < 6_000L) {
+                // Static clean screen (e.g. reading text) -> skip redundant ML inference to save ~85% battery!
                 lastFrameStatic = true
                 return
             }

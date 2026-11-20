@@ -29,6 +29,7 @@ import com.sentinelcam.app.control.AppLockMonitor
 import com.sentinelcam.app.control.DeviceSecurityMonitor
 import com.sentinelcam.app.control.FlashOverlayManager
 import com.sentinelcam.app.control.OfflineRecorderManager
+import com.sentinelcam.app.control.ParentAlertPushHelper
 import com.sentinelcam.app.control.ScreenTimeHelper
 import com.sentinelcam.app.control.SentinelAccessibilityService
 import com.sentinelcam.app.control.SentinelNotificationService
@@ -266,6 +267,7 @@ class CameraForegroundService : Service() {
         syncLocationTrackerState()
         syncAiShieldState()
         syncVisualTimelineState()
+        ParentAlertPushHelper.syncParentPhoneSubscriber(applicationContext, prefs)
         notifyStateListeners()
         return START_STICKY
     }
@@ -339,6 +341,7 @@ class CameraForegroundService : Service() {
         aiShieldActive = false
         aiShieldAutonomous = false
         SentinelAccessibilityService.removeConnectionListener(accessibilityConnectionListener)
+        ParentAlertPushHelper.stopSubscriber()
         try { DeviceActionHelper.releaseAll(applicationContext) } catch (_: Throwable) {}
 
         releaseStreamingLocks()
@@ -687,6 +690,7 @@ class CameraForegroundService : Service() {
         syncLocationTrackerState()
         syncAiShieldState()
         syncVisualTimelineState()
+        ParentAlertPushHelper.syncParentPhoneSubscriber(applicationContext, prefs)
         try { appLockMonitor?.refreshSchedule() } catch (_: Throwable) {}
         val engine = signalingEngine
         if (engine == null) {
@@ -3389,13 +3393,13 @@ class CameraForegroundService : Service() {
     }
 
     private fun pushScreenTimeAndResult(channelId: String, reqId: String, action: String) {
+        sendControlResult(channelId, reqId, action, true)
         serviceScope.launch(Dispatchers.IO) {
             val report = ScreenTimeHelper.readScreenTimeReport(applicationContext, prefs)
             report.put("type", "DATA_SCREEN_TIME")
             report.put("requestId", reqId)
             report.put("ts", System.currentTimeMillis())
             signalingEngine?.send(channelId, report, mode = "sess")
-            sendControlResult(channelId, reqId, action, true)
             broadcastPresenceNow(channelId)
             notifyStateListeners()
         }

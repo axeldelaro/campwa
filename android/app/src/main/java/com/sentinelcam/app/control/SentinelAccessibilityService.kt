@@ -39,9 +39,18 @@ class SentinelAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 val pkg = event.packageName?.toString()?.trim().orEmpty()
                 if (pkg.isNotEmpty()) {
-                    lastWindowPackage = pkg
-                    for (l in windowListeners) {
-                        try { l.onWindowChanged(pkg) } catch (_: Throwable) {}
+                    val lower = pkg.lowercase()
+                    val isTransientUi = lower == "com.android.systemui" ||
+                        lower.contains("inputmethod") ||
+                        lower.contains("gboard") ||
+                        lower.contains("honeyboard") ||
+                        lower.contains("swiftkey")
+                    if (!isTransientUi) {
+                        lastWindowPackage = pkg
+                        ScreenTimeHelper.notifyAccessibilityWindowChanged(pkg)
+                        for (l in windowListeners) {
+                            try { l.onWindowChanged(pkg) } catch (_: Throwable) {}
+                        }
                     }
                 }
             }
