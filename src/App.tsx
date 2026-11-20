@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { BellRing, ExternalLink } from 'lucide-react';
+import { BellRing, ExternalLink, RefreshCw, ShieldAlert } from 'lucide-react';
 import { AndroidEmitterView } from './components/AndroidEmitterView';
 import { ControlStationView } from './components/ControlStationView';
 import { HeaderBar } from './components/HeaderBar';
@@ -8,6 +8,66 @@ import { isAndroidNativeApp } from './native/sentinelPlugin';
 import { warmUpSignalingPool, type BrokerHealth } from './services/signalingService';
 
 const APK_RELEASE_URL = 'https://github.com/axeldelaro/campwa/releases/latest';
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  errorMessage: string;
+}
+
+class AppErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  ErrorBoundaryState
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorMessage: '' };
+  }
+
+  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
+    return {
+      hasError: true,
+      errorMessage: error instanceof Error ? error.message : 'Erreur d’affichage temporaire.',
+    };
+  }
+
+  componentDidCatch(): void {
+    // Prevent silent black-screen crashes; UI renders a clean recovery card below
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-[#09090b] p-4 text-zinc-100">
+          <div className="w-full max-w-sm space-y-3 rounded-2xl border border-white/10 bg-zinc-900 p-5 text-center">
+            <ShieldAlert className="mx-auto h-8 w-8 text-amber-400" />
+            <h2 className="text-sm font-semibold text-white">L’interface a été réinitialisée</h2>
+            <p className="text-xs text-zinc-400">
+              {this.state.errorMessage || 'Une mise à jour ou une reprise en arrière-plan a interrompu l’affichage.'}
+            </p>
+            <div className="flex justify-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => this.setState({ hasError: false, errorMessage: '' })}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Reprendre
+              </button>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="rounded-xl border border-white/15 px-4 py-2 text-xs font-medium text-zinc-300 hover:text-white"
+              >
+                Recharger
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export const App: React.FC = () => {
   const nativeAndroid = isAndroidNativeApp();
@@ -48,50 +108,52 @@ export const App: React.FC = () => {
     : '#';
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-[#09090b] text-zinc-100">
-      <HeaderBar
-        isNativeAndroid={nativeAndroid}
-        brokerConnected={brokerConnected}
-        apkDownloadUrl={APK_RELEASE_URL}
-      />
+    <AppErrorBoundary>
+      <div className="min-h-screen overflow-x-hidden bg-[#09090b] text-zinc-100">
+        <HeaderBar
+          isNativeAndroid={nativeAndroid}
+          brokerConnected={brokerConnected}
+          apkDownloadUrl={APK_RELEASE_URL}
+        />
 
-      {!nativeAndroid && inviteCode && (
-        <div className="mx-auto mt-5 max-w-md px-4">
-          <div className="rounded-2xl border border-white/10 bg-zinc-900/90 p-5 text-center">
-            <BellRing className="mx-auto h-7 w-7 text-emerald-400" />
-            <h2 className="mt-3 text-base font-semibold text-white">Ouvrir SentinelCam</h2>
-            <p className="mt-1 text-xs text-zinc-400">
-              Code <span className="font-mono text-white">{inviteCode}</span>
-            </p>
-            <a
-              href={androidIntentHref}
-              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-white px-5 py-2.5 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200"
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-              <span>Lancer l’application</span>
-            </a>
-            <button
-              type="button"
-              onClick={() => setInviteCode(null)}
-              className="mt-3 text-xs text-zinc-500 hover:text-zinc-300"
-            >
-              Continuer sur le site
-            </button>
+        {!nativeAndroid && inviteCode && (
+          <div className="mx-auto mt-5 max-w-md px-4">
+            <div className="rounded-2xl border border-white/10 bg-zinc-900/90 p-5 text-center">
+              <BellRing className="mx-auto h-7 w-7 text-emerald-400" />
+              <h2 className="mt-3 text-base font-semibold text-white">Ouvrir SentinelCam</h2>
+              <p className="mt-1 text-xs text-zinc-400">
+                Code <span className="font-mono text-white">{inviteCode}</span>
+              </p>
+              <a
+                href={androidIntentHref}
+                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-white px-5 py-2.5 text-xs font-semibold text-zinc-950 transition hover:bg-zinc-200"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                <span>Lancer l’application</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => setInviteCode(null)}
+                className="mt-3 text-xs text-zinc-500 hover:text-zinc-300"
+              >
+                Continuer sur le site
+              </button>
+            </div>
           </div>
-        </div>
-      )}
-
-      <main>
-        {nativeAndroid ? (
-          <AndroidEmitterView isNativeAndroid={true} />
-        ) : (
-          <ControlStationView
-            onBrokerHealthChange={handleBrokerHealth}
-            initialCode={sharedAccessCode}
-          />
         )}
-      </main>
-    </div>
+
+        <main>
+          {nativeAndroid ? (
+            <AndroidEmitterView isNativeAndroid={true} />
+          ) : (
+            <ControlStationView
+              onBrokerHealthChange={handleBrokerHealth}
+              initialCode={sharedAccessCode}
+            />
+          )}
+        </main>
+      </div>
+    </AppErrorBoundary>
   );
 };
 

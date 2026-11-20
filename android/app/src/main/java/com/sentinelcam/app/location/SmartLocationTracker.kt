@@ -40,6 +40,7 @@ import kotlin.math.abs
 class SmartLocationTracker(
     context: Context,
     val store: LocationHistoryStore,
+    private val onLocationSample: ((Location, Float) -> Unit)? = null,
     private val onStateChanged: () -> Unit
 ) {
     private val appContext = context.applicationContext
@@ -581,6 +582,10 @@ class SmartLocationTracker(
 
         lastFixTimestamp = fixTs
         lastAccuracyMeters = location.accuracy.toInt().coerceAtLeast(0)
+        try {
+            onLocationSample?.invoke(location, computedSpeedMps)
+        } catch (_: Throwable) {
+        }
 
         if (shouldSaveNewPoint) {
             val locCopy = Location(location)

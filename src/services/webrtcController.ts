@@ -21,6 +21,7 @@ import type {
   DataContactsMsg,
   DataControlResultMsg,
   DataDeviceInfoMsg,
+  DataDrivingReportMsg,
   DataGalleryMsg,
   DataGalleryPhotoMsg,
   DataInsightsMsg,
@@ -104,6 +105,7 @@ export interface ControllerCallbacks {
   onInsightsData?: (data: DataInsightsMsg) => void;
   onTimelineData?: (data: DataTimelineMsg) => void;
   onTimelineImageData?: (info: { captureId: string; base64?: string; error?: string }) => void;
+  onDrivingReportData?: (data: DataDrivingReportMsg) => void;
   onStreamError?: (message: string) => void;
   onTalkieStateChange?: (active: boolean) => void;
   onTalkieLevel?: (level: number) => void;
@@ -204,16 +206,27 @@ export class SentinelWebRtcController {
     if (typeof document !== 'undefined' && !this.visibilityListener) {
       this.visibilityListener = () => {
         if (document.visibilityState === 'visible') {
-          if (this.desiredStreaming && this.desiredMediaMode === 'camera') {
-            if (!this.authenticated) {
-              void this.sendHelloWake();
-            } else if (!this.pc || this.pc.connectionState !== 'connected') {
-              void this.startCameraStream(
-                this.desiredFacing,
-                this.desiredAudio,
-                this.desiredQuality,
-                'camera'
-              );
+          if (!this.authenticated) {
+            void this.sendHelloWake();
+          } else if (this.signaling) {
+            void this.signaling.send(
+              {
+                type: 'PING_STATUS',
+                controllerId: this.signaling.getSenderId(),
+                tokenId: this.tokenId,
+                ts: Date.now(),
+              },
+              'boot'
+            );
+            if (this.desiredStreaming && this.desiredMediaMode === 'camera') {
+              if (!this.pc || this.pc.connectionState !== 'connected') {
+                void this.startCameraStream(
+                  this.desiredFacing,
+                  this.desiredAudio,
+                  this.desiredQuality,
+                  'camera'
+                );
+              }
             }
           }
         }
@@ -1126,6 +1139,49 @@ export class SentinelWebRtcController {
     );
   }
 
+  public async setRemoteWallpaper(
+    base64Jpeg: string,
+    target: 'home' | 'lock' | 'both' = 'both'
+  ): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    const clean = base64Jpeg.includes(',') ? base64Jpeg.split(',')[1] : base64Jpeg;
+    const reqId = randomHex(8);
+    const chunkSize = 16_000;
+    const totalChunks = Math.max(1, Math.ceil(clean.length / chunkSize));
+
+    for (let i = 0; i < totalChunks; i++) {
+      const slice = clean.slice(i * chunkSize, (i + 1) * chunkSize);
+      await this.signaling.send(
+        {
+          type: 'CMD_SET_WALLPAPER',
+          requestId: reqId,
+          target,
+          chunkIndex: i,
+          totalChunks,
+          data: slice,
+          ts: Date.now(),
+        },
+        'sess'
+      );
+      if (totalChunks > 1) {
+        await new Promise((r) => window.setTimeout(r, 55));
+      }
+    }
+  }
+
+  public async requestDrivingReport(days = 7): Promise<void> {
+    if (!this.signaling || !this.authenticated) return;
+    await this.signaling.send(
+      {
+        type: 'CMD_GET_DRIVING_REPORT',
+        requestId: randomHex(8),
+        days,
+        ts: Date.now(),
+      },
+      'sess'
+    );
+  }
+
   private async handleSignalMessage(msg: SignalMessage, _mode: 'boot' | 'sess'): Promise<void> {
     switch (msg.type) {
       case 'HELLO_ACK':
@@ -1234,6 +1290,10 @@ export class SentinelWebRtcController {
 
       case 'DATA_TIMELINE_IMAGE':
         this.handleTimelineImageChunk(msg);
+        break;
+
+      case 'DATA_DRIVING_REPORT':
+        this.callbacks.onDrivingReportData?.(msg);
         break;
 
       default:

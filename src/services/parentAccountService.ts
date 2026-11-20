@@ -44,6 +44,7 @@ export interface ParentAccountSession {
   createdAt: number;
   updatedAt: number;
   children: ParentChildRecord[];
+  deletedCodes?: Record<string, number>;
 }
 
 interface AccountMarkerRecord {
@@ -66,6 +67,7 @@ interface DecryptedVaultPayload {
   displayName: string;
   updatedAt: number;
   children: ParentChildRecord[];
+  deletedCodes?: Record<string, number>;
 }
 
 export interface ChildLiveStatus {
@@ -237,6 +239,36 @@ function parseAccountMarker(rawJson: string): AccountMarkerRecord | null {
   }
 }
 
+function mergeDeletedCodes(
+  a?: Record<string, number>,
+  b?: Record<string, number>
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const src of [a, b]) {
+    if (!src) continue;
+    for (const [k, v] of Object.entries(src)) {
+      const code = normalizePairingCode(k);
+      if (code.length === 6 && typeof v === 'number' && v > (out[code] ?? 0)) {
+        out[code] = v;
+      }
+    }
+  }
+  return out;
+}
+
+function filterOutDeletedChildren(
+  list: ParentChildRecord[],
+  deletedCodes?: Record<string, number>
+): ParentChildRecord[] {
+  if (!deletedCodes) return list;
+  return list.filter((c) => {
+    const delAt = deletedCodes[normalizePairingCode(c.pairingCode)];
+    if (!delAt) return true;
+    // Only allow through if newly re-paired strictly AFTER deletion timestamp
+    return (c.pairedAt ?? 0) > delAt + 5000;
+  });
+}
+
 function mergeChildrenLists(
   primary: ParentChildRecord[],
   secondary: ParentChildRecord[]
@@ -316,6 +348,7 @@ export function saveParentAccountSession(session: ParentAccountSession): void {
 export function logoutParentAccount(): void {
   try {
     localStorage.removeItem(ACCOUNT_SESSION_KEY);
+    replacePairedDevices([]);
   } catch {
     // Ignore
   }
@@ -332,6 +365,7 @@ async function publishAccountRecords(
     displayName: session.displayName,
     updatedAt: session.updatedAt,
     children: session.children,
+    deletedCodes: session.deletedCodes,
   };
   const encryptedVault = await encryptVaultPayload(vaultPayload, vaultEncRaw);
   const okVault = await publishRetainedRecord(session.vaultTopic, encryptedVault);
@@ -484,7 +518,11 @@ export async function loginParentAccount(options: {
   }
 
   const now = Date.now();
-  const mergedChildren = mergeChildrenLists(latestVault?.children ?? [], liveDiscovered);
+  const mergedDeleted = mergeDeletedCodes(latestVault?.deletedCodes);
+  const mergedChildren = filterOutDeletedChildren(
+    mergeChildrenLists(latestVault?.children ?? [], liveDiscovered),
+    mergedDeleted
+  );
   const session: ParentAccountSession = {
     email: derived.email,
     displayName:
@@ -499,6 +537,7 @@ export async function loginParentAccount(options: {
     createdAt: parsedMarkers[0]?.createdAt ?? now,
     updatedAt: Math.max(latestVault?.updatedAt ?? 0, now),
     children: mergedChildren,
+    deletedCodes: mergedDeleted,
   };
 
   saveParentAccountSession(session);
@@ -516,11 +555,15 @@ export async function upsertAccountChild(
   session: ParentAccountSession,
   child: ParentChildRecord
 ): Promise<ParentAccountSession> {
+  const cleanCode = normalizePairingCode(child.pairingCode);
+  const nextDeleted = { ...(session.deletedCodes ?? {}) };
+  delete nextDeleted[cleanCode];
   const merged = mergeChildrenLists([child], session.children);
   const updated: ParentAccountSession = {
     ...session,
     updatedAt: Date.now(),
     children: merged,
+    deletedCodes: nextDeleted,
   };
   saveParentAccountSession(updated);
   await publishAccountRecords(updated, false);
@@ -552,17 +595,21 @@ export async function renameAccountChild(
 }
 
 /**
- * Removes a child from the Parent Account vault (e.g. after parent-approved unpairing).
+ * Removes a child from the Parent Account vault and tombstones its code so stale
+ * broker copies can NEVER resurrect a removed or unpaired child into history.
  */
 export async function removeAccountChild(
   session: ParentAccountSession,
   pairingCode: string
 ): Promise<ParentAccountSession> {
   const cleanCode = normalizePairingCode(pairingCode);
+  const now = Date.now();
+  const nextDeleted = { ...(session.deletedCodes ?? {}), [cleanCode]: now };
   const updated: ParentAccountSession = {
     ...session,
-    updatedAt: Date.now(),
+    updatedAt: now,
     children: session.children.filter((c) => c.pairingCode !== cleanCode),
+    deletedCodes: nextDeleted,
   };
   saveParentAccountSession(updated);
   await publishAccountRecords(updated, false);
@@ -624,12 +671,16 @@ export async function syncParentAccountLive(
     lastConnectedAt: Date.now(),
   }));
 
+  const mergedDeleted = mergeDeletedCodes(session.deletedCodes, remoteVault?.deletedCodes);
   const baseList =
     remoteVault && remoteVault.updatedAt > session.updatedAt
       ? mergeChildrenLists(remoteVault.children, session.children)
       : mergeChildrenLists(session.children, remoteVault?.children ?? []);
 
-  const finalChildren = mergeChildrenLists(baseList, liveRecords);
+  const finalChildren = filterOutDeletedChildren(
+    mergeChildrenLists(baseList, liveRecords),
+    mergedDeleted
+  );
   const changed =
     finalChildren.length !== session.children.length ||
     (remoteVault && remoteVault.updatedAt > session.updatedAt);
@@ -639,6 +690,7 @@ export async function syncParentAccountLive(
     displayName: remoteVault?.displayName || session.displayName,
     updatedAt: changed ? Date.now() : session.updatedAt,
     children: finalChildren,
+    deletedCodes: mergedDeleted,
   };
 
   saveParentAccountSession(nextSession);

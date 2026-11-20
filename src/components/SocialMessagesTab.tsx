@@ -4,7 +4,11 @@ import {
   ArrowLeft,
   Bell,
   Check,
+  Film,
+  Image as ImageIcon,
   MessageSquare,
+  Mic,
+  Paperclip,
   Plus,
   RefreshCw,
   Search,
@@ -23,6 +27,8 @@ interface SocialMessagesTabProps {
   messagesData: DataSocialMessagesMsg | null;
   loadingThreads: boolean;
   loadingMessages: boolean;
+  replyFeedback: { ok: boolean; text: string } | null;
+  onDismissReplyFeedback: () => void;
   onRefreshThreads: (appFilter?: string) => Promise<void>;
   onOpenThread: (thread: SocialThreadItem) => Promise<void>;
   onReplyThread: (threadKey: string, body: string) => Promise<void>;
@@ -42,6 +48,40 @@ function appBadgeColor(appLabel: string): string {
   return 'border-white/15 bg-white/10 text-zinc-200';
 }
 
+function renderMediaPill(mediaType?: string) {
+  if (!mediaType) return null;
+  switch (mediaType) {
+    case 'photo':
+      return (
+        <span className="inline-flex items-center gap-1 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] text-sky-300">
+          <ImageIcon className="h-2.5 w-2.5" />
+          Photo
+        </span>
+      );
+    case 'audio':
+      return (
+        <span className="inline-flex items-center gap-1 rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] text-violet-300">
+          <Mic className="h-2.5 w-2.5" />
+          Vocal
+        </span>
+      );
+    case 'video':
+      return (
+        <span className="inline-flex items-center gap-1 rounded bg-fuchsia-500/15 px-1.5 py-0.5 text-[10px] text-fuchsia-300">
+          <Film className="h-2.5 w-2.5" />
+          Vidéo
+        </span>
+      );
+    default:
+      return (
+        <span className="inline-flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-zinc-300">
+          <Paperclip className="h-2.5 w-2.5" />
+          Fichier
+        </span>
+      );
+  }
+}
+
 function formatShortTime(ts: number): string {
   if (!ts) return '';
   const d = new Date(ts);
@@ -53,9 +93,11 @@ function formatShortTime(ts: number): string {
   if (sameDay) {
     return d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   }
-  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) +
+  return (
+    d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) +
     ' ' +
-    d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+  );
 }
 
 export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
@@ -63,6 +105,8 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
   messagesData,
   loadingThreads,
   loadingMessages,
+  replyFeedback,
+  onDismissReplyFeedback,
   onRefreshThreads,
   onOpenThread,
   onReplyThread,
@@ -92,6 +136,7 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
       if (!q) return true;
       return (
         t.sender.toLowerCase().includes(q) ||
+        (t.lastAuthor || '').toLowerCase().includes(q) ||
         t.snippet.toLowerCase().includes(q) ||
         t.appLabel.toLowerCase().includes(q)
       );
@@ -108,6 +153,7 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
       : Boolean(activeThread?.canReply);
 
   const handleSelectThread = async (t: SocialThreadItem) => {
+    onDismissReplyFeedback();
     setActiveThread(t);
     setReplyText('');
     await onOpenThread(t);
@@ -117,6 +163,7 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
     e.preventDefault();
     if (!activeThread || !replyText.trim() || sendingReply) return;
     setSendingReply(true);
+    onDismissReplyFeedback();
     try {
       await onReplyThread(activeThread.threadKey, replyText.trim());
       setReplyText('');
@@ -160,7 +207,7 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
             Réseaux sociaux & Messageries
           </h3>
           <p className="text-[11px] text-zinc-400">
-            WhatsApp, Instagram, Snapchat, Discord, Messenger, TikTok — archivés même s’ils sont supprimés.
+            WhatsApp, Instagram, Snapchat, Discord, Messenger, TikTok — archivés avec détails & réponse directe.
           </p>
         </div>
 
@@ -197,7 +244,7 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
           <div>
             <p className="font-medium text-amber-100">Accès aux notifications non activé sur le smartphone</p>
             <p className="mt-0.5 text-[11px] text-amber-200/80">
-              Ouvrez l’application sur le téléphone de l’enfant et appuyez sur « Messages réseaux sociaux » pour activer l’archivage discret (les notifications restent 100 % visibles pour l’enfant).
+              Ouvrez l’application sur le téléphone de l’enfant et appuyez sur « Messages réseaux sociaux » pour activer l’archivage (les notifications restent 100 % visibles pour l’enfant).
             </p>
           </div>
         </div>
@@ -210,9 +257,7 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
             <p className="text-xs font-medium text-amber-200">
               Alertes automatiques sur mots sensibles
             </p>
-            <span className="text-[10px] text-zinc-500">
-              Déclenche une alerte sur l’Accueil
-            </span>
+            <span className="text-[10px] text-zinc-500">Réseaux sociaux & SMS</span>
           </div>
 
           <form onSubmit={handleAddKeyword} className="flex gap-2">
@@ -234,11 +279,7 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
             </button>
           </form>
 
-          {keywords.length === 0 ? (
-            <p className="text-[11px] text-zinc-500">
-              Aucun mot-clé configuré. Ajoutez des mots pour être alerté dès qu’ils apparaissent dans un message entrant.
-            </p>
-          ) : (
+          {keywords.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {keywords.map((kw) => (
                 <span
@@ -265,10 +306,13 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
       {activeThread ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2 rounded-xl border border-white/[0.06] bg-zinc-950 px-3 py-2">
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
               <button
                 type="button"
-                onClick={() => setActiveThread(null)}
+                onClick={() => {
+                  setActiveThread(null);
+                  onDismissReplyFeedback();
+                }}
                 className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-xs text-zinc-300 hover:bg-white/5 hover:text-white"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
@@ -276,7 +320,7 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
               </button>
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold text-white">{activeThread.sender}</p>
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <span
                     className={`rounded-md border px-1.5 py-0.5 text-[10px] font-medium ${appBadgeColor(
                       activeThread.appLabel
@@ -284,6 +328,11 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
                   >
                     {activeThread.appLabel}
                   </span>
+                  {activeThread.subText && (
+                    <span className="truncate text-[10px] text-zinc-400">
+                      · {activeThread.subText}
+                    </span>
+                  )}
                   {canReplyActive && (
                     <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400">
                       <Check className="h-3 w-3" />
@@ -304,9 +353,9 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
             </button>
           </div>
 
-          <div className="max-h-[380px] space-y-2 overflow-y-auto rounded-xl border border-white/[0.06] bg-zinc-950/70 p-3">
+          <div className="max-h-[400px] space-y-2.5 overflow-y-auto rounded-xl border border-white/[0.06] bg-zinc-950/70 p-3">
             {loadingMessages && activeMessages.length === 0 ? (
-              <p className="py-8 text-center text-xs text-zinc-500">Chargement des messages...</p>
+              <p className="py-8 text-center text-xs text-zinc-500">Chargement des messages…</p>
             ) : activeMessages.length === 0 ? (
               <p className="py-8 text-center text-xs text-zinc-500">Aucun message dans cette conversation.</p>
             ) : (
@@ -315,19 +364,37 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
                 return (
                   <div key={m.id} className={`flex ${isOut ? 'justify-end' : 'justify-start'}`}>
                     <div
-                      className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed ${
+                      className={`max-w-[88%] space-y-1.5 rounded-2xl px-3 py-2 text-xs leading-relaxed ${
                         isOut
-                          ? 'bg-indigo-600 text-white rounded-br-sm'
-                          : 'border border-white/[0.08] bg-zinc-900 text-zinc-100 rounded-bl-sm'
+                          ? 'rounded-br-sm bg-indigo-600 text-white'
+                          : 'rounded-bl-sm border border-white/[0.08] bg-zinc-900 text-zinc-100'
                       }`}
                     >
+                      {!isOut && (m.author || m.mediaType) && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {m.author && (
+                            <span className="text-[10px] font-semibold text-emerald-300">
+                              {m.author}
+                            </span>
+                          )}
+                          {renderMediaPill(m.mediaType)}
+                        </div>
+                      )}
+                      {m.thumbBase64 && (
+                        <img
+                          src={`data:image/jpeg;base64,${m.thumbBase64}`}
+                          alt="Aperçu pièce jointe"
+                          className="max-h-44 rounded-lg border border-white/10 object-cover"
+                        />
+                      )}
                       <p className="whitespace-pre-wrap break-words">{m.body}</p>
                       <p
-                        className={`mt-1 text-[10px] ${
-                          isOut ? 'text-indigo-200 text-right' : 'text-zinc-500'
+                        className={`text-[10px] ${
+                          isOut ? 'text-right text-indigo-200' : 'text-zinc-500'
                         }`}
                       >
                         {isOut ? 'Répondu à distance • ' : ''}
+                        {m.subText && !isOut ? `${m.subText} • ` : ''}
                         {formatShortTime(m.timestamp)}
                       </p>
                     </div>
@@ -336,6 +403,26 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
               })
             )}
           </div>
+
+          {/* Inline Reply Feedback Banner */}
+          {replyFeedback && (
+            <div
+              className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs ${
+                replyFeedback.ok
+                  ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
+                  : 'border-rose-500/35 bg-rose-500/10 text-rose-200'
+              }`}
+            >
+              <span>{replyFeedback.text}</span>
+              <button
+                type="button"
+                onClick={onDismissReplyFeedback}
+                className="text-zinc-400 hover:text-white"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
 
           {/* Direct Reply Form */}
           <form onSubmit={handleSendReply} className="space-y-1.5">
@@ -347,8 +434,8 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
                 disabled={!canReplyActive || sendingReply}
                 placeholder={
                   canReplyActive
-                    ? `Répondre directement sur ${activeThread.appLabel}...`
-                    : 'Réponse directe disponible dès le prochain message reçu...'
+                    ? `Répondre directement sur ${activeThread.appLabel}…`
+                    : 'Réponse directe disponible dès le prochain message entrant…'
                 }
                 maxLength={500}
                 className="flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white placeholder-zinc-500 outline-none focus:border-emerald-400/50 disabled:opacity-50"
@@ -359,12 +446,12 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
                 className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-3.5 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:opacity-40"
               >
                 <Send className="h-3.5 w-3.5" />
-                Envoyer
+                {sendingReply ? '…' : 'Envoyer'}
               </button>
             </div>
             {!canReplyActive && (
               <p className="text-[10px] text-zinc-500">
-                La réponse directe utilise la notification active du téléphone. Si la notification a été effacée, elle se réactivera automatiquement au prochain message reçu.
+                La réponse directe s’appuie sur la notification active du téléphone. Dès qu’un nouveau message arrive sur {activeThread.appLabel}, le bouton s’active automatiquement.
               </p>
             )}
           </form>
@@ -372,7 +459,6 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
       ) : (
         /* Threads List View */
         <div className="space-y-3">
-          {/* App filter pills */}
           {apps.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5">
               <button
@@ -403,14 +489,13 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
             </div>
           )}
 
-          {/* Search bar */}
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Rechercher un contact, une application ou un mot..."
+              placeholder="Rechercher un contact, un groupe, une appli ou un mot…"
               className="w-full rounded-xl border border-white/10 bg-zinc-950 py-2 pl-9 pr-3 text-xs text-white placeholder-zinc-500 outline-none focus:border-white/25"
             />
           </div>
@@ -420,11 +505,11 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
               <MessageSquare className="mx-auto mb-2 h-6 w-6 text-zinc-600" />
               <p className="text-xs font-medium text-zinc-300">
                 {loadingThreads
-                  ? 'Chargement des conversations...'
+                  ? 'Chargement des conversations…'
                   : 'Aucun message réseau archivé pour le moment'}
               </p>
               <p className="mt-1 text-[11px] text-zinc-500">
-                Dès que le smartphone recevra un message WhatsApp, Instagram, Snapchat, Discord ou Messenger, il apparaîtra ici automatiquement.
+                Dès que le smartphone recevra un message WhatsApp, Instagram, Snapchat, Discord ou Messenger, il apparaîtra ici avec tous ses détails.
               </p>
             </div>
           ) : (
@@ -446,6 +531,7 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
                       >
                         {t.appLabel}
                       </span>
+                      {renderMediaPill(t.lastMediaType)}
                       {t.canReply && (
                         <span
                           className="h-2 w-2 rounded-full bg-emerald-400"
@@ -454,7 +540,11 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
                       )}
                     </div>
                     <p className="mt-1 truncate text-[11px] text-zinc-400">
-                      {t.lastDirection === 'out' ? 'Vous : ' : ''}
+                      {t.lastDirection === 'out'
+                        ? 'Vous : '
+                        : t.lastAuthor
+                          ? `${t.lastAuthor} : `
+                          : ''}
                       {t.snippet}
                     </p>
                   </div>
@@ -469,7 +559,6 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
             </div>
           )}
 
-          {/* Footer clear action */}
           {threads.length > 0 && (
             <div className="flex items-center justify-between border-t border-white/[0.06] pt-2.5 text-[11px] text-zinc-500">
               <span>{threadsData?.totalMessages ?? 0} message(s) archivé(s) sur l’appareil</span>
@@ -488,7 +577,7 @@ export const SocialMessagesTab: React.FC<SocialMessagesTabProps> = ({
                   <button
                     type="button"
                     onClick={() => setConfirmClear(false)}
-                    className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300"
+                    className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-300"
                   >
                     Annuler
                   </button>

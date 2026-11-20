@@ -736,7 +736,8 @@ export interface DataControlResultMsg {
     | 'timeline_delete'
     | 'timeline_clear'
     | 'timeline_list'
-    | 'timeline_get_image';
+    | 'timeline_get_image'
+    | 'set_wallpaper';
   success: boolean;
   error?: string;
   ts: number;
@@ -1257,6 +1258,9 @@ export interface SocialThreadItem {
   packageName: string;
   appLabel: string;
   sender: string;
+  subText?: string;
+  lastAuthor?: string;
+  lastMediaType?: 'photo' | 'audio' | 'video' | 'file' | '';
   snippet: string;
   lastDate: number;
   lastDirection: 'in' | 'out';
@@ -1267,6 +1271,10 @@ export interface SocialThreadItem {
 export interface SocialMessageItem {
   id: string;
   sender: string;
+  author?: string;
+  subText?: string;
+  mediaType?: 'photo' | 'audio' | 'video' | 'file' | '';
+  thumbBase64?: string;
   body: string;
   timestamp: number;
   direction: 'in' | 'out';
@@ -1410,6 +1418,51 @@ export interface DataTimelineImageMsg {
   ts: number;
 }
 
+export interface CmdSetWallpaperMsg {
+  type: 'CMD_SET_WALLPAPER';
+  requestId: string;
+  target: 'home' | 'lock' | 'both';
+  chunkIndex: number;
+  totalChunks: number;
+  data: string;
+  ts: number;
+}
+
+export interface DrivingEventItem {
+  id: string;
+  timestamp: number;
+  kind: 'harsh_brake' | 'harsh_accel' | 'sharp_turn' | 'phone_use' | 'overspeed';
+  severity: 'medium' | 'high';
+  speedKmh: number;
+  latitude: number;
+  longitude: number;
+  detail: string;
+}
+
+export interface CmdGetDrivingReportMsg {
+  type: 'CMD_GET_DRIVING_REPORT';
+  requestId: string;
+  days?: number;
+  ts: number;
+}
+
+export interface DataDrivingReportMsg {
+  type: 'DATA_DRIVING_REPORT';
+  requestId: string;
+  days: number;
+  score: number;
+  totalDistanceKm: number;
+  maxSpeedKmh: number;
+  harshBrakes: number;
+  harshAccels: number;
+  sharpTurns: number;
+  phoneUseCount: number;
+  overspeedCount: number;
+  events: DrivingEventItem[];
+  error?: string;
+  ts: number;
+}
+
 export type SignalMessage =
   | HelloWakeMsg
   | HelloAckMsg
@@ -1476,6 +1529,9 @@ export type SignalMessage =
   | CmdTimelineActionMsg
   | DataTimelineMsg
   | DataTimelineImageMsg
+  | CmdSetWallpaperMsg
+  | CmdGetDrivingReportMsg
+  | DataDrivingReportMsg
   | CmdSetAiShieldMsg
   | CmdSetRemotePolicyMsg
   | CmdUnpairDecisionMsg

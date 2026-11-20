@@ -75,6 +75,7 @@ class AiScreenShieldEngine(
     private var lastNsfwAlertMs = 0L
     private var lastFgPkgCheckMs = 0L
     private var isSelfInForeground = false
+    private var lastFrameStatic = false
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -114,8 +115,9 @@ class AiScreenShieldEngine(
             }
 
             val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
-            // Snappy ~20–28 Hz AI cadence, interpolated to 60–120 FPS by Choreographer!
-            val delay = (42L - elapsedMs).coerceIn(16L, 65L)
+            // Eco-adaptive cadence: 160ms when screen is completely still, snapping instantly to 42ms (~24 Hz) on motion!
+            val targetPeriod = if (lastFrameStatic) 160L else 42L
+            val delay = (targetPeriod - elapsedMs).coerceIn(16L, 180L)
             if (isActive && screenOn && !pausedForWebRtcScreen) {
                 workerHandler?.postDelayed(this, delay)
             }
@@ -400,11 +402,17 @@ class AiScreenShieldEngine(
                 }
 
                 // 3. Static screen -> keep colorful mosaic rock-steady (0 flicker!)
-                if (bgDiff < 5.5f && (now - lastFullScanMs) < 750L) {
+                if (bgDiff < 5.5f && (now - lastFullScanMs) < 850L) {
+                    lastFrameStatic = true
                     return
                 }
+            } else if (bgDiff < 2.2f && (now - lastFullScanMs) < 900L) {
+                // Static clean screen (e.g. reading text) -> skip redundant ML inference to save ~75% battery!
+                lastFrameStatic = true
+                return
             }
 
+            lastFrameStatic = false
             lastFullScanMs = now
             val detections = detector.detectFrame(frameBitmap, blurFaces, blurNsfw, nsfwStrict)
 

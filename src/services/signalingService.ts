@@ -94,7 +94,7 @@ export function warmUpSignalingPool(): PooledBrokerNode[] {
   });
 
   if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => {
+    const nudgePoolReconnect = () => {
       sharedPool?.forEach((n) => {
         if (!n.connected) {
           try {
@@ -104,7 +104,16 @@ export function warmUpSignalingPool(): PooledBrokerNode[] {
           }
         }
       });
-    });
+    };
+    window.addEventListener('online', nudgePoolReconnect);
+    window.addEventListener('pageshow', nudgePoolReconnect);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          nudgePoolReconnect();
+        }
+      });
+    }
   }
 
   return sharedPool;

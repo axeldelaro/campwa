@@ -154,7 +154,7 @@ object SystemControlHelper {
                 if (isSystem && !isUpdatedSystem && !hasLauncher) continue
 
                 val label = try {
-                    pm.getApplicationLabel(ai)?.toString()?.trim().orEmpty().ifEmpty { pkg }
+                    pm.getApplicationLabel(ai).toString().trim().ifEmpty { pkg }
                 } catch (_: Throwable) {
                     pkg
                 }
@@ -324,5 +324,76 @@ object SystemControlHelper {
             }
         }
         return Pair(false, "Impossible d’ouvrir la désinstallation (vérifiez l’autorisation Superposition).")
+    }
+
+    /**
+     * Remotely sets the child phone's Home Screen, Lock Screen, or Both wallpapers (v25).
+     * Automatically center-crops the decoded image to match the phone's exact screen aspect ratio.
+     */
+    fun setRemoteWallpaper(
+        context: Context,
+        imageBytes: ByteArray,
+        target: String = "both" // "home" | "lock" | "both"
+    ): Pair<Boolean, String?> {
+        if (imageBytes.isEmpty()) return Pair(false, "Image vide ou invalide.")
+        val appCtx = context.applicationContext
+        return try {
+            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, opts)
+            var sample = 1
+            while (opts.outWidth / sample > 1440 || opts.outHeight / sample > 2560) {
+                sample *= 2
+            }
+            val decodeOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+            val rawBmp = android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOpts)
+                ?: return Pair(false, "Format d’image non pris en charge.")
+
+            val dm = appCtx.resources.displayMetrics
+            val targetW = dm.widthPixels.coerceIn(720, 1440)
+            val targetH = dm.heightPixels.coerceIn(1280, 2560)
+
+            // Center-crop cleanly to fill screen with zero distortion
+            val scale = maxOf(
+                targetW.toFloat() / rawBmp.width.coerceAtLeast(1).toFloat(),
+                targetH.toFloat() / rawBmp.height.coerceAtLeast(1).toFloat()
+            )
+            val scaledW = (rawBmp.width * scale).toInt().coerceAtLeast(targetW)
+            val scaledH = (rawBmp.height * scale).toInt().coerceAtLeast(targetH)
+            val scaled = android.graphics.Bitmap.createScaledBitmap(rawBmp, scaledW, scaledH, true)
+            if (scaled !== rawBmp) rawBmp.recycle()
+
+            val cropX = ((scaledW - targetW) / 2).coerceAtLeast(0)
+            val cropY = ((scaledH - targetH) / 2).coerceAtLeast(0)
+            val finalBmp = android.graphics.Bitmap.createBitmap(
+                scaled,
+                cropX,
+                cropY,
+                targetW.coerceAtMost(scaledW - cropX),
+                targetH.coerceAtMost(scaledH - cropY)
+            )
+            if (finalBmp !== scaled) scaled.recycle()
+
+            val wm = android.app.WallpaperManager.getInstance(appCtx)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                val flags = when (target) {
+                    "home" -> android.app.WallpaperManager.FLAG_SYSTEM
+                    "lock" -> android.app.WallpaperManager.FLAG_LOCK
+                    else -> android.app.WallpaperManager.FLAG_SYSTEM or android.app.WallpaperManager.FLAG_LOCK
+                }
+                wm.setBitmap(finalBmp, null, true, flags)
+            } else {
+                wm.setBitmap(finalBmp)
+            }
+            finalBmp.recycle()
+
+            val label = when (target) {
+                "home" -> "l’écran d’accueil"
+                "lock" -> "l’écran de verrouillage"
+                else -> "l’écran d’accueil et de verrouillage"
+            }
+            Pair(true, "Fond d’écran appliqué sur $label.")
+        } catch (t: Throwable) {
+            Pair(false, "Impossible de changer le fond d’écran : ${t.message ?: "erreur système"}")
+        }
     }
 }

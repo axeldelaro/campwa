@@ -40,6 +40,8 @@ class AppLockMonitor(
     private var receiverRegistered = false
     private var cachedUsageSec: Map<String, Long> = emptyMap()
     private var lastUsageRefreshMs = 0L
+    private var lastUsageDayKey = ""
+    private var lastObservedFgPkg: String? = null
     private val lastBypassLogByPkg = HashMap<String, Long>()
 
     private val screenReceiver = object : BroadcastReceiver() {
@@ -47,6 +49,8 @@ class AppLockMonitor(
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     screenInteractive = false
+                    lastObservedFgPkg = null
+                    ScreenTimeHelper.notifyScreenOff()
                     handler.removeCallbacks(pollRunnable)
                 }
 
@@ -161,12 +165,16 @@ class AppLockMonitor(
                                         untilMs = hit.blockedUntilMs
                                     )
                                 } else if (quotas.isNotEmpty()) {
-                                    // 6. Daily Per-App Quota
+                                    // 6. Daily Per-App Quota (persists automatically every day until disabled;
+                                    //    daily usage resets cleanly at midnight!)
                                     val q = quotas.firstOrNull { it.packageName == fgPkg }
                                     if (q != null) {
-                                        if (now - lastUsageRefreshMs > 25_000L) {
+                                        val todayKey = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(now))
+                                        val switchedApp = fgPkg != lastObservedFgPkg
+                                        if (todayKey != lastUsageDayKey || switchedApp || (now - lastUsageRefreshMs) > 25_000L) {
                                             cachedUsageSec = ScreenTimeHelper.computeTodayUsageSecByPackage(appContext)
                                             lastUsageRefreshMs = now
+                                            lastUsageDayKey = todayKey
                                         }
                                         val usedSec = cachedUsageSec[fgPkg] ?: 0L
                                         val allowedSec = (q.dailyLimitMinutes + prefs.getDailyBonusMinutes(fgPkg)) * 60L
@@ -183,16 +191,19 @@ class AppLockMonitor(
                             }
                         }
                     }
+                    lastObservedFgPkg = fgPkg
                 }
             }
 
-            // If only curfew is configured and not currently active, poll slowly every 30s!
-            val nextDelay = if (!lostEnabled && !antiBypass && pausedUntil == 0L &&
-                !curfewActive && schoolUntil == 0L && rules.isEmpty() && quotas.isEmpty() && curfewConfigured
-            ) {
-                30_000L
-            } else {
-                POLL_INTERVAL_MS
+            // Adaptive battery-friendly cadence:
+            // - 30s when only inactive curfew is configured
+            // - 1.8s when only passive rules (anti-bypass / quotas) are watching
+            // - 1.0s when active enforcement (pause / curfew / school / lost / app locks) is running
+            val nextDelay = when {
+                !lostEnabled && !antiBypass && pausedUntil == 0L &&
+                    !curfewActive && schoolUntil == 0L && rules.isEmpty() && quotas.isEmpty() && curfewConfigured -> 30_000L
+                !lostEnabled && pausedUntil == 0L && !curfewActive && schoolUntil == 0L && rules.isEmpty() -> 1_800L
+                else -> POLL_INTERVAL_MS
             }
             handler.postDelayed(this, nextDelay)
         }

@@ -11,6 +11,7 @@ import {
   RefreshCw,
   ShieldAlert,
   Smartphone,
+  Trash2,
   UserPlus,
   Users,
   X,
@@ -39,6 +40,7 @@ interface ParentFamilyHubProps {
   onSyncLive: () => Promise<void>;
   onSelectChild: (code: string) => void;
   onRenameChild: (code: string, newName: string) => Promise<void>;
+  onRemoveChild: (code: string) => Promise<void>;
   onStartAddChild: (childName: string, adminPin: string) => Promise<void>;
   onCancelAddChild: () => void;
   onDirectConnect: (code: string) => void;
@@ -62,6 +64,7 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
   onSyncLive,
   onSelectChild,
   onRenameChild,
+  onRemoveChild,
   onStartAddChild,
   onCancelAddChild,
   onDirectConnect,
@@ -83,6 +86,7 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
 
   const [editingCode, setEditingCode] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+  const [confirmRemoveCode, setConfirmRemoveCode] = useState<string | null>(null);
 
   const [directCodeOpen, setDirectCodeOpen] = useState(false);
   const [directCode, setDirectCode] = useState('');
@@ -573,7 +577,47 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
                         </div>
                       </div>
 
-                      <span className="shrink-0 text-xs font-medium text-zinc-400">Gérer →</span>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {confirmRemoveCode === child.pairingCode ? (
+                          <div
+                            className="flex items-center gap-1"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setConfirmRemoveCode(null);
+                                void onRemoveChild(child.pairingCode);
+                              }}
+                              className="rounded-lg bg-rose-500 px-2 py-1 text-[11px] font-semibold text-white hover:bg-rose-400"
+                            >
+                              Retirer
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmRemoveCode(null)}
+                              className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:text-white"
+                            >
+                              Non
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setConfirmRemoveCode(child.pairingCode);
+                              }}
+                              className="rounded-lg p-1.5 text-zinc-600 transition hover:bg-rose-500/10 hover:text-rose-400"
+                              title="Retirer cet appareil de l’historique"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                            <span className="text-xs font-medium text-zinc-400">Gérer →</span>
+                          </>
+                        )}
+                      </div>
                     </div>
                   )}
 

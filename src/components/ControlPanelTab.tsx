@@ -25,13 +25,11 @@ import {
 } from 'lucide-react';
 import type {
   AppUsageEntry,
-  DataInsightsMsg,
   DataScreenTimeMsg,
   DeviceTelemetry,
   GpsTrackingMode,
   SharedLocationData,
 } from '../types/sentinel';
-import { InsightsCard } from './InsightsCard';
 import { ScreenFlashCard } from './ScreenFlashCard';
 
 export interface ParentalCommonProps {
@@ -55,9 +53,6 @@ interface ParentalHomeTabProps extends ParentalCommonProps {
   onRespondUnpair: (approve: boolean) => Promise<void>;
   onFlashText: (text: string, durationSec: number) => Promise<void>;
   onFlashImage: (base64Jpeg: string, durationSec: number, caption: string) => Promise<void>;
-  insightsData: DataInsightsMsg | null;
-  insightsLoading: boolean;
-  onRefreshInsights: () => Promise<void>;
 }
 
 interface ParentalRulesTabProps extends ParentalCommonProps {
@@ -161,13 +156,11 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
   onRespondUnpair,
   onFlashText,
   onFlashImage,
-  insightsData,
-  insightsLoading,
-  onRefreshInsights,
 }) => {
   const [appSearch, setAppSearch] = useState('');
   const [expandedPkg, setExpandedPkg] = useState<string | null>(null);
   const [customLockMins, setCustomLockMins] = useState('45');
+  const [customQuotaMins, setCustomQuotaMins] = useState('45');
   const [pauseMenuOpen, setPauseMenuOpen] = useState(false);
   const [customPauseMins, setCustomPauseMins] = useState('30');
   const [healthExpanded, setHealthExpanded] = useState(false);
@@ -567,10 +560,11 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
                               className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
                                 isQuotaHit
                                   ? 'bg-amber-500/20 text-amber-200'
-                                  : 'bg-white/[0.06] text-zinc-300'
+                                  : 'bg-emerald-500/15 text-emerald-300'
                               }`}
+                              title="Quota récurrent actif chaque jour jusqu’à désactivation"
                             >
-                              {app.dailyLimitMinutes}m/j
+                              {Math.floor(app.usageSecondsToday / 60)}/{app.dailyLimitMinutes}m/j · Récurrent
                             </span>
                           )}
                           {isTimedBlocked && (
@@ -656,7 +650,9 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
                         </div>
 
                         <div className="space-y-1.5">
-                          <span className="block text-zinc-400">Quota / jour :</span>
+                          <span className="block text-zinc-400">
+                            Quota quotidien (reste actif chaque jour jusqu’à désactivation) :
+                          </span>
                           <div className="flex flex-wrap items-center gap-1.5">
                             {[15, 30, 60, 120].map((m) => (
                               <button
@@ -675,6 +671,29 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
                                 {m >= 60 ? `${m / 60} h` : `${m} min`}
                               </button>
                             ))}
+                            <div className="inline-flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={1}
+                                max={720}
+                                value={customQuotaMins}
+                                onChange={(e) => setCustomQuotaMins(e.target.value)}
+                                className="w-12 rounded-lg border border-white/10 bg-zinc-900 px-1.5 py-1.5 font-mono text-white"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const m = parseInt(customQuotaMins, 10);
+                                  if (m > 0) {
+                                    setExpandedPkg(null);
+                                    void onSetAppQuota(app, m);
+                                  }
+                                }}
+                                className="rounded-lg bg-emerald-500 px-2.5 py-1.5 font-semibold text-zinc-950"
+                              >
+                                min/j
+                              </button>
+                            </div>
                             {hasQuota && (
                               <button
                                 type="button"
@@ -682,9 +701,9 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
                                   setExpandedPkg(null);
                                   void onSetAppQuota(app, 0);
                                 }}
-                                className="rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1.5 text-zinc-400 hover:text-white"
+                                className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-rose-200 hover:bg-rose-500/20"
                               >
-                                Retirer
+                                Désactiver
                               </button>
                             )}
                           </div>
@@ -703,13 +722,6 @@ export const ParentalHomeTab: React.FC<ParentalHomeTabProps> = ({
           </div>
         )}
       </div>
-
-      {/* Behavioral & Conversation Intelligence Card */}
-      <InsightsCard
-        data={insightsData}
-        loading={insightsLoading}
-        onRefresh={onRefreshInsights}
-      />
     </div>
   );
 };

@@ -1,8 +1,10 @@
 package com.sentinelcam.app.control
 
 import android.app.Activity
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.PixelFormat
@@ -66,9 +68,32 @@ class VisualTimelineManager(
     var isActive: Boolean = false
         private set
 
+    @Volatile
+    private var screenInteractive: Boolean = true
+    private var receiverRegistered: Boolean = false
+
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    screenInteractive = false
+                    workerHandler?.removeCallbacks(captureTick)
+                }
+
+                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
+                    screenInteractive = true
+                    if (isActive && prefs.timelineCaptureEnabled) {
+                        workerHandler?.removeCallbacks(captureTick)
+                        workerHandler?.postDelayed(captureTick, 1_500L)
+                    }
+                }
+            }
+        }
+    }
+
     private val captureTick = object : Runnable {
         override fun run() {
-            if (!isActive) return
+            if (!isActive || !screenInteractive) return
             if (!prefs.timelineCaptureEnabled) {
                 stop()
                 return
@@ -78,7 +103,7 @@ class VisualTimelineManager(
                 tryCaptureTick()
             } catch (_: Throwable) {
             }
-            if (isActive) {
+            if (isActive && screenInteractive) {
                 workerHandler?.postDelayed(this, intervalMs)
             }
         }
@@ -118,9 +143,24 @@ class VisualTimelineManager(
         }
 
         startPipelineIfNeeded()
+        screenInteractive = try { powerManager.isInteractive } catch (_: Throwable) { true }
+        if (!receiverRegistered) {
+            try {
+                val filter = IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                    addAction(Intent.ACTION_SCREEN_ON)
+                    addAction(Intent.ACTION_USER_PRESENT)
+                }
+                appContext.registerReceiver(screenReceiver, filter)
+                receiverRegistered = true
+            } catch (_: Throwable) {
+            }
+        }
         isActive = true
         workerHandler?.removeCallbacks(captureTick)
-        workerHandler?.postDelayed(captureTick, 1_500L)
+        if (screenInteractive) {
+            workerHandler?.postDelayed(captureTick, 1_500L)
+        }
         onStateChanged()
         return true
     }
@@ -128,6 +168,10 @@ class VisualTimelineManager(
     fun stop() {
         isActive = false
         workerHandler?.removeCallbacks(captureTick)
+        if (receiverRegistered) {
+            try { appContext.unregisterReceiver(screenReceiver) } catch (_: Throwable) {}
+            receiverRegistered = false
+        }
         teardownPipeline()
         if (ownsProjection) {
             try { mediaProjection?.stop() } catch (_: Throwable) {}

@@ -33,7 +33,7 @@ class KeepAliveReceiver : BroadcastReceiver() {
     companion object {
         private const val REQ_CODE = 8402
         private const val REQ_CODE_REVIVE = 8403
-        private const val ECO_CONNECTED_INTERVAL_MS = 180_000L // 3 min doze-safe heartbeat
+        private const val ECO_CONNECTED_INTERVAL_MS = 300_000L // 5 min doze-safe eco heartbeat
         private const val RECOVERY_INTERVAL_MS = 45_000L // 45 s rapid recovery if offline/stopped
 
         fun scheduleImmediateRevive(context: Context, delayMs: Long = 2_000L) {

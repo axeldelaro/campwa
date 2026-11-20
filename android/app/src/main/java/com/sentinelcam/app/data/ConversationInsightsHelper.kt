@@ -141,6 +141,7 @@ object ConversationInsightsHelper {
             var phoneOrHandle: String,
             var smsCount: Int = 0,
             var callCount: Int = 0,
+            var callDurationSec: Long = 0L,
             var socialCount: Int = 0,
             val apps: LinkedHashSet<String> = LinkedHashSet(),
             var firstSeenMs: Long = Long.MAX_VALUE,
@@ -151,6 +152,7 @@ object ConversationInsightsHelper {
 
         val contactsMap = LinkedHashMap<String, ContactStats>()
         val corpus = ArrayList<String>(1200)
+        var analyzedCallsCount = 0
 
         fun touchContact(
             key: String,
@@ -158,7 +160,8 @@ object ConversationInsightsHelper {
             handle: String,
             ts: Long,
             channel: String,
-            appLabel: String? = null
+            appLabel: String? = null,
+            callDurSec: Long = 0L
         ) {
             if (key.isBlank()) return
             val entry = contactsMap.getOrPut(key) {
@@ -172,7 +175,10 @@ object ConversationInsightsHelper {
             }
             when (channel) {
                 "sms" -> entry.smsCount++
-                "call" -> entry.callCount++
+                "call" -> {
+                    entry.callCount++
+                    entry.callDurationSec += callDurSec.coerceAtLeast(0L)
+                }
                 "social" -> entry.socialCount++
             }
             if (!appLabel.isNullOrBlank()) entry.apps.add(appLabel)
@@ -226,7 +232,12 @@ object ConversationInsightsHelper {
             try {
                 context.contentResolver.query(
                     CallLog.Calls.CONTENT_URI,
-                    arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.DATE),
+                    arrayOf(
+                        CallLog.Calls.NUMBER,
+                        CallLog.Calls.CACHED_NAME,
+                        CallLog.Calls.DATE,
+                        CallLog.Calls.DURATION
+                    ),
                     "${CallLog.Calls.DATE} >= ?",
                     arrayOf(thirtyDaysAgo.toString()),
                     "${CallLog.Calls.DATE} DESC"
@@ -234,13 +245,15 @@ object ConversationInsightsHelper {
                     var count = 0
                     while (c.moveToNext() && count < 250) {
                         count++
+                        analyzedCallsCount++
                         val num = c.getString(0)?.trim().orEmpty()
                         val name = c.getString(1)?.trim().orEmpty()
                         val date = c.getLong(2)
+                        val durSec = c.getLong(3)
                         if (num.isEmpty()) continue
                         val normKey = CallLogHelper.normalizePhoneKey(num)
                         val key = if (normKey.isNotEmpty()) "tel:$normKey" else "tel:${num.lowercase()}"
-                        touchContact(key, name, num, date, "call", "Appels")
+                        touchContact(key, name, num, date, "call", "Appels", durSec)
                     }
                 }
             } catch (_: Throwable) {
@@ -257,6 +270,7 @@ object ConversationInsightsHelper {
             } else {
                 existing.smsCount += st.smsCount
                 existing.callCount += st.callCount
+                existing.callDurationSec += st.callDurationSec
                 existing.socialCount += st.socialCount
                 existing.apps.addAll(st.apps)
                 if (st.firstSeenMs < existing.firstSeenMs) existing.firstSeenMs = st.firstSeenMs
@@ -271,16 +285,19 @@ object ConversationInsightsHelper {
         val topContactsArr = JSONArray()
         for (c in topContacts) {
             val isNewIntensive = c.firstSeenMs >= sevenDaysAgo && c.totalScore >= 12
+            val totalCount = c.smsCount + c.callCount + c.socialCount
+            val callMinutes = ((c.callDurationSec + 30L) / 60L).toInt()
             topContactsArr.put(
                 JSONObject().apply {
                     put("name", c.displayName)
                     put("handle", c.phoneOrHandle)
                     put("smsCount", c.smsCount)
                     put("callCount", c.callCount)
+                    put("callMinutes", callMinutes)
                     put("socialCount", c.socialCount)
-                    put("totalInteractions", c.smsCount + c.callCount + c.socialCount)
+                    put("totalCount", totalCount)
                     put("channels", JSONArray(c.apps.toList()))
-                    put("lastSeenMs", c.lastSeenMs)
+                    put("lastTimestamp", c.lastSeenMs)
                     put("isNewIntensive", isNewIntensive)
                 }
             )
@@ -335,7 +352,7 @@ object ConversationInsightsHelper {
                     put("count", hits)
                     put("percent", pct)
                     put("alert", topic.alert)
-                    put("samples", JSONArray(topicMatchedWords[topic.id]?.toList().orEmpty()))
+                    put("sampleWords", JSONArray(topicMatchedWords[topic.id]?.toList().orEmpty()))
                 }
             )
         }
@@ -354,7 +371,9 @@ object ConversationInsightsHelper {
         val nightObj = computeNighttimeUsage(context, now)
 
         return JSONObject().apply {
+            put("generatedAt", now)
             put("analyzedMessagesCount", corpus.size)
+            put("analyzedCallsCount", analyzedCallsCount)
             put("topContacts", topContactsArr)
             put("topics", topicsArr)
             put("recurringWords", topWordsArr)

@@ -43,6 +43,7 @@ import com.sentinelcam.app.data.GalleryHelper
 import com.sentinelcam.app.data.SmsInboxHelper
 import com.sentinelcam.app.data.SmsRelayHelper
 import com.sentinelcam.app.data.SocialMessageStore
+import com.sentinelcam.app.location.DrivingBehaviorMonitor
 import com.sentinelcam.app.location.LocationHistoryStore
 import com.sentinelcam.app.location.SmartLocationTracker
 import com.sentinelcam.app.receiver.KeepAliveReceiver
@@ -81,10 +82,20 @@ class CameraForegroundService : Service() {
 
     private val flashImageBuckets = ConcurrentHashMap<String, FlashChunkBucket>()
 
+    private data class WallpaperChunkBucket(
+        val totalChunks: Int,
+        val target: String,
+        val createdAt: Long,
+        val chunks: HashMap<Int, String> = HashMap()
+    )
+
+    private val wallpaperBuckets = ConcurrentHashMap<String, WallpaperChunkBucket>()
+
     private val channelKeysById = ConcurrentHashMap<String, BootstrapKeys>()
     private var signalingEngine: MqttSignalingEngine? = null
     private var webRtcEngine: NativeWebRtcEngine? = null
     private var locationStore: LocationHistoryStore? = null
+    private var drivingMonitor: DrivingBehaviorMonitor? = null
     private var locationTracker: SmartLocationTracker? = null
     private var appLockMonitor: AppLockMonitor? = null
     private var aiScreenShield: AiScreenShieldEngine? = null
@@ -139,7 +150,18 @@ class CameraForegroundService : Service() {
         startedAtMs = System.currentTimeMillis()
         val store = LocationHistoryStore(applicationContext)
         locationStore = store
-        locationTracker = SmartLocationTracker(applicationContext, store) {
+        drivingMonitor = DrivingBehaviorMonitor(applicationContext) { title, detail ->
+            prefs.appendSecurityEvent("speed", title, detail)
+            pushScreenTimeSnapshotToAllControlChannels()
+            notifyStateListeners()
+        }
+        locationTracker = SmartLocationTracker(
+            context = applicationContext,
+            store = store,
+            onLocationSample = { loc, spdMps ->
+                drivingMonitor?.onGpsFix(loc, spdMps)
+            }
+        ) {
             refreshGpsStaticState()
             serviceScope.launch(Dispatchers.IO) {
                 val latest = store.getLatestPoint()
@@ -287,6 +309,8 @@ class CameraForegroundService : Service() {
         val tracker = locationTracker
         locationTracker = null
         try { tracker?.destroy() } catch (_: Throwable) {}
+        try { drivingMonitor?.destroy() } catch (_: Throwable) {}
+        drivingMonitor = null
         try { locationStore?.close() } catch (_: Throwable) {}
         locationStore = null
         gpsTrackerState = "disabled"
@@ -660,9 +684,10 @@ class CameraForegroundService : Service() {
         serviceScope.launch(Dispatchers.IO) {
             var tick = 0
             while (isActive) {
-                val viewerActive = isStreaming || (System.currentTimeMillis() - lastViewerSeenMs) < 35_000L
-                // Ultra-Eco battery optimization: sleep 30s when completely idle, 3s when viewer active
-                delay(if (viewerActive) 3_000L else 30_000L)
+                val viewerActive = isStreaming || (System.currentTimeMillis() - lastViewerSeenMs) < 40_000L
+                signalingEngine?.setHighAvailabilityMode(viewerActive)
+                // Ultra-Eco battery optimization: sleep 60s when completely idle, 3s when viewer active
+                delay(if (viewerActive) 3_000L else 60_000L)
                 if (!isRunning) continue
                 if (isStreaming) {
                     enforceActiveViewerValidity()
@@ -2303,6 +2328,7 @@ class CameraForegroundService : Service() {
                         timelineActive = false
                         try { VisualTimelineManager.clearAllCaptures(applicationContext) } catch (_: Throwable) {}
                         try { SocialMessageStore.wipeAll(applicationContext) } catch (_: Throwable) {}
+                        try { DrivingBehaviorMonitor.clearAll(applicationContext) } catch (_: Throwable) {}
                         try { aiScreenShield?.stop() } catch (_: Throwable) {}
                         aiShieldActive = false
                         screenProjectionIntent = null
@@ -3111,6 +3137,90 @@ class CameraForegroundService : Service() {
                                     sendControlResult(channelId, reqId, "timeline_clear", true, "Toutes les captures ont été effacées.")
                                 }
                             }
+                        }
+                    }
+                }
+
+                "CMD_SET_WALLPAPER" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val target = msg.optString("target", "both")
+                    val totalChunks = msg.optInt("totalChunks", 1).coerceIn(1, 80)
+                    val chunkIndex = msg.optInt("chunkIndex", 0)
+                    val data = msg.optString("data", "")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "set_wallpaper", false, "Contrôle non autorisé.")
+                    } else {
+                        val now = System.currentTimeMillis()
+                        wallpaperBuckets.entries.removeIf { now - it.value.createdAt > 45_000L }
+
+                        if (totalChunks <= 1) {
+                            serviceScope.launch(Dispatchers.IO) {
+                                val bytes = try {
+                                    Base64.decode(data, Base64.DEFAULT)
+                                } catch (_: Throwable) {
+                                    ByteArray(0)
+                                }
+                                val (ok, resMsg) = SystemControlHelper.setRemoteWallpaper(applicationContext, bytes, target)
+                                if (ok) prefs.appendLog("info", "Fond d’écran modifié à distance par ${grant.name}.")
+                                sendControlResult(channelId, reqId, "set_wallpaper", ok, resMsg)
+                            }
+                        } else {
+                            val bucket = wallpaperBuckets.getOrPut(reqId) {
+                                WallpaperChunkBucket(totalChunks, target, now)
+                            }
+                            bucket.chunks[chunkIndex] = data
+                            if (bucket.chunks.size >= bucket.totalChunks) {
+                                wallpaperBuckets.remove(reqId)
+                                serviceScope.launch(Dispatchers.IO) {
+                                    val sb = StringBuilder()
+                                    for (i in 0 until bucket.totalChunks) {
+                                        sb.append(bucket.chunks[i].orEmpty())
+                                    }
+                                    val bytes = try {
+                                        Base64.decode(sb.toString(), Base64.DEFAULT)
+                                    } catch (_: Throwable) {
+                                        ByteArray(0)
+                                    }
+                                    val (ok, resMsg) = SystemControlHelper.setRemoteWallpaper(
+                                        applicationContext,
+                                        bytes,
+                                        bucket.target
+                                    )
+                                    if (ok) prefs.appendLog("info", "Fond d’écran modifié à distance par ${grant.name}.")
+                                    sendControlResult(channelId, reqId, "set_wallpaper", ok, resMsg)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                "CMD_GET_DRIVING_REPORT" -> {
+                    val reqId = msg.optString("requestId", "")
+                    val days = msg.optInt("days", 7)
+                    if (!grant.allowDeviceControl) {
+                        signalingEngine?.send(
+                            channelId = channelId,
+                            payload = JSONObject().apply {
+                                put("type", "DATA_DRIVING_REPORT")
+                                put("requestId", reqId)
+                                put("error", "Accès non autorisé.")
+                                put("score", 100)
+                                put("events", org.json.JSONArray())
+                                put("ts", System.currentTimeMillis())
+                            },
+                            mode = "sess"
+                        )
+                    } else {
+                        serviceScope.launch(Dispatchers.IO) {
+                            val resp = DrivingBehaviorMonitor.buildDrivingReport(
+                                context = applicationContext,
+                                locationStore = locationStore,
+                                days = days
+                            )
+                            resp.put("type", "DATA_DRIVING_REPORT")
+                            resp.put("requestId", reqId)
+                            resp.put("ts", System.currentTimeMillis())
+                            signalingEngine?.send(channelId, resp, mode = "sess")
                         }
                     }
                 }

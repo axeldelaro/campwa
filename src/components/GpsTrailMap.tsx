@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { Gauge, Layers, Maximize2 } from 'lucide-react';
-import type { GpsTrackPoint, SharedLocationData } from '../types/sentinel';
+import { Flame, Gauge, Layers, Maximize2 } from 'lucide-react';
+import type { DrivingEventItem, GpsTrackPoint, SharedLocationData } from '../types/sentinel';
+import type { HeatmapSpot } from '../utils/locationIntelligence';
 
 interface GpsTrailMapProps {
   points: GpsTrackPoint[];
   liveLocation: SharedLocationData | null;
   focusedPoint?: GpsTrackPoint | null;
+  heatmapSpots?: HeatmapSpot[];
+  drivingEvents?: DrivingEventItem[];
 }
 
 const OVERSPEED_THRESHOLD_KMH = 130;
@@ -122,12 +125,15 @@ export const GpsTrailMap: React.FC<GpsTrailMapProps> = ({
   points,
   liveLocation,
   focusedPoint,
+  heatmapSpots = [],
+  drivingEvents = [],
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const overlayGroupRef = useRef<L.LayerGroup | null>(null);
   const [mapStyle, setMapStyle] = useState<'dark' | 'osm'>('osm');
+  const [showHeatmap, setShowHeatmap] = useState(false);
 
   const overspeedZones = useMemo(() => extractOverspeedZones(points), [points]);
 
@@ -151,8 +157,22 @@ export const GpsTrailMap: React.FC<GpsTrailMapProps> = ({
       map.invalidateSize();
     }, 150);
 
+    const onVis = () => {
+      if (document.visibilityState === 'visible') {
+        window.setTimeout(() => {
+          try {
+            map.invalidateSize();
+          } catch {
+            // Ignore
+          }
+        }, 180);
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+
     return () => {
       window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVis);
       map.remove();
       mapRef.current = null;
       tileLayerRef.current = null;
@@ -375,6 +395,59 @@ export const GpsTrailMap: React.FC<GpsTrailMapProps> = ({
         .addTo(group);
     }
 
+    // Optional Heatmap Density Overlay (shows most frequented places!)
+    if (showHeatmap && heatmapSpots.length > 0) {
+      for (const spot of heatmapSpots) {
+        const outerR = Math.round(70 + spot.weight * 190);
+        const innerR = Math.round(28 + spot.weight * 75);
+        const outerColor = spot.weight > 0.7 ? '#f43f5e' : spot.weight > 0.4 ? '#f59e0b' : '#38bdf8';
+        L.circle([spot.latitude, spot.longitude], {
+          radius: outerR,
+          color: outerColor,
+          weight: 0,
+          fillColor: outerColor,
+          fillOpacity: 0.14 + spot.weight * 0.14,
+          interactive: false,
+        }).addTo(group);
+        L.circle([spot.latitude, spot.longitude], {
+          radius: innerR,
+          color: outerColor,
+          weight: 1,
+          opacity: 0.35,
+          fillColor: outerColor,
+          fillOpacity: 0.25 + spot.weight * 0.2,
+        })
+          .bindPopup(
+            `<div style="font-size:12px;line-height:1.4">
+              <strong>${escapeHtml(spot.label)}</strong><br/>
+              Temps cumulé : ${formatDwell(spot.totalDwellSec)}
+            </div>`
+          )
+          .addTo(group);
+      }
+    }
+
+    // Driving Behavior Event Markers (harsh braking, phone use while driving, sharp turn)
+    for (const ev of drivingEvents.slice(0, 40)) {
+      if (!ev.latitude && !ev.longitude) continue;
+      if (ev.kind === 'overspeed') continue; // Already highlighted by red >130 km/h segments
+      const color = ev.kind === 'phone_use' ? '#e11d48' : ev.kind === 'harsh_brake' ? '#f97316' : '#eab308';
+      L.circleMarker([ev.latitude, ev.longitude], {
+        radius: 6.5,
+        color: '#ffffff',
+        weight: 2,
+        fillColor: color,
+        fillOpacity: 0.95,
+      })
+        .bindPopup(
+          `<div style="font-size:12px;line-height:1.4">
+            <strong style="color:${color}">${escapeHtml(ev.detail)}</strong><br/>
+            ${formatTime(ev.timestamp)}
+          </div>`
+        )
+        .addTo(group);
+    }
+
     // Fit map view cleanly
     if (coords.length >= 2) {
       const bounds = L.latLngBounds(coords);
@@ -387,7 +460,7 @@ export const GpsTrailMap: React.FC<GpsTrailMapProps> = ({
     }
 
     map.invalidateSize();
-  }, [points, liveLocation, overspeedZones]);
+  }, [points, liveLocation, overspeedZones, showHeatmap, heatmapSpots, drivingEvents]);
 
   // Smooth fly-to when user clicks a timeline item
   useEffect(() => {
@@ -509,6 +582,21 @@ export const GpsTrailMap: React.FC<GpsTrailMapProps> = ({
             <Layers className="h-3.5 w-3.5 text-sky-400" />
             <span>{mapStyle === 'osm' ? 'Sombre' : 'Standard'}</span>
           </button>
+          {heatmapSpots.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowHeatmap((v) => !v)}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[11px] font-bold shadow-lg backdrop-blur transition ${
+                showHeatmap
+                  ? 'border-amber-400/70 bg-amber-500/25 text-amber-100'
+                  : 'border-slate-700 bg-slate-950/90 text-slate-200 hover:border-amber-400/60 hover:text-white'
+              }`}
+              title="Afficher la carte de chaleur des lieux fréquentés"
+            >
+              <Flame className="h-3.5 w-3.5 text-amber-400" />
+              <span>Chaleur</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={handleRecenter}

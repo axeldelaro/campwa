@@ -130,18 +130,20 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v24.0.${{ github.run_number }}
-          name: "SentinelCam v24.0.${{ github.run_number }} (Messages Réseaux Sociaux + Réponse Directe • Analyse des Conversations & Sujets • Captures Auto par App • Correctif Désinstallation)"
+          tag_name: v25.0.${{ github.run_number }}
+          name: "SentinelCam v25.0.${{ github.run_number }} (Score Conduite • Timeline Lieux & Chaleur • Fond d’Écran à Distance • Notifs & Réponse Rapide Corrigées • Eco-Batterie Pro)"
           body: |
-            ### SentinelCam v24.0 (`v24.0.${{ github.run_number }}`)
+            ### SentinelCam v25.0 (`v25.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Messages Réseaux Sociaux & Réponse Directe (WhatsApp, Instagram, Snapchat, Discord, Messenger, TikTok, Telegram, Signal)** : archivage discret sur le téléphone même si l’enfant supprime ses messages, réponse directe depuis l’Espace Parent et alertes automatiques sur vos mots-clés sensibles — sans jamais masquer les notifications de l’enfant.
-            - **Analyse locale des conversations & habitudes** : découvrez en un coup d’œil avec qui l’enfant échange le plus (SMS + appels + réseaux réunis), les nouveaux contacts intensifs, la synthèse des sujets récurrents et mots fréquents, ainsi que l’activité nocturne (22h–06h).
-            - **Captures d’écran automatiques par application** : choisissez précisément les applications à surveiller et la fréquence (toutes les 5 à 60 s) avec déduplication intelligente, galerie dédiée, zoom plein écran et effacement total à la dissociation.
-            - **Correctif désinstallation à distance** : ajout de la permission officielle Android `REQUEST_DELETE_PACKAGES` + ouverture directe de la boîte de désinstallation même avec la protection Paramètres active.
-            - **Inclut toute la fiabilité v20–v23** : journal & blocage d’appels, enregistrement différé hors-ligne, centre matériel/système, carte GPS zones > 130 km/h, et révocation totale des droits parentaux si l’appareil est délié.
+            - **Score de conduite complet (0–100)** : détection intelligente (0 % capteur à l’arrêt) des freinages brusques, accélérations brutales, virages secs, utilisation du téléphone en roulant (> 30 km/h) et excès > 130 km/h, cliquables directement sur la carte.
+            - **Timeline intelligente des lieux & Carte de chaleur (Heatmap)** : journal automatique des visites/arrêts avec détection des nouveaux lieux, nommage en zone de sécurité en 1 clic et calque de chaleur des lieux les plus fréquentés.
+            - **Changement de fond d’écran à distance** : appliquez une photo ou un message personnalisé sur l’écran d’accueil, de verrouillage ou les deux en 1 clic depuis *Règles → Système & Fond d’écran*.
+            - **Notifications détaillées & Réponse rapide réparées** : extraction complète `MessagingStyle` (groupe vs auteur, sous-texte, badges photo/vocal/vidéo, aperçu image) et réponse directe via notifications actives Android 8–15 + retour immédiat dans l’onglet *Réseaux*.
+            - **Quotas quotidiens fiables & persistants** : suivi temps réel corrigé (ne décroche plus après 60 s dans une appli), récurrence garantie chaque jour jusqu’à désactivation manuelle, avec saisie personnalisée en minutes.
+            - **Optimisation batterie avancée (~55–75 % d’économie en veille)** : socket adaptatif avec bascule instantanée, détection incrémentale basse conso, pause totale écran éteint pour les captures auto & blocages, et cadence adaptative du Filtre IA sans perte de service.
+            - **Stabilité site web & interface réorganisée** : correction du crash sur l’analyse des messages, fin de l’écran noir en quittant le site (ErrorBoundary + reconnexion live + cache SW propre), suppression définitive des enfants retirés de l’historique, et 5 onglets réorganisés sans doublons.
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

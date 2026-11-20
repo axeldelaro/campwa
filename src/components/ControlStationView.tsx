@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Battery,
@@ -6,15 +6,15 @@ import {
   BellRing,
   Camera,
   CameraOff,
+  Car,
   ChevronDown,
   ChevronUp,
   Circle,
-  Cpu,
+  Clock,
   Download,
   ExternalLink,
   Flashlight,
   FlipHorizontal,
-  HardDrive,
   Image as ImageIcon,
   LayoutDashboard,
   MapPin,
@@ -25,10 +25,13 @@ import {
   Monitor,
   Navigation,
   Phone,
+  Plus,
   Power,
   RefreshCw,
   Send,
   ShieldCheck,
+  Sliders,
+  Sparkles,
   Square,
   Unplug,
   Video,
@@ -60,6 +63,7 @@ import type {
   AuthErrMsg,
   CameraFacingMode,
   DataCallLogMsg,
+  DataDrivingReportMsg,
   DataInsightsMsg,
   DataRecordingsMsg,
   DataScreenTimeMsg,
@@ -68,6 +72,7 @@ import type {
   DataSystemStatusMsg,
   DataTimelineMsg,
   DeviceTelemetry,
+  DrivingEventItem,
   GalleryAlbumItem,
   GalleryPhotoItem,
   GpsTrackPoint,
@@ -76,7 +81,6 @@ import type {
   OfflineRecordingItem,
   PortalOperationalState,
   SharedContactItem,
-  SharedDeviceInfoData,
   SharedLocationData,
   SmsMessageItem,
   SmsThreadItem,
@@ -85,16 +89,20 @@ import type {
   StreamQualityPreset,
   TimelineCaptureItem,
 } from '../types/sentinel';
+import { buildLocationIntelligence } from '../utils/locationIntelligence';
 import { CallsTab } from './CallsTab';
 import { GeofenceZonesCard, ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
+import { DrivingScoreCard } from './DrivingScoreCard';
 import { GalleryTab } from './GalleryTab';
 import { GpsTrailMap } from './GpsTrailMap';
+import { InsightsCard } from './InsightsCard';
 import { ParentFamilyHub } from './ParentFamilyHub';
 import { RecordingsTab } from './RecordingsTab';
 import { SmsMessagesTab } from './SmsMessagesTab';
 import { SocialMessagesTab } from './SocialMessagesTab';
 import { SystemCommandCard } from './SystemCommandCard';
 import { TimelineTab } from './TimelineTab';
+import { WallpaperCard } from './WallpaperCard';
 
 interface ControlStationViewProps {
   onBrokerHealthChange: (connected: boolean, brokers: BrokerHealth[]) => void;
@@ -126,18 +134,26 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [accessGrant, setAccessGrant] = useState<ActiveAccessGrant | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [viewerTab, setViewerTab] = useState<ViewerTab>('home');
-  const [messagesSubTab, setMessagesSubTab] = useState<'sms' | 'social' | 'calls'>('sms');
-  const [mediaSubTab, setMediaSubTab] = useState<'photos' | 'live' | 'recordings' | 'timeline'>('photos');
+  const [messagesSubTab, setMessagesSubTab] = useState<'sms' | 'social' | 'calls' | 'insights'>('sms');
+  const [mediaSubTab, setMediaSubTab] = useState<'live' | 'photos' | 'timeline' | 'recordings'>('photos');
+  const [locationSubTab, setLocationSubTab] = useState<'map' | 'places' | 'driving'>('map');
+  const [rulesSubTab, setRulesSubTab] = useState<'protection' | 'system'>('protection');
 
-  // Social Messages Archive + Direct Reply State (v24)
+  // Social Messages Archive + Direct Reply State (v24/v25)
   const [socialThreadsData, setSocialThreadsData] = useState<DataSocialThreadsMsg | null>(null);
   const [socialMessagesData, setSocialMessagesData] = useState<DataSocialMessagesMsg | null>(null);
   const [socialThreadsLoading, setSocialThreadsLoading] = useState(false);
   const [socialMessagesLoading, setSocialMessagesLoading] = useState(false);
+  const [socialReplyFeedback, setSocialReplyFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
-  // Conversation & Behavioral Insights State (v24)
+  // Conversation & Behavioral Insights State (v24/v25)
   const [insightsData, setInsightsData] = useState<DataInsightsMsg | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
+
+  // Driving Behavior & Safety Score State (v25)
+  const [drivingReport, setDrivingReport] = useState<DataDrivingReportMsg | null>(null);
+  const [drivingLoading, setDrivingLoading] = useState(false);
+  const [drivingDays, setDrivingDays] = useState(7);
 
   // Visual Activity Timeline State (v24)
   const [timelineData, setTimelineData] = useState<DataTimelineMsg | null>(null);
@@ -224,10 +240,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [historyBundle, setHistoryBundle] = useState<LocationHistoryBundle | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [focusedTrackPoint, setFocusedTrackPoint] = useState<GpsTrackPoint | null>(null);
-  const [deviceInfo, setDeviceInfo] = useState<SharedDeviceInfoData | null>(null);
-  const [deviceInfoLoading, setDeviceInfoLoading] = useState(false);
   const [historyListOpen, setHistoryListOpen] = useState(false);
-  const [sysInfoOpen, setSysInfoOpen] = useState(false);
 
   // Camera / Screen / Talkie Controls
   const [videoZoom, setVideoZoom] = useState<number>(1);
@@ -303,11 +316,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           setScreenTimeLoading(true);
           void ctrl.requestScreenTime();
           window.setTimeout(() => setScreenTimeLoading(false), 8000);
-          window.setTimeout(() => {
-            setInsightsLoading(true);
-            void ctrl.requestInsights();
-            window.setTimeout(() => setInsightsLoading(false), 12000);
-          }, 1200);
         } else {
           setViewerTab('media');
           setMediaSubTab('live');
@@ -404,10 +412,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           );
         }
       },
-      onDeviceInfoData: (data) => {
-        setDeviceInfoLoading(false);
-        if (data.info) setDeviceInfo(data.info);
-      },
       onScreenTimeData: (data) => {
         setScreenTimeLoading(false);
         setScreenTime(data);
@@ -432,6 +436,16 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             setLightboxPhoto(null);
             void ctrl.requestGallery(0, '', 18);
             void ctrl.performGalleryAction('list_quarantine');
+          }
+          return;
+        }
+        if (res.action === 'social_reply') {
+          setSocialReplyFeedback({
+            ok: res.success,
+            text: res.error || (res.success ? 'Réponse envoyée directement.' : 'Envoi impossible.'),
+          });
+          if (res.success) {
+            window.setTimeout(() => setSocialReplyFeedback(null), 3500);
           }
           return;
         }
@@ -473,6 +487,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             timeline_config: res.error || 'Réglages de captures enregistrés.',
             timeline_delete: res.error || 'Capture supprimée.',
             timeline_clear: res.error || 'Toutes les captures ont été effacées.',
+            set_wallpaper: res.error || 'Fond d’écran appliqué.',
           };
           setControlFeedback({ ok: true, text: labels[res.action] || 'Règle enregistrée.' });
         } else {
@@ -559,6 +574,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           return { ...prev, loading: false, base64: info.base64, error: info.error };
         });
       },
+      onDrivingReportData: (data) => {
+        setDrivingLoading(false);
+        setDrivingReport(data);
+      },
       onStreamError: (msg) => setStreamNotice(msg),
       onTalkieStateChange: (active) => {
         setTalkieActive(active);
@@ -620,6 +639,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setViewerTab('home');
     setMessagesSubTab('sms');
     setMediaSubTab('photos');
+    setLocationSubTab('map');
+    setRulesSubTab('protection');
     setSmsThreads([]);
     setActiveSmsThread(null);
     setSmsMessages([]);
@@ -629,7 +650,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setSystemStatus(null);
     setSocialThreadsData(null);
     setSocialMessagesData(null);
+    setSocialReplyFeedback(null);
     setInsightsData(null);
+    setDrivingReport(null);
     setTimelineData(null);
     setTimelineLightbox(null);
     setContacts([]);
@@ -643,7 +666,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     setFocusedTrackPoint(null);
     setScreenTime(null);
     setControlFeedback(null);
-    setDeviceInfo(null);
     setActiveCode(normalized);
     try {
       await controllerRef.current?.connectToPortal(normalized, false);
@@ -663,12 +685,20 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const handleDisconnect = () => {
     setTalkieLocked(false);
     setTalkieActive(false);
+    const prevCode = fullCode;
     controllerRef.current?.disconnect();
     setTelemetry(null);
     setSessionConnected(false);
     setConnectedDeviceName('');
     setAccessGrant(null);
     setStreamNotice(null);
+    setActiveCode('');
+    if (prevCode) {
+      // Never leave a disconnected direct-code device lingering in local history
+      if (!accountRef.current) {
+        removePairedDevice(prevCode);
+      }
+    }
     if (accountRef.current) {
       void handleSyncAccountLive(accountRef.current);
     }
@@ -708,6 +738,18 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const handleRenameChild = async (code: string, newName: string) => {
     if (!accountRef.current) return;
     const updated = await renameAccountChild(accountRef.current, code, newName);
+    setAccount(updated);
+  };
+
+  const handleRemoveChild = async (code: string) => {
+    removePairedDevice(code);
+    setLiveStatuses((prev) => {
+      const next = { ...prev };
+      delete next[code];
+      return next;
+    });
+    if (!accountRef.current) return;
+    const updated = await removeAccountChild(accountRef.current, code);
     setAccount(updated);
   };
 
@@ -755,7 +797,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const canSwitchCam = accessGrant ? accessGrant.allowSwitchCamera : true;
   const canViewScreen = accessGrant ? accessGrant.allowScreenShare : false;
   const canViewLocation = accessGrant ? accessGrant.allowLocation : false;
-  const canViewDeviceInfo = accessGrant ? accessGrant.allowDeviceInfo : true;
   const canUseIntercom = accessGrant ? accessGrant.allowIntercom : true;
   const canUseSmsRelay = accessGrant ? accessGrant.allowSmsRelay : false;
   const canUseDeviceControl = accessGrant ? accessGrant.allowDeviceControl : true;
@@ -865,9 +906,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     window.setTimeout(() => setHistoryLoading(false), 12000);
   };
 
-  const handleFetchDeviceInfo = async () => {
-    setDeviceInfoLoading(true);
-    await controllerRef.current?.requestDeviceInfo();
+  const handleFetchDrivingReport = async (days = drivingDays) => {
+    setDrivingDays(days);
+    setDrivingLoading(true);
+    await controllerRef.current?.requestDrivingReport(days);
+    window.setTimeout(() => setDrivingLoading(false), 10000);
   };
 
   const handleOpenLocationTab = () => {
@@ -879,7 +922,15 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     if (!screenTime && canUseDeviceControl) {
       void handleFetchScreenTime();
     }
+    if (!drivingReport && !drivingLoading && canUseDeviceControl) {
+      void handleFetchDrivingReport(drivingDays);
+    }
   };
+
+  const locationIntelligence = useMemo(
+    () => buildLocationIntelligence(historyBundle?.points ?? [], screenTime?.geofences ?? []),
+    [historyBundle?.points, screenTime?.geofences]
+  );
 
   const handleExportGpx = () => {
     const pts = historyBundle?.points ?? [];
@@ -1110,6 +1161,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         onSyncLive={() => handleSyncAccountLive()}
         onSelectChild={(code) => void handleConnect(code)}
         onRenameChild={handleRenameChild}
+        onRemoveChild={handleRemoveChild}
         onStartAddChild={handleStartAddChild}
         onCancelAddChild={handleCancelParentPairing}
         onDirectConnect={(code) => void handleConnect(code)}
@@ -1239,7 +1291,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
         <button
           type="button"
-          disabled={!canViewLocation && !canViewDeviceInfo}
+          disabled={!canViewLocation}
           onClick={handleOpenLocationTab}
           className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition disabled:opacity-35 ${
             viewerTab === 'location' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
@@ -1323,7 +1375,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
 
           <button
             type="button"
-            disabled={!canViewLocation && !canViewDeviceInfo}
+            disabled={!canViewLocation}
             onClick={handleOpenLocationTab}
             className={`flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-medium transition disabled:opacity-35 ${
               viewerTab === 'location' ? 'text-white' : 'text-zinc-500'
@@ -1414,20 +1466,13 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             setControlFeedback(null);
             await controllerRef.current?.flashRemoteImage(base64Jpeg, durationSec, caption);
           }}
-          insightsData={insightsData}
-          insightsLoading={insightsLoading}
-          onRefreshInsights={async () => {
-            setInsightsLoading(true);
-            await controllerRef.current?.requestInsights();
-            window.setTimeout(() => setInsightsLoading(false), 12000);
-          }}
         />
       )}
 
-      {/* ==================== TAB 2: MESSAGES (SMS, RÉSEAUX SOCIAUX & APPELS) ==================== */}
+      {/* ==================== TAB 2: MESSAGES (SMS, RÉSEAUX, APPELS & ANALYSE) ==================== */}
       {viewerTab === 'messages' && (
         <div className="space-y-3.5">
-          <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
+          <div className="grid grid-cols-4 gap-1 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto sm:gap-1.5">
             <button
               type="button"
               onClick={() => {
@@ -1436,7 +1481,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   void handleFetchSmsThreads();
                 }
               }}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-medium transition sm:gap-1.5 sm:px-4 sm:py-1.5 ${
                 messagesSubTab === 'sms'
                   ? 'bg-white text-zinc-950'
                   : 'text-zinc-400 hover:text-white'
@@ -1455,7 +1500,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   window.setTimeout(() => setSocialThreadsLoading(false), 10000);
                 }
               }}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-medium transition sm:gap-1.5 sm:px-4 sm:py-1.5 ${
                 messagesSubTab === 'social'
                   ? 'bg-white text-zinc-950'
                   : 'text-zinc-400 hover:text-white'
@@ -1474,7 +1519,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   window.setTimeout(() => setCallLogLoading(false), 10000);
                 }
               }}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-medium transition sm:gap-1.5 sm:px-4 sm:py-1.5 ${
                 messagesSubTab === 'calls'
                   ? 'bg-white text-zinc-950'
                   : 'text-zinc-400 hover:text-white'
@@ -1482,6 +1527,25 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             >
               <Phone className="h-3.5 w-3.5 shrink-0" />
               <span className="truncate">Appels</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMessagesSubTab('insights');
+                if (!insightsData && !insightsLoading) {
+                  setInsightsLoading(true);
+                  void controllerRef.current?.requestInsights();
+                  window.setTimeout(() => setInsightsLoading(false), 12000);
+                }
+              }}
+              className={`inline-flex items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-medium transition sm:gap-1.5 sm:px-4 sm:py-1.5 ${
+                messagesSubTab === 'insights'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Analyse</span>
             </button>
           </div>
 
@@ -1515,6 +1579,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               messagesData={socialMessagesData}
               loadingThreads={socialThreadsLoading}
               loadingMessages={socialMessagesLoading}
+              replyFeedback={socialReplyFeedback}
+              onDismissReplyFeedback={() => setSocialReplyFeedback(null)}
               onRefreshThreads={async (appFilter = '') => {
                 setSocialThreadsLoading(true);
                 await controllerRef.current?.performSocialAction({
@@ -1546,6 +1612,16 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               }}
               onClearArchive={async () => {
                 await controllerRef.current?.performSocialAction({ action: 'clear' });
+              }}
+            />
+          ) : messagesSubTab === 'insights' ? (
+            <InsightsCard
+              data={insightsData}
+              loading={insightsLoading}
+              onRefresh={async () => {
+                setInsightsLoading(true);
+                await controllerRef.current?.requestInsights();
+                window.setTimeout(() => setInsightsLoading(false), 12000);
               }}
             />
           ) : (
@@ -2199,399 +2275,577 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       )}
 
-      {/* ==================== TAB 4: POSITION ==================== */}
+      {/* ==================== TAB 4: POSITION (CARTE + LIEUX + CONDUITE) ==================== */}
       {viewerTab === 'location' && (
-        <div className="space-y-3">
-          <div className="space-y-3 rounded-2xl border border-white/[0.07] bg-zinc-900/65 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <MapPin className="h-4 w-4 text-emerald-400" />
-                <h2 className="text-sm font-semibold text-white">Localisation</h2>
-                {telemetry?.gpsTrackerState && telemetry.gpsTrackerState !== 'disabled' && (
-                  <span className="rounded-md bg-white/[0.06] px-2 py-0.5 text-[10px] text-zinc-300">
-                    {telemetry.gpsTrackerState === 'moving'
-                      ? 'En mouvement'
-                      : telemetry.gpsTrackerState === 'stationary'
-                      ? 'À l’arrêt'
-                      : telemetry.gpsTrackerState === 'battery_saver'
-                      ? 'Éco'
-                      : 'Permission requise'}
-                  </span>
-                )}
-              </div>
-
-              {canViewLocation && (
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    disabled={locationLoading || historyLoading}
-                    onClick={() => {
-                      void handleFetchLocation();
-                      void handleFetchLocationHistory(historyRange);
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:border-white/25"
-                  >
-                    <RefreshCw
-                      className={`h-3.5 w-3.5 ${locationLoading || historyLoading ? 'animate-spin' : ''}`}
-                    />
-                    <span>Actualiser</span>
-                  </button>
-                  {locationData && (
-                    <a
-                      href={`https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 rounded-xl bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
-                    >
-                      <span>Maps</span>
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {!canViewLocation ? (
-              <p className="rounded-xl border border-white/[0.06] bg-zinc-950 p-4 text-xs text-zinc-400">
-                Activez « GPS & Trajets » dans Règles → Autorisations à distance.
-              </p>
-            ) : (
-              <>
-                <div className="grid grid-cols-4 gap-1 rounded-xl border border-white/[0.07] bg-zinc-950 p-1">
-                  {(
-                    [
-                      { id: 'today', label: 'Auj.' },
-                      { id: '24h', label: '24 h' },
-                      { id: '7d', label: '7 j' },
-                      { id: '30d', label: '30 j' },
-                    ] as const
-                  ).map((r) => (
-                    <button
-                      key={r.id}
-                      type="button"
-                      onClick={() => void handleFetchLocationHistory(r.id)}
-                      className={`rounded-lg py-1.5 text-xs font-medium transition ${
-                        historyRange === r.id
-                          ? 'bg-white text-zinc-950'
-                          : 'text-zinc-400 hover:text-white'
-                      }`}
-                    >
-                      {r.label}
-                    </button>
-                  ))}
-                </div>
-
-                {locationError && (
-                  <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
-                    {locationError}
-                  </div>
-                )}
-
-                <GpsTrailMap
-                  points={historyBundle?.points ?? []}
-                  liveLocation={locationData}
-                  focusedPoint={focusedTrackPoint}
-                />
-
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.06] bg-zinc-950 px-3.5 py-2.5 text-xs text-zinc-400">
-                  <div className="flex flex-wrap items-center gap-3 font-mono">
-                    <span className="text-white">
-                      {((historyBundle?.totalDistanceMeters ?? 0) / 1000).toFixed(2)} km
-                    </span>
-                    <span>·</span>
-                    <span>{historyBundle?.stopsCount ?? 0} arrêt(s)</span>
-                    <span>·</span>
-                    <span>{(historyBundle?.maxSpeedKmh ?? 0).toFixed(0)} km/h max</span>
-                  </div>
-                  {locationData && (
-                    <span className="text-[11px] text-zinc-500">
-                      ±{locationData.accuracyMeters} m ·{' '}
-                      {new Date(locationData.timestamp).toLocaleTimeString('fr-FR', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </span>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-
-          {canUseDeviceControl && (
-            <GeofenceZonesCard
-              screenTime={screenTime}
-              locationData={locationData}
-              onSaveGeofence={async (opts) => {
-                setControlFeedback(null);
-                await controllerRef.current?.saveRemoteGeofence(opts);
-              }}
-              onRequestLocation={async () => {
-                await handleFetchLocation();
-              }}
-            />
-          )}
-
-          {canViewLocation && (historyBundle?.points.length ?? 0) > 0 && (
-            <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-zinc-900/65">
-              <button
-                type="button"
-                onClick={() => setHistoryListOpen((v) => !v)}
-                className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-white/[0.02]"
-              >
-                <div className="flex items-center gap-2.5">
-                  <Navigation className="h-4 w-4 text-zinc-400" />
-                  <div>
-                    <div className="text-sm font-medium text-white">Historique & Export</div>
-                    <div className="text-[11px] text-zinc-500">
-                      {historyBundle?.points.length} points enregistrés
-                    </div>
-                  </div>
-                </div>
-                {historyListOpen ? (
-                  <ChevronUp className="h-4 w-4 text-zinc-500" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 text-zinc-500" />
-                )}
-              </button>
-
-              {historyListOpen && (
-                <div className="space-y-3 border-t border-white/[0.06] p-4">
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleExportGpx}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-300 hover:text-white"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      <span>Export GPX</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleExportCsv}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-300 hover:text-white"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      <span>Export CSV</span>
-                    </button>
-                  </div>
-
-                  <div className="max-h-52 space-y-1.5 overflow-y-auto pr-0.5">
-                    {[...(historyBundle?.points ?? [])]
-                      .reverse()
-                      .slice(0, 60)
-                      .map((pt, idx) => {
-                        const isStop = pt.dwellSeconds >= 120;
-                        return (
-                          <button
-                            key={`${pt.timestamp}-${idx}`}
-                            type="button"
-                            onClick={() => setFocusedTrackPoint(pt)}
-                            className="flex w-full items-center justify-between gap-2 rounded-xl border border-white/[0.05] bg-zinc-950/80 px-3 py-2 text-left text-xs hover:border-white/15"
-                          >
-                            <div className="flex items-center gap-1.5">
-                              <span
-                                className={`h-2 w-2 shrink-0 rounded-full ${
-                                  isStop ? 'bg-amber-400' : 'bg-emerald-400'
-                                }`}
-                              />
-                              <span className="font-mono text-white">
-                                {new Date(pt.timestamp).toLocaleString('fr-FR', {
-                                  day: '2-digit',
-                                  month: '2-digit',
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                })}
-                              </span>
-                              {isStop && (
-                                <span className="text-[10px] text-amber-300">
-                                  Arrêt {Math.round(pt.dwellSeconds / 60)}m
-                                </span>
-                              )}
-                              {pt.speedKmh > 130 && pt.speedKmh < 320 && (
-                                <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-rose-300">
-                                  &gt; 130 km/h
-                                </span>
-                              )}
-                            </div>
-                            <span
-                              className={`shrink-0 font-mono text-[11px] ${
-                                pt.speedKmh > 130 && pt.speedKmh < 320
-                                  ? 'font-semibold text-rose-300'
-                                  : 'text-zinc-400'
-                              }`}
-                            >
-                              {pt.speedKmh.toFixed(0)} km/h · {pt.batteryLevel}%
-                            </span>
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-zinc-900/65">
+        <div className="space-y-3.5">
+          {/* Sub-navigation pills */}
+          <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
+            <button
+              type="button"
+              onClick={() => setLocationSubTab('map')}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+                locationSubTab === 'map'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <MapPin className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Carte</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setLocationSubTab('places')}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+                locationSubTab === 'places'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Clock className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">
+                Lieux ({locationIntelligence.visits.length})
+              </span>
+            </button>
             <button
               type="button"
               onClick={() => {
-                const next = !sysInfoOpen;
-                setSysInfoOpen(next);
-                if (next && !deviceInfo && canViewDeviceInfo) {
-                  void handleFetchDeviceInfo();
+                setLocationSubTab('driving');
+                if (!drivingReport && !drivingLoading) {
+                  void handleFetchDrivingReport(drivingDays);
                 }
               }}
-              className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-white/[0.02]"
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition sm:px-4 sm:py-1.5 ${
+                locationSubTab === 'driving'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
             >
-              <div className="flex items-center gap-2.5">
-                <Cpu className="h-4 w-4 text-zinc-400" />
-                <div>
-                  <div className="text-sm font-medium text-white">Appareil</div>
-                  <div className="text-[11px] text-zinc-500">
-                    {deviceInfo
-                      ? `Android ${deviceInfo.androidVersion} · ${(deviceInfo.storageFreeMb / 1024).toFixed(1)} Go libres`
-                      : 'Stockage et modèle'}
-                  </div>
-                </div>
-              </div>
-              {sysInfoOpen ? (
-                <ChevronUp className="h-4 w-4 text-zinc-500" />
-              ) : (
-                <ChevronDown className="h-4 w-4 text-zinc-500" />
-              )}
+              <Car className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">
+                Conduite{drivingReport ? ` · ${drivingReport.score}` : ''}
+              </span>
             </button>
+          </div>
 
-            {sysInfoOpen && (
-              <div className="space-y-2 border-t border-white/[0.06] p-4 text-xs">
-                {!canViewDeviceInfo ? (
-                  <p className="text-zinc-400">Désactivé dans Règles → Autorisations à distance.</p>
-                ) : deviceInfo ? (
+          {/* Sub-tab 1: Carte, Zones > 130 km/h, Chaleur (Heatmap) & Export */}
+          {locationSubTab === 'map' && (
+            <>
+              <div className="space-y-3 rounded-2xl border border-white/[0.07] bg-zinc-900/65 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <MapPin className="h-4 w-4 text-emerald-400" />
+                    <h2 className="text-sm font-semibold text-white">Localisation & Trajets</h2>
+                    {telemetry?.gpsTrackerState && telemetry.gpsTrackerState !== 'disabled' && (
+                      <span className="rounded-md bg-white/[0.06] px-2 py-0.5 text-[10px] text-zinc-300">
+                        {telemetry.gpsTrackerState === 'moving'
+                          ? 'En mouvement'
+                          : telemetry.gpsTrackerState === 'stationary'
+                            ? 'À l’arrêt'
+                            : telemetry.gpsTrackerState === 'battery_saver'
+                              ? 'Éco'
+                              : 'Permission requise'}
+                      </span>
+                    )}
+                  </div>
+
+                  {canViewLocation && (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={locationLoading || historyLoading}
+                        onClick={() => {
+                          void handleFetchLocation();
+                          void handleFetchLocationHistory(historyRange);
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:border-white/25"
+                      >
+                        <RefreshCw
+                          className={`h-3.5 w-3.5 ${locationLoading || historyLoading ? 'animate-spin' : ''}`}
+                        />
+                        <span>Actualiser</span>
+                      </button>
+                      {locationData && (
+                        <a
+                          href={`https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 rounded-xl bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200"
+                        >
+                          <span>Maps</span>
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {!canViewLocation ? (
+                  <p className="rounded-xl border border-white/[0.06] bg-zinc-950 p-4 text-xs text-zinc-400">
+                    Activez « GPS & Trajets » dans Règles → Protection → Autorisations à distance.
+                  </p>
+                ) : (
                   <>
-                    <div className="flex justify-between rounded-xl border border-white/[0.05] bg-zinc-950 px-3 py-2">
-                      <span className="text-zinc-400">Modèle</span>
-                      <span className="font-medium text-white">{deviceInfo.deviceName}</span>
+                    <div className="grid grid-cols-4 gap-1 rounded-xl border border-white/[0.07] bg-zinc-950 p-1">
+                      {(
+                        [
+                          { id: 'today', label: 'Auj.' },
+                          { id: '24h', label: '24 h' },
+                          { id: '7d', label: '7 j' },
+                          { id: '30d', label: '30 j' },
+                        ] as const
+                      ).map((r) => (
+                        <button
+                          key={r.id}
+                          type="button"
+                          onClick={() => void handleFetchLocationHistory(r.id)}
+                          className={`rounded-lg py-1.5 text-xs font-medium transition ${
+                            historyRange === r.id
+                              ? 'bg-white text-zinc-950'
+                              : 'text-zinc-400 hover:text-white'
+                          }`}
+                        >
+                          {r.label}
+                        </button>
+                      ))}
                     </div>
-                    <div className="flex justify-between rounded-xl border border-white/[0.05] bg-zinc-950 px-3 py-2">
-                      <span className="text-zinc-400">Version</span>
-                      <span className="font-mono text-zinc-200">Android {deviceInfo.androidVersion}</span>
-                    </div>
-                    {deviceInfo.storageTotalMb > 0 && (
-                      <div className="flex justify-between rounded-xl border border-white/[0.05] bg-zinc-950 px-3 py-2">
-                        <span className="inline-flex items-center gap-1.5 text-zinc-400">
-                          <HardDrive className="h-3.5 w-3.5" />
-                          Stockage libre
-                        </span>
-                        <span className="font-mono text-zinc-200">
-                          {(deviceInfo.storageFreeMb / 1024).toFixed(1)} /{' '}
-                          {(deviceInfo.storageTotalMb / 1024).toFixed(1)} Go
-                        </span>
+
+                    {locationError && (
+                      <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
+                        {locationError}
                       </div>
                     )}
+
+                    <GpsTrailMap
+                      points={historyBundle?.points ?? []}
+                      liveLocation={locationData}
+                      focusedPoint={focusedTrackPoint}
+                      heatmapSpots={locationIntelligence.heatmapSpots}
+                      drivingEvents={drivingReport?.events ?? []}
+                    />
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.06] bg-zinc-950 px-3.5 py-2.5 text-xs text-zinc-400">
+                      <div className="flex flex-wrap items-center gap-3 font-mono">
+                        <span className="text-white">
+                          {((historyBundle?.totalDistanceMeters ?? 0) / 1000).toFixed(2)} km
+                        </span>
+                        <span>·</span>
+                        <span>{historyBundle?.stopsCount ?? 0} arrêt(s)</span>
+                        <span>·</span>
+                        <span>{(historyBundle?.maxSpeedKmh ?? 0).toFixed(0)} km/h max</span>
+                      </div>
+                      {locationData && (
+                        <span className="text-[11px] text-zinc-500">
+                          ±{locationData.accuracyMeters} m ·{' '}
+                          {new Date(locationData.timestamp).toLocaleTimeString('fr-FR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      )}
+                    </div>
                   </>
+                )}
+              </div>
+
+              {canViewLocation && (historyBundle?.points.length ?? 0) > 0 && (
+                <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-zinc-900/65">
+                  <button
+                    type="button"
+                    onClick={() => setHistoryListOpen((v) => !v)}
+                    className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-white/[0.02]"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Navigation className="h-4 w-4 text-zinc-400" />
+                      <div>
+                        <div className="text-sm font-medium text-white">Points détaillés & Export</div>
+                        <div className="text-[11px] text-zinc-500">
+                          {historyBundle?.points.length} points enregistrés (GPX / CSV)
+                        </div>
+                      </div>
+                    </div>
+                    {historyListOpen ? (
+                      <ChevronUp className="h-4 w-4 text-zinc-500" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4 text-zinc-500" />
+                    )}
+                  </button>
+
+                  {historyListOpen && (
+                    <div className="space-y-3 border-t border-white/[0.06] p-4">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleExportGpx}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-300 hover:text-white"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          <span>Export GPX</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleExportCsv}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-300 hover:text-white"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          <span>Export CSV</span>
+                        </button>
+                      </div>
+
+                      <div className="max-h-52 space-y-1.5 overflow-y-auto pr-0.5">
+                        {[...(historyBundle?.points ?? [])]
+                          .reverse()
+                          .slice(0, 60)
+                          .map((pt, idx) => {
+                            const isStop = pt.dwellSeconds >= 120;
+                            return (
+                              <button
+                                key={`${pt.timestamp}-${idx}`}
+                                type="button"
+                                onClick={() => setFocusedTrackPoint(pt)}
+                                className="flex w-full items-center justify-between gap-2 rounded-xl border border-white/[0.05] bg-zinc-950/80 px-3 py-2 text-left text-xs hover:border-white/15"
+                              >
+                                <div className="flex items-center gap-1.5">
+                                  <span
+                                    className={`h-2 w-2 shrink-0 rounded-full ${
+                                      isStop ? 'bg-amber-400' : 'bg-emerald-400'
+                                    }`}
+                                  />
+                                  <span className="font-mono text-white">
+                                    {new Date(pt.timestamp).toLocaleString('fr-FR', {
+                                      day: '2-digit',
+                                      month: '2-digit',
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })}
+                                  </span>
+                                  {isStop && (
+                                    <span className="text-[10px] text-amber-300">
+                                      Arrêt {Math.round(pt.dwellSeconds / 60)}m
+                                    </span>
+                                  )}
+                                  {pt.speedKmh > 130 && pt.speedKmh < 320 && (
+                                    <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-rose-300">
+                                      &gt; 130 km/h
+                                    </span>
+                                  )}
+                                </div>
+                                <span
+                                  className={`shrink-0 font-mono text-[11px] ${
+                                    pt.speedKmh > 130 && pt.speedKmh < 320
+                                      ? 'font-semibold text-rose-300'
+                                      : 'text-zinc-400'
+                                  }`}
+                                >
+                                  {pt.speedKmh.toFixed(0)} km/h · {pt.batteryLevel}%
+                                </span>
+                              </button>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Sub-tab 2: Timeline Intelligente des Lieux & Zones de Sécurité */}
+          {locationSubTab === 'places' && (
+            <div className="space-y-3.5">
+              <div className="space-y-3 rounded-2xl border border-white/[0.07] bg-zinc-900/65 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
+                      <Clock className="h-4 w-4 text-sky-400" />
+                      Journal automatique des lieux visités
+                    </h3>
+                    <p className="text-[11px] text-zinc-400">
+                      Arrêts détectés automatiquement, durées de présence et nouveaux lieux sur la période sélectionnée.
+                    </p>
+                  </div>
+                  <div className="flex gap-1">
+                    {(['today', '24h', '7d', '30d'] as const).map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        onClick={() => void handleFetchLocationHistory(r)}
+                        className={`rounded-lg px-2 py-1 text-[11px] font-medium ${
+                          historyRange === r
+                            ? 'bg-white text-zinc-950'
+                            : 'border border-white/10 bg-zinc-950 text-zinc-400 hover:text-white'
+                        }`}
+                      >
+                        {r === 'today' ? 'Auj.' : r}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {locationIntelligence.visits.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-white/10 bg-zinc-950/60 px-4 py-8 text-center text-xs text-zinc-400">
+                    Aucun arrêt prolongé (&ge; 4 min) détecté sur cette période. Essayez « 7 j » ou « 30 j ».
+                  </div>
                 ) : (
-                  <div className="flex items-center justify-between text-zinc-400">
-                    <span>{deviceInfoLoading ? 'Chargement…' : 'Indisponible'}</span>
-                    <button
-                      type="button"
-                      onClick={() => void handleFetchDeviceInfo()}
-                      className="text-emerald-400 hover:underline"
-                    >
-                      Actualiser
-                    </button>
+                  <div className="max-h-[420px] space-y-2 overflow-y-auto pr-0.5">
+                    {locationIntelligence.visits.map((v) => {
+                      const mins = Math.round(v.durationSec / 60);
+                      const durLabel =
+                        mins >= 60 ? `${Math.floor(mins / 60)}h${(mins % 60).toString().padStart(2, '0')}` : `${mins} min`;
+                      return (
+                        <div
+                          key={v.id}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.06] bg-zinc-950/85 p-3"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-xs font-semibold text-white">{v.label}</span>
+                              {v.matchedGeofenceName && (
+                                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
+                                  Zone connue
+                                </span>
+                              )}
+                              {v.isNewPlace && (
+                                <span className="rounded-full border border-amber-400/35 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+                                  Nouveau lieu
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-1 text-[11px] text-zinc-400">
+                              {new Date(v.startTs).toLocaleDateString('fr-FR', {
+                                weekday: 'short',
+                                day: '2-digit',
+                                month: '2-digit',
+                              })}{' '}
+                              ·{' '}
+                              {new Date(v.startTs).toLocaleTimeString('fr-FR', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}{' '}
+                              →{' '}
+                              {new Date(v.endTs).toLocaleTimeString('fr-FR', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}{' '}
+                              · <span className="font-mono text-zinc-200">{durLabel}</span>
+                            </p>
+                          </div>
+
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFocusedTrackPoint(v.point);
+                                setLocationSubTab('map');
+                              }}
+                              className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-zinc-900 px-2.5 py-1.5 text-[11px] text-zinc-200 hover:border-white/25"
+                            >
+                              <MapPin className="h-3 w-3 text-sky-400" />
+                              Carte
+                            </button>
+                            {!v.matchedGeofenceName && canUseDeviceControl && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const name = window.prompt('Nommer cette zone (ex : Collège, Ami, Sport) :', 'Nouveau lieu');
+                                  if (name && name.trim()) {
+                                    await controllerRef.current?.saveRemoteGeofence({
+                                      name: name.trim(),
+                                      latitude: v.latitude,
+                                      longitude: v.longitude,
+                                      radiusMeters: 150,
+                                    });
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] text-emerald-200 hover:bg-emerald-500/20"
+                                title="Enregistrer comme zone de sécurité"
+                              >
+                                <Plus className="h-3 w-3" />
+                                Zone
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
-            )}
-          </div>
+
+              {canUseDeviceControl && (
+                <GeofenceZonesCard
+                  screenTime={screenTime}
+                  locationData={locationData}
+                  onSaveGeofence={async (opts) => {
+                    setControlFeedback(null);
+                    await controllerRef.current?.saveRemoteGeofence(opts);
+                  }}
+                  onRequestLocation={async () => {
+                    await handleFetchLocation();
+                  }}
+                />
+              )}
+            </div>
+          )}
+
+          {/* Sub-tab 3: Score de Conduite */}
+          {locationSubTab === 'driving' && (
+            <DrivingScoreCard
+              data={drivingReport}
+              loading={drivingLoading}
+              days={drivingDays}
+              onChangeDays={(d) => handleFetchDrivingReport(d)}
+              onRefresh={() => handleFetchDrivingReport(drivingDays)}
+              onFocusEvent={(ev: DrivingEventItem) => {
+                if (ev.latitude || ev.longitude) {
+                  setFocusedTrackPoint({
+                    timestamp: ev.timestamp,
+                    latitude: ev.latitude,
+                    longitude: ev.longitude,
+                    accuracyMeters: 20,
+                    speedKmh: ev.speedKmh,
+                    batteryLevel: telemetry?.batteryLevel ?? 100,
+                    dwellSeconds: 0,
+                    provider: 'gps',
+                  });
+                  setLocationSubTab('map');
+                }
+              }}
+            />
+          )}
         </div>
       )}
 
-      {/* ==================== TAB 5: RÈGLES & SYSTÈME ==================== */}
+      {/* ==================== TAB 5: RÈGLES (PROTECTION + SYSTÈME & ÉCRAN) ==================== */}
       {viewerTab === 'rules' && (
-        <div className="space-y-3">
-          <ParentalRulesTab
-            screenTime={screenTime}
-            screenTimeLoading={screenTimeLoading}
-            telemetry={telemetry}
-            nowMs={nowMs}
-            feedback={controlFeedback}
-            onDismissFeedback={() => setControlFeedback(null)}
-            onRefresh={handleFetchScreenTime}
-            onSetCurfew={async (opts) => {
-              setControlFeedback(null);
-              await controllerRef.current?.setRemoteCurfew(opts);
-            }}
-            onSetSchoolMode={async (opts) => {
-              setControlFeedback(null);
-              await controllerRef.current?.setRemoteSchoolMode(opts);
-            }}
-            onSetAntiBypass={async (enabled) => {
-              setControlFeedback(null);
-              await controllerRef.current?.setRemoteAntiBypass(enabled);
-            }}
-            onSetLostMode={async (opts) => {
-              setControlFeedback(null);
-              await controllerRef.current?.setRemoteLostMode(opts);
-            }}
-            onClearSecurityEvents={async () => {
-              setControlFeedback(null);
-              await controllerRef.current?.clearRemoteSecurityEvents();
-            }}
-            onSetAdminPin={async (pin) => {
-              setControlFeedback(null);
-              await controllerRef.current?.setRemoteAdminPin(pin, true);
-            }}
-            onSetAiShield={async (opts) => {
-              setControlFeedback(null);
-              await controllerRef.current?.setRemoteAiShield(opts);
-            }}
-            onSetRemotePolicy={async (opts) => {
-              setControlFeedback(null);
-              await controllerRef.current?.setRemotePolicy(opts);
-            }}
-            onRespondUnpair={handleRespondUnpair}
-          />
+        <div className="space-y-3.5">
+          <div className="grid grid-cols-2 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
+            <button
+              type="button"
+              onClick={() => setRulesSubTab('protection')}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+                rulesSubTab === 'protection'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+              <span>Protection & Règles</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setRulesSubTab('system');
+                if (!systemStatus && !systemStatusLoading) {
+                  setSystemStatusLoading(true);
+                  void controllerRef.current?.sendSystemControl({ action: 'get_status' });
+                  window.setTimeout(() => setSystemStatusLoading(false), 10000);
+                }
+              }}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+                rulesSubTab === 'system'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Sliders className="h-3.5 w-3.5 shrink-0" />
+              <span>Système & Fond d’écran</span>
+            </button>
+          </div>
 
-          <SystemCommandCard
-            data={systemStatus}
-            loading={systemStatusLoading}
-            onRefresh={async () => {
-              setSystemStatusLoading(true);
-              await controllerRef.current?.sendSystemControl({ action: 'get_status' });
-              window.setTimeout(() => setSystemStatusLoading(false), 10000);
-            }}
-            onSetVolume={async (stream, percent) => {
-              await controllerRef.current?.sendSystemControl({
-                action: 'set_volume',
-                stream,
-                percent,
-              });
-            }}
-            onSetRinger={async (mode) => {
-              await controllerRef.current?.sendSystemControl({
-                action: 'set_ringer',
-                mode,
-              });
-            }}
-            onSetBrightness={async (percent) => {
-              await controllerRef.current?.sendSystemControl({
-                action: 'set_brightness',
-                percent,
-              });
-            }}
-            onLaunchApp={async (packageName) => {
-              await controllerRef.current?.sendSystemControl({
-                action: 'launch_app',
-                packageName,
-              });
-            }}
-            onUninstallApp={async (packageName) => {
-              await controllerRef.current?.sendSystemControl({
-                action: 'uninstall_app',
-                packageName,
-              });
-            }}
-          />
+          {rulesSubTab === 'protection' ? (
+            <ParentalRulesTab
+              screenTime={screenTime}
+              screenTimeLoading={screenTimeLoading}
+              telemetry={telemetry}
+              nowMs={nowMs}
+              feedback={controlFeedback}
+              onDismissFeedback={() => setControlFeedback(null)}
+              onRefresh={handleFetchScreenTime}
+              onSetCurfew={async (opts) => {
+                setControlFeedback(null);
+                await controllerRef.current?.setRemoteCurfew(opts);
+              }}
+              onSetSchoolMode={async (opts) => {
+                setControlFeedback(null);
+                await controllerRef.current?.setRemoteSchoolMode(opts);
+              }}
+              onSetAntiBypass={async (enabled) => {
+                setControlFeedback(null);
+                await controllerRef.current?.setRemoteAntiBypass(enabled);
+              }}
+              onSetLostMode={async (opts) => {
+                setControlFeedback(null);
+                await controllerRef.current?.setRemoteLostMode(opts);
+              }}
+              onClearSecurityEvents={async () => {
+                setControlFeedback(null);
+                await controllerRef.current?.clearRemoteSecurityEvents();
+              }}
+              onSetAdminPin={async (pin) => {
+                setControlFeedback(null);
+                await controllerRef.current?.setRemoteAdminPin(pin, true);
+              }}
+              onSetAiShield={async (opts) => {
+                setControlFeedback(null);
+                await controllerRef.current?.setRemoteAiShield(opts);
+              }}
+              onSetRemotePolicy={async (opts) => {
+                setControlFeedback(null);
+                await controllerRef.current?.setRemotePolicy(opts);
+              }}
+              onRespondUnpair={handleRespondUnpair}
+            />
+          ) : (
+            <div className="space-y-3.5">
+              <WallpaperCard
+                onApplyWallpaper={async (base64Jpeg, target) => {
+                  setControlFeedback(null);
+                  await controllerRef.current?.setRemoteWallpaper(base64Jpeg, target);
+                }}
+              />
+
+              <SystemCommandCard
+                data={systemStatus}
+                loading={systemStatusLoading}
+                onRefresh={async () => {
+                  setSystemStatusLoading(true);
+                  await controllerRef.current?.sendSystemControl({ action: 'get_status' });
+                  window.setTimeout(() => setSystemStatusLoading(false), 10000);
+                }}
+                onSetVolume={async (stream, percent) => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'set_volume',
+                    stream,
+                    percent,
+                  });
+                }}
+                onSetRinger={async (mode) => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'set_ringer',
+                    mode,
+                  });
+                }}
+                onSetBrightness={async (percent) => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'set_brightness',
+                    percent,
+                  });
+                }}
+                onLaunchApp={async (packageName) => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'launch_app',
+                    packageName,
+                  });
+                }}
+                onUninstallApp={async (packageName) => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'uninstall_app',
+                    packageName,
+                  });
+                }}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sentinelcam-pwa-v1.0.0';
+const CACHE_NAME = 'sentinelcam-pwa-v25.0.0';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -38,13 +38,15 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
 
-  // Network-first for HTML navigation to always load latest deployed release
+  // Network-first for HTML navigation so deploys never serve mismatched JS chunks
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put('./index.html', clone));
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put('./index.html', clone));
+          }
           return response;
         })
         .catch(() => caches.match('./index.html'))
@@ -52,7 +54,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Stale-while-revalidate for static assets
+  // Network-first for hashed JS/CSS chunks to prevent blank black screen after updates
+  if (url.pathname.includes('/assets/')) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response && response.status === 200 && response.type === 'basic') {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
+
+  // Stale-while-revalidate for icons/manifest
   event.respondWith(
     caches.match(request).then((cached) => {
       const networkFetch = fetch(request)
