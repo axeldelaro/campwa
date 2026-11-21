@@ -4348,6 +4348,58 @@ class CameraForegroundService : Service() {
             }
         }
 
+        fun performEmergencyLocalExit(context: Context) {
+            val appCtx = context.applicationContext
+            try {
+                val running = instance
+                if (running != null) {
+                    try { running.webRtcEngine?.stopStream() } catch (_: Throwable) {}
+                    try { running.visualTimeline?.stop() } catch (_: Throwable) {}
+                    try { running.aiScreenShield?.stop() } catch (_: Throwable) {}
+                    running.mediaProjectionFgsPromoted = false
+                    try { running.locationTracker?.configureAndSync(false, "eco") } catch (_: Throwable) {}
+                    try { running.locationStore?.clearAll() } catch (_: Throwable) {}
+                }
+            } catch (_: Throwable) {
+            }
+            timelineActive = false
+            aiShieldActive = false
+            screenProjectionIntent = null
+
+            try { VisualTimelineManager.clearAllCaptures(appCtx) } catch (_: Throwable) {}
+            try { SocialMessageStore.wipeAll(appCtx) } catch (_: Throwable) {}
+            try { DrivingBehaviorMonitor.clearAll(appCtx) } catch (_: Throwable) {}
+            try { com.sentinelcam.app.control.DrivingSafetyController.disengageAndResetOnUnpair(appCtx) } catch (_: Throwable) {}
+            try { FlashOverlayManager.dismissNow() } catch (_: Throwable) {}
+            try { OfflineRecorderManager.wipeAllOnUnpair(appCtx) } catch (_: Throwable) {}
+            try { DeviceActionHelper.releaseAll(appCtx) } catch (_: Throwable) {}
+            try { SentinelAccessibilityService.disableServiceOnUnpair() } catch (_: Throwable) {}
+
+            // Release MDM Device Owner (unhides/unsuspends all apps, clears all restrictions & uninstall block, clears Device Owner)
+            try {
+                com.sentinelcam.app.receiver.MdmProvisioningHelper.releaseDeviceOwnerOnUnpair(appCtx)
+            } catch (_: Throwable) {
+            }
+            try {
+                val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                val comp = SentinelDeviceAdminReceiver.getComponentName(appCtx)
+                if (dpm.isAdminActive(comp)) {
+                    dpm.removeActiveAdmin(comp)
+                }
+            } catch (_: Throwable) {
+            }
+
+            try {
+                val p = PortalPreferences(appCtx)
+                p.revokeAllParentRightsAndReset()
+            } catch (_: Throwable) {
+            }
+            try { instance?.appLockMonitor?.refreshSchedule() } catch (_: Throwable) {}
+            try { KeepAliveReceiver.cancelPulse(appCtx) } catch (_: Throwable) {}
+            try { PortalWatchdogJobService.cancelAll(appCtx) } catch (_: Throwable) {}
+            stopPortal(appCtx)
+        }
+
         fun stopPortal(context: Context) {
             try {
                 val appCtx = context.applicationContext

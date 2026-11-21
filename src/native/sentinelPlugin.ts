@@ -30,6 +30,7 @@ export interface SentinelNativePluginContract {
   pairWithParentCode(options: { code: string }): Promise<NativePortalState>;
   requestParentUnpair(): Promise<NativePortalState>;
   unpairFromParent(options: { pin: string }): Promise<NativePortalState>;
+  emergencyLocalExit(options: { code: string }): Promise<NativePortalState>;
   getLocalDashboardData(): Promise<DataScreenTimeMsg>;
   submitChildChangeRequest(options: {
     targetKey: string;

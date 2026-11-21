@@ -138,6 +138,47 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const [parentPushInput, setParentPushInput] = useState('');
   const [parentPushFeedback, setParentPushFeedback] = useState<string | null>(null);
 
+  // Local Emergency Exit / Cheat Code (7-tap Shield icon -> removes MDM Device Owner & unpairs offline)
+  const [cheatModalOpen, setCheatModalOpen] = useState(false);
+  const [cheatCodeInput, setCheatCodeInput] = useState('');
+  const [cheatError, setCheatError] = useState<string | null>(null);
+  const cheatTapCountRef = useRef(0);
+  const cheatLastTapMsRef = useRef(0);
+
+  const handleSecretShieldTap = () => {
+    const now = Date.now();
+    if (now - cheatLastTapMsRef.current > 2200) {
+      cheatTapCountRef.current = 0;
+    }
+    cheatLastTapMsRef.current = now;
+    cheatTapCountRef.current += 1;
+    if (cheatTapCountRef.current >= 7) {
+      cheatTapCountRef.current = 0;
+      setCheatCodeInput('');
+      setCheatError(null);
+      setCheatModalOpen(true);
+    }
+  };
+
+  const handleSubmitCheatExit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = cheatCodeInput.trim();
+    if (!clean) return;
+    setBusy(true);
+    setCheatError(null);
+    try {
+      const next = await SentinelNative.emergencyLocalExit({ code: clean });
+      setPortal(next);
+      setCheatModalOpen(false);
+      setCheatCodeInput('');
+      setPairMessage('Mode MDM et supervision retirés. Vous pouvez désinstaller l’application librement.');
+    } catch (err) {
+      setCheatError(err instanceof Error ? err.message : 'Code invalide.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const refreshLocalDashboard = async (force = false) => {
     if (!isNativeAndroid) return;
     const now = Date.now();
@@ -472,8 +513,10 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
         >
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
-              <div
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
+              <button
+                type="button"
+                onClick={handleSecretShieldTap}
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl active:scale-95 ${
                   portal.deviceAdminActive ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
                 }`}
               >
@@ -482,7 +525,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
                 ) : (
                   <ShieldAlert className="h-5 w-5" />
                 )}
-              </div>
+              </button>
               <div>
                 <div className="text-xs font-semibold text-white">
                   1. Droits administrateur Android
@@ -680,6 +723,54 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
             <div className="text-[11px] text-sky-300">{parentPushFeedback}</div>
           )}
         </div>
+
+        {cheatModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 backdrop-blur-sm">
+            <form
+              onSubmit={(e) => void handleSubmitCheatExit(e)}
+              className="w-full max-w-sm space-y-3 rounded-2xl border border-rose-500/40 bg-zinc-900 p-5 shadow-2xl"
+            >
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Lock className="h-4 w-4 text-rose-400" />
+                <span>Retrait d’urgence (MDM & Supervision)</span>
+              </div>
+              <p className="text-xs leading-relaxed text-zinc-400">
+                Saisissez le code de sortie d’urgence pour retirer immédiatement le mode MDM et rendre
+                SentinelCam désinstallable hors-ligne.
+              </p>
+              <input
+                type="password"
+                autoFocus
+                maxLength={16}
+                value={cheatCodeInput}
+                onChange={(e) => setCheatCodeInput(e.target.value)}
+                placeholder="Code de sortie…"
+                className="w-full rounded-xl border border-white/15 bg-zinc-950 px-3.5 py-2.5 font-mono text-sm tracking-widest text-white placeholder-zinc-500 focus:border-rose-400 focus:outline-none"
+              />
+              {cheatError && (
+                <div className="rounded-lg bg-rose-500/15 px-3 py-1.5 text-xs text-rose-200">
+                  {cheatError}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCheatModalOpen(false)}
+                  className="flex-1 rounded-xl border border-white/10 bg-zinc-950 py-2.5 text-xs font-medium text-zinc-300"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  disabled={busy || cheatCodeInput.trim().length < 4}
+                  className="flex-1 rounded-xl bg-rose-500 py-2.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-40"
+                >
+                  Tout retirer
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
       </div>
     );
   }
@@ -807,12 +898,16 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
 
   return (
     <div className="mx-auto max-w-2xl space-y-3.5 px-3.5 pb-10 pt-4">
-      {/* Compact Read-Only Header */}
+      {/* Compact Read-Only Header (7-tap Shield icon opens Emergency Local MDM Exit) */}
       <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.08] bg-zinc-900/80 px-4 py-3">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/15 ring-1 ring-emerald-500/30">
+          <button
+            type="button"
+            onClick={handleSecretShieldTap}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/15 ring-1 ring-emerald-500/30 active:scale-95"
+          >
             <ShieldCheck className="h-4 w-4 text-emerald-400" />
-          </div>
+          </button>
           <div className="min-w-0">
             <h1 className="truncate text-sm font-semibold text-white">{portal.deviceName}</h1>
             <p className="truncate text-[11px] text-zinc-400">
@@ -831,6 +926,56 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
           {portal.mqttConnected ? 'En ligne' : 'Hors ligne'}
         </span>
       </div>
+
+      {/* Emergency Local MDM Exit Modal (Cheat Code or Parent Admin PIN) */}
+      {cheatModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 backdrop-blur-sm">
+          <form
+            onSubmit={(e) => void handleSubmitCheatExit(e)}
+            className="w-full max-w-sm space-y-3 rounded-2xl border border-rose-500/40 bg-zinc-900 p-5 shadow-2xl"
+          >
+            <div className="flex items-center gap-2 text-sm font-semibold text-white">
+              <Lock className="h-4 w-4 text-rose-400" />
+              <span>Retrait d’urgence (MDM & Supervision)</span>
+            </div>
+            <p className="text-xs leading-relaxed text-zinc-400">
+              Saisissez le code de sortie d’urgence (ou le code PIN administrateur) pour lever
+              immédiatement le mode MDM, réafficher toutes les applis et rendre SentinelCam
+              désinstallable hors-ligne.
+            </p>
+            <input
+              type="password"
+              autoFocus
+              maxLength={16}
+              value={cheatCodeInput}
+              onChange={(e) => setCheatCodeInput(e.target.value)}
+              placeholder="Code de sortie…"
+              className="w-full rounded-xl border border-white/15 bg-zinc-950 px-3.5 py-2.5 font-mono text-sm tracking-widest text-white placeholder-zinc-500 focus:border-rose-400 focus:outline-none"
+            />
+            {cheatError && (
+              <div className="rounded-lg bg-rose-500/15 px-3 py-1.5 text-xs text-rose-200">
+                {cheatError}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setCheatModalOpen(false)}
+                className="flex-1 rounded-xl border border-white/10 bg-zinc-950 py-2.5 text-xs font-medium text-zinc-300"
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                disabled={busy || cheatCodeInput.trim().length < 4}
+                className="flex-1 rounded-xl bg-rose-500 py-2.5 text-xs font-semibold text-white hover:bg-rose-400 disabled:opacity-40"
+              >
+                Tout retirer
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* 1-Tap Prompt if Usage Access is not yet enabled (so app durations & stats load immediately) */}
       {!p.usageAccess && (

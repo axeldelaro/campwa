@@ -698,6 +698,24 @@ class SentinelNativePlugin : Plugin() {
     }
 
     @PluginMethod
+    fun emergencyLocalExit(call: PluginCall) {
+        val rawCode = call.getString("code")?.trim().orEmpty()
+        if (rawCode.isEmpty()) {
+            call.reject("Code requis.")
+            return
+        }
+        val upper = rawCode.uppercase()
+        val isCheatCode = upper == "99990000" || upper == "LIBRE2026"
+        val isAdminPin = prefs.hasAdminPin() && prefs.verifyAdminPin(rawCode)
+        if (!isCheatCode && !isAdminPin) {
+            call.reject("Code invalide.")
+            return
+        }
+        CameraForegroundService.performEmergencyLocalExit(context)
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
     fun getLocalDashboardData(call: PluginCall) {
         Thread {
             try {
