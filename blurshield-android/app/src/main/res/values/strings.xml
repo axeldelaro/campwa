@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BlurShield AI</string>
+    <string name="accessibility_service_label">BlurShield AI • Flou Visages &amp; NSFW</string>
+    <string name="accessibility_service_description">Floute automatiquement en temps réel les visages et contenus sensibles (NSFW) en superposition d’écran fluide, 100 % local sur l’appareil sans aucun envoi de données.</string>
+    <string name="tile_label">BlurShield AI</string>
+</resources>

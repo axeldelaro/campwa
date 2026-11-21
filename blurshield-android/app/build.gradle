@@ -1,0 +1,90 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+
+def keystorePath = System.getenv("KEYSTORE_PATH")
+def keystorePassword = System.getenv("KEYSTORE_PASSWORD") ?: "blurshield2026"
+def keyAliasName = System.getenv("KEY_ALIAS") ?: "blurshield"
+def keyAliasPassword = System.getenv("KEY_PASSWORD") ?: "blurshield2026"
+
+android {
+    namespace "com.blurshield.app"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.blurshield.app"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a", "x86_64"
+        }
+
+        aaptOptions {
+            noCompress "onnx", "tflite"
+        }
+    }
+
+    signingConfigs {
+        if (keystorePath != null && file(keystorePath).exists()) {
+            release {
+                storeFile file(keystorePath)
+                storePassword keystorePassword
+                keyAlias keyAliasName
+                keyPassword keyAliasPassword
+                v1SigningEnabled true
+                v2SigningEnabled true
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+        }
+        release {
+            minifyEnabled false
+            shrinkResources false
+            if (keystorePath != null && file(keystorePath).exists()) {
+                signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
+            }
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    packagingOptions {
+        resources {
+            excludes += [
+                'META-INF/DEPENDENCIES',
+                'META-INF/LICENSE',
+                'META-INF/LICENSE.txt',
+                'META-INF/NOTICE',
+                'META-INF/NOTICE.txt',
+                'META-INF/*.kotlin_module'
+            ]
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.core:core-ktx:1.12.0"
+    implementation "androidx.appcompat:appcompat:1.6.1"
+    implementation "com.google.android.material:material:1.11.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+
+    // On-Device Bundled Neural AI: ML Kit Face Contours + NudeNet v3 YOLOv8n ONNX
+    implementation "com.google.mlkit:face-detection:16.1.7"
+    implementation "com.microsoft.onnxruntime:onnxruntime-android:1.19.2"
+}

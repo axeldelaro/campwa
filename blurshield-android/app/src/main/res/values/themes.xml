@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.BlurShield" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowBackground">#09090B</item>
+        <item name="android:statusBarColor">#09090B</item>
+        <item name="android:navigationBarColor">#09090B</item>
+        <item name="colorPrimary">#10B981</item>
+        <item name="colorSecondary">#38BDF8</item>
+        <item name="colorSurface">#121216</item>
+    </style>
+</resources>
