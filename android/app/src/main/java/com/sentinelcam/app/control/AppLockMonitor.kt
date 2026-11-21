@@ -89,9 +89,10 @@ class AppLockMonitor(
             val rules = prefs.getActiveAppLockRules(now)
             val quotas = prefs.getAppQuotas()
             val groupQuotas = prefs.getAppGroupQuotas()
+            val drivingActive = DrivingSafetyController.isActive && DrivingSafetyController.isSuspendAppsEnabled(appContext)
 
             if (!lostEnabled && !antiBypass && pausedUntil == 0L && !curfewConfigured &&
-                schoolUntil == 0L && rules.isEmpty() && quotas.isEmpty() && groupQuotas.isEmpty()
+                schoolUntil == 0L && rules.isEmpty() && quotas.isEmpty() && groupQuotas.isEmpty() && !drivingActive
             ) {
                 // Zero rules configured -> 0% CPU idle
                 return
@@ -177,6 +178,15 @@ class AppLockMonitor(
                                         pkg = hit.packageName,
                                         appName = hit.appName,
                                         untilMs = hit.blockedUntilMs
+                                    )
+                                } else if (drivingActive && DrivingSafetyController.isPackageBlockedByDriving(appContext, fgPkg)) {
+                                    // 5b. Automatic Road / Trip Safety Mode (non-MDM fallback shield)
+                                    val thr = DrivingSafetyController.getThresholdKmh(appContext)
+                                    launchShield(
+                                        mode = AppBlockActivity.MODE_APP_LOCK,
+                                        pkg = fgPkg,
+                                        appName = "Mode Trajet (> $thr km/h)",
+                                        untilMs = now + 60_000L
                                     )
                                 } else if (quotas.isNotEmpty() || groupQuotas.isNotEmpty()) {
                                     // 6. Daily Per-App Quota & Group Pool Quotas (persist automatically every day until disabled;

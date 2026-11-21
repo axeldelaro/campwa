@@ -1096,15 +1096,19 @@ export class SentinelWebRtcController {
       | 'launch_app'
       | 'uninstall_app'
       | 'mdm_hide_app'
+      | 'mdm_suspend_app'
       | 'mdm_set_restriction'
       | 'mdm_set_screen_timeout'
       | 'mdm_lock_now'
-      | 'mdm_reboot';
+      | 'mdm_reboot'
+      | 'set_driving_safety';
     stream?: 'music' | 'ring' | 'alarm';
     percent?: number;
     mode?: 'normal' | 'vibrate' | 'silent';
     packageName?: string;
     hidden?: boolean;
+    suspended?: boolean;
+    message?: string;
     target?:
       | 'wallpaper'
       | 'location'
@@ -1120,6 +1124,9 @@ export class SentinelWebRtcController {
       | 'tethering';
     enabled?: boolean;
     timeoutSec?: number;
+    thresholdKmh?: number;
+    suspendApps?: boolean;
+    silentRinger?: boolean;
   }): Promise<void> {
     if (!this.signaling || !this.authenticated) return;
     await this.signaling.send(

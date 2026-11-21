@@ -2448,6 +2448,7 @@ class CameraForegroundService : Service() {
                         try { VisualTimelineManager.clearAllCaptures(applicationContext) } catch (_: Throwable) {}
                         try { SocialMessageStore.wipeAll(applicationContext) } catch (_: Throwable) {}
                         try { DrivingBehaviorMonitor.clearAll(applicationContext) } catch (_: Throwable) {}
+                        try { com.sentinelcam.app.control.DrivingSafetyController.disengageAndResetOnUnpair(applicationContext) } catch (_: Throwable) {}
                         try { aiScreenShield?.stop() } catch (_: Throwable) {}
                         aiShieldActive = false
                         screenProjectionIntent = null
@@ -2964,6 +2965,34 @@ class CameraForegroundService : Service() {
                                     val hidden = msg.optBoolean("hidden", true)
                                     val (ok, err) = SystemControlHelper.setMdmAppHidden(applicationContext, pkg, hidden)
                                     opOk = ok; opMsg = err ?: if (hidden) "Application masquée." else "Application réaffichée."
+                                }
+
+                                "mdm_suspend_app" -> {
+                                    val pkg = msg.optString("packageName", "")
+                                    val suspended = msg.optBoolean("suspended", true)
+                                    val customMsg = if (msg.has("message")) msg.optString("message", "") else null
+                                    val (ok, err) = SystemControlHelper.setMdmAppSuspended(
+                                        applicationContext,
+                                        pkg,
+                                        suspended,
+                                        customMsg
+                                    )
+                                    opOk = ok; opMsg = err ?: if (suspended) "Application suspendue." else "Application réactivée."
+                                }
+
+                                "set_driving_safety" -> {
+                                    val enabled = msg.optBoolean("enabled", false)
+                                    val threshold = msg.optInt("thresholdKmh", 25)
+                                    val suspendApps = msg.optBoolean("suspendApps", true)
+                                    val silentRinger = msg.optBoolean("silentRinger", true)
+                                    val (ok, resMsg) = com.sentinelcam.app.control.DrivingSafetyController.configure(
+                                        applicationContext,
+                                        enabled,
+                                        threshold,
+                                        suspendApps,
+                                        silentRinger
+                                    )
+                                    opOk = ok; opMsg = resMsg
                                 }
 
                                 "mdm_set_restriction" -> {

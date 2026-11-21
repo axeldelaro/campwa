@@ -127,6 +127,12 @@ class DrivingBehaviorMonitor(
         lastSpeedKmh = speedKmh
         lastLocationTs = now
 
+        // Automatic Road / Trip Safety Mode (parent-configurable speed threshold)
+        try {
+            com.sentinelcam.app.control.DrivingSafetyController.onSpeedSample(appContext, speedKmh, accuracy)
+        } catch (_: Throwable) {
+        }
+
         // 1. Dynamic Battery Gate: ONLY arm IMU sensors while in a moving vehicle >= 18 km/h!
         if (speedKmh >= 18f && accuracy <= 55f) {
             mainHandler.removeCallbacks(disarmImuRunnable)

@@ -2948,6 +2948,23 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                     hidden,
                   });
                 }}
+                onMdmSetAppSuspended={async (packageName, suspended, message) => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'mdm_suspend_app',
+                    packageName,
+                    suspended,
+                    message,
+                  });
+                }}
+                onSetDrivingSafety={async (opts) => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'set_driving_safety',
+                    enabled: opts.enabled,
+                    thresholdKmh: opts.thresholdKmh,
+                    suspendApps: opts.suspendApps,
+                    silentRinger: opts.silentRinger,
+                  });
+                }}
                 onMdmSetRestriction={async (target, enabled) => {
                   await controllerRef.current?.sendSystemControl({
                     action: 'mdm_set_restriction',

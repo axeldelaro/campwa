@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   CameraOff,
+  Car,
   ChevronDown,
   ChevronUp,
   Clock,
@@ -12,6 +13,8 @@ import {
   Image as ImageIcon,
   Lock,
   MapPin,
+  PauseCircle,
+  PlayCircle,
   Power,
   RefreshCw,
   Search,
@@ -35,10 +38,17 @@ interface SystemCommandCardProps {
   onLaunchApp: (packageName: string) => Promise<void>;
   onUninstallApp: (packageName: string) => Promise<void>;
   onMdmSetAppHidden?: (packageName: string, hidden: boolean) => Promise<void>;
+  onMdmSetAppSuspended?: (packageName: string, suspended: boolean, message?: string) => Promise<void>;
   onMdmSetRestriction?: (target: MdmRestrictionTarget, enabled: boolean) => Promise<void>;
   onMdmSetScreenTimeout?: (timeoutSec: number) => Promise<void>;
   onMdmLockNow?: () => Promise<void>;
   onMdmReboot?: () => Promise<void>;
+  onSetDrivingSafety?: (opts: {
+    enabled: boolean;
+    thresholdKmh: number;
+    suspendApps: boolean;
+    silentRinger: boolean;
+  }) => Promise<void>;
 }
 
 const TIMEOUT_OPTIONS: Array<{ sec: number; label: string }> = [
@@ -61,16 +71,30 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
   onLaunchApp,
   onUninstallApp,
   onMdmSetAppHidden,
+  onMdmSetAppSuspended,
   onMdmSetRestriction,
   onMdmSetScreenTimeout,
   onMdmLockNow,
   onMdmReboot,
+  onSetDrivingSafety,
 }) => {
   const [open, setOpen] = useState(defaultOpen);
   const [appFilter, setAppFilter] = useState('');
   const [onlySideloaded, setOnlySideloaded] = useState(false);
   const [onlyHidden, setOnlyHidden] = useState(false);
+  const [onlySuspended, setOnlySuspended] = useState(false);
+  const [suspendMsg, setSuspendMsg] = useState('');
   const [confirmReboot, setConfirmReboot] = useState(false);
+  const [localSpeedThreshold, setLocalSpeedThreshold] = useState(25);
+
+  useEffect(() => {
+    if (data?.mdmSuspendMessage !== undefined) {
+      setSuspendMsg(data.mdmSuspendMessage);
+    }
+    if (data?.drivingSafety?.thresholdKmh) {
+      setLocalSpeedThreshold(data.drivingSafety.thresholdKmh);
+    }
+  }, [data?.mdmSuspendMessage, data?.drivingSafety?.thresholdKmh]);
 
   useEffect(() => {
     if (open && !data && !loading) {
@@ -88,11 +112,21 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
 
   const apps = data?.installedApps ?? [];
   const isMdm = Boolean(data?.mdmDeviceOwner);
+  const driving = data?.drivingSafety ?? {
+    enabled: false,
+    thresholdKmh: localSpeedThreshold,
+    suspendApps: true,
+    silentRinger: true,
+    activeNow: false,
+    lastSpeedKmh: 0,
+  };
   const sideloadCount = apps.filter((a) => a.sideloaded).length;
   const hiddenCount = apps.filter((a) => a.mdmHidden).length;
+  const suspendedCount = apps.filter((a) => a.mdmSuspended).length;
   const filteredApps = apps.filter((a) => {
     if (onlySideloaded && !a.sideloaded) return false;
     if (onlyHidden && !a.mdmHidden) return false;
+    if (onlySuspended && !a.mdmSuspended) return false;
     const q = appFilter.trim().toLowerCase();
     if (!q) return true;
     return a.appName.toLowerCase().includes(q) || a.packageName.toLowerCase().includes(q);
@@ -292,6 +326,140 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                 </div>
               </div>
 
+              {/* ==================== MODE TRAJET / SÉCURITÉ ROUTE (SEUIL VITESSE RÉGLABLE) ==================== */}
+              <div className="space-y-3 rounded-xl border border-sky-500/25 bg-zinc-950/90 p-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
+                    <Car className="h-3.5 w-3.5 text-sky-400" />
+                    <span>Mode Trajet automatique (Sécurité route)</span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!onSetDrivingSafety}
+                    onClick={() =>
+                      void onSetDrivingSafety?.({
+                        enabled: !driving.enabled,
+                        thresholdKmh: localSpeedThreshold,
+                        suspendApps: driving.suspendApps,
+                        silentRinger: driving.silentRinger,
+                      })
+                    }
+                    className={`rounded-full px-3 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                      driving.enabled
+                        ? 'bg-sky-400 text-zinc-950'
+                        : 'border border-white/10 bg-zinc-900 text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    {driving.enabled ? (driving.activeNow ? `ACTIF · ${driving.lastSpeedKmh} km/h` : 'ACTIF') : 'INACTIF'}
+                  </button>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300">Seuil de vitesse d’activation</span>
+                    <span className="font-mono font-semibold text-sky-300">{localSpeedThreshold} km/h</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={10}
+                    max={130}
+                    step={5}
+                    value={localSpeedThreshold}
+                    onChange={(e) => setLocalSpeedThreshold(parseInt(e.target.value, 10))}
+                    onMouseUp={(e) => {
+                      const val = parseInt((e.target as HTMLInputElement).value, 10);
+                      void onSetDrivingSafety?.({
+                        enabled: driving.enabled,
+                        thresholdKmh: val,
+                        suspendApps: driving.suspendApps,
+                        silentRinger: driving.silentRinger,
+                      });
+                    }}
+                    onTouchEnd={(e) => {
+                      const val = parseInt((e.target as HTMLInputElement).value, 10);
+                      void onSetDrivingSafety?.({
+                        enabled: driving.enabled,
+                        thresholdKmh: val,
+                        suspendApps: driving.suspendApps,
+                        silentRinger: driving.silentRinger,
+                      });
+                    }}
+                    className="w-full accent-sky-400"
+                  />
+                  <div className="grid grid-cols-4 gap-1">
+                    {[15, 25, 50, 80].map((spd) => (
+                      <button
+                        key={spd}
+                        type="button"
+                        disabled={!onSetDrivingSafety}
+                        onClick={() => {
+                          setLocalSpeedThreshold(spd);
+                          void onSetDrivingSafety?.({
+                            enabled: driving.enabled,
+                            thresholdKmh: spd,
+                            suspendApps: driving.suspendApps,
+                            silentRinger: driving.silentRinger,
+                          });
+                        }}
+                        className={`rounded-lg border py-1 text-[10px] font-medium transition disabled:opacity-40 ${
+                          localSpeedThreshold === spd
+                            ? 'border-sky-400 bg-sky-500/20 text-sky-100'
+                            : 'border-white/[0.07] bg-zinc-900 text-zinc-400 hover:text-white'
+                        }`}
+                      >
+                        {spd} km/h
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    disabled={!onSetDrivingSafety}
+                    onClick={() =>
+                      void onSetDrivingSafety?.({
+                        enabled: driving.enabled,
+                        thresholdKmh: localSpeedThreshold,
+                        suspendApps: !driving.suspendApps,
+                        silentRinger: driving.silentRinger,
+                      })
+                    }
+                    className={`flex items-center justify-between rounded-xl border px-3 py-2 text-[11px] transition disabled:opacity-40 ${
+                      driving.suspendApps
+                        ? 'border-sky-500/45 bg-sky-500/15 text-sky-100'
+                        : 'border-white/[0.07] bg-zinc-900 text-zinc-400'
+                    }`}
+                  >
+                    <span>Suspendre réseaux / vidéos / jeux</span>
+                    <span className="font-semibold">{driving.suspendApps ? 'ON' : 'OFF'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!onSetDrivingSafety}
+                    onClick={() =>
+                      void onSetDrivingSafety?.({
+                        enabled: driving.enabled,
+                        thresholdKmh: localSpeedThreshold,
+                        suspendApps: driving.suspendApps,
+                        silentRinger: !driving.silentRinger,
+                      })
+                    }
+                    className={`flex items-center justify-between rounded-xl border px-3 py-2 text-[11px] transition disabled:opacity-40 ${
+                      driving.silentRinger
+                        ? 'border-sky-500/45 bg-sky-500/15 text-sky-100'
+                        : 'border-white/[0.07] bg-zinc-900 text-zinc-400'
+                    }`}
+                  >
+                    <span>Mode vibreur en roulant</span>
+                    <span className="font-semibold">{driving.silentRinger ? 'ON' : 'OFF'}</span>
+                  </button>
+                </div>
+                <p className="text-[10px] text-zinc-500">
+                  S’active dès que la vitesse dépasse {localSpeedThreshold} km/h (garde Appels, Urgences & GPS actifs) et rétablit automatiquement tout 45 s après l’arrêt.
+                </p>
+              </div>
+
               {/* Hardware Telemetry Strip */}
               <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
                 <div className="rounded-xl border border-white/[0.06] bg-zinc-950/75 p-2.5">
@@ -402,7 +570,20 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                   <span className="text-xs font-semibold text-white">
                     Applications ({apps.length})
                   </span>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {suspendedCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setOnlySuspended((v) => !v)}
+                        className={`rounded-lg border px-2 py-0.5 text-[10px] font-medium ${
+                          onlySuspended
+                            ? 'border-sky-400 bg-sky-500/20 text-sky-200'
+                            : 'border-white/10 bg-zinc-950 text-sky-300'
+                        }`}
+                      >
+                        Suspendues ({suspendedCount})
+                      </button>
+                    )}
                     {hiddenCount > 0 && (
                       <button
                         type="button"
@@ -432,6 +613,17 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                   </div>
                 </div>
 
+                {isMdm && onMdmSetAppSuspended && (
+                  <input
+                    type="text"
+                    maxLength={140}
+                    value={suspendMsg}
+                    onChange={(e) => setSuspendMsg(e.target.value)}
+                    placeholder="Message personnalisé sur appli suspendue (ex. Finis tes devoirs d’abord)"
+                    className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-1.5 text-[11px] text-white placeholder-zinc-500 focus:border-sky-400 focus:outline-none"
+                  />
+                )}
+
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
                   <input
@@ -448,9 +640,14 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                     <div key={app.packageName} className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className={`truncate font-medium ${app.mdmHidden ? 'text-zinc-500 line-through' : 'text-white'}`}>
+                          <span className={`truncate font-medium ${app.mdmHidden || app.mdmSuspended ? 'text-zinc-500 line-through' : 'text-white'}`}>
                             {app.appName}
                           </span>
+                          {app.mdmSuspended && (
+                            <span className="rounded bg-sky-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-sky-200">
+                              Suspendue
+                            </span>
+                          )}
                           {app.mdmHidden && (
                             <span className="rounded bg-purple-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-purple-200">
                               Masquée MDM
@@ -469,6 +666,30 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                       </div>
 
                       <div className="flex shrink-0 items-center gap-1">
+                        {isMdm && onMdmSetAppSuspended && !app.mdmHidden && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void onMdmSetAppSuspended(
+                                app.packageName,
+                                !app.mdmSuspended,
+                                suspendMsg.trim() || undefined
+                              )
+                            }
+                            className={`rounded-lg border p-1.5 transition ${
+                              app.mdmSuspended
+                                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+                                : 'border-sky-500/30 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20'
+                            }`}
+                            title={app.mdmSuspended ? 'Réactiver l’application' : 'Suspendre au niveau système (MDM)'}
+                          >
+                            {app.mdmSuspended ? (
+                              <PlayCircle className="h-3.5 w-3.5" />
+                            ) : (
+                              <PauseCircle className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        )}
                         {isMdm && onMdmSetAppHidden && (
                           <button
                             type="button"

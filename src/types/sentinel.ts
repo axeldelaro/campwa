@@ -1293,6 +1293,16 @@ export interface InstalledAppInventoryItem {
   sideloaded: boolean;
   hasLauncher: boolean;
   mdmHidden?: boolean;
+  mdmSuspended?: boolean;
+}
+
+export interface DrivingSafetyState {
+  enabled: boolean;
+  thresholdKmh: number;
+  suspendApps: boolean;
+  silentRinger: boolean;
+  activeNow: boolean;
+  lastSpeedKmh: number;
 }
 
 export type MdmRestrictionTarget =
@@ -1320,18 +1330,25 @@ export interface CmdSystemControlMsg {
     | 'launch_app'
     | 'uninstall_app'
     | 'mdm_hide_app'
+    | 'mdm_suspend_app'
     | 'mdm_set_restriction'
     | 'mdm_set_screen_timeout'
     | 'mdm_lock_now'
-    | 'mdm_reboot';
+    | 'mdm_reboot'
+    | 'set_driving_safety';
   stream?: 'music' | 'ring' | 'alarm';
   percent?: number;
   mode?: 'normal' | 'vibrate' | 'silent';
   packageName?: string;
   hidden?: boolean;
+  suspended?: boolean;
+  message?: string;
   target?: MdmRestrictionTarget;
   enabled?: boolean;
   timeoutSec?: number;
+  thresholdKmh?: number;
+  suspendApps?: boolean;
+  silentRinger?: boolean;
   ts: number;
 }
 
@@ -1366,6 +1383,8 @@ export interface DataSystemStatusMsg {
   mdmBlockScreenshots?: boolean;
   mdmDisableCamera?: boolean;
   mdmBlockTethering?: boolean;
+  mdmSuspendMessage?: string;
+  drivingSafety?: DrivingSafetyState;
   installedApps: InstalledAppInventoryItem[];
   ts: number;
 }

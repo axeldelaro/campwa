@@ -129,6 +129,8 @@ object SystemControlHelper {
             put("mdmBlockScreenshots", mdmState.optBoolean("blockScreenshots", false))
             put("mdmDisableCamera", mdmState.optBoolean("disableCamera", false))
             put("mdmBlockTethering", mdmState.optBoolean("blockTethering", false))
+            put("mdmSuspendMessage", getMdmSuspendMessage(appCtx))
+            put("drivingSafety", DrivingSafetyController.readStateJson(appCtx))
             put("installedApps", appsArr)
         }
     }
@@ -161,6 +163,7 @@ object SystemControlHelper {
         val admin = SentinelDeviceAdminReceiver.getComponentName(context)
         val isDo = try { dpm?.isDeviceOwnerApp(context.packageName) == true } catch (_: Throwable) { false }
         val hiddenTracked = getTrackedHiddenPackages(context)
+        val suspendedTracked = getTrackedSuspendedPackages(context)
         val out = ArrayList<JSONObject>()
         try {
             val flags = if (isDo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -178,6 +181,12 @@ object SystemControlHelper {
                 } catch (_: Throwable) {
                     false
                 } || hiddenTracked.contains(pkg))
+
+                val isMdmSuspended = isDo && (try {
+                    dpm?.isPackageSuspended(admin, pkg) == true
+                } catch (_: Throwable) {
+                    false
+                } || suspendedTracked.contains(pkg))
 
                 val isSystem = (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                 val isUpdatedSystem = (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
@@ -220,15 +229,16 @@ object SystemControlHelper {
                         put("sideloaded", sideloaded)
                         put("hasLauncher", hasLauncher)
                         put("mdmHidden", isMdmHidden)
+                        put("mdmSuspended", isMdmSuspended)
                     }
                 )
             }
         } catch (_: Throwable) {
         }
 
-        // Show MDM-hidden, sideloaded, and most recently installed apps first!
+        // Show MDM-hidden, MDM-suspended, sideloaded, and most recently installed apps first!
         out.sortWith(
-            compareByDescending<JSONObject> { it.optBoolean("mdmHidden") }
+            compareByDescending<JSONObject> { it.optBoolean("mdmHidden") || it.optBoolean("mdmSuspended") }
                 .thenByDescending { it.optBoolean("sideloaded") }
                 .thenByDescending { !it.optBoolean("hasLauncher") && !it.optBoolean("isSystem") }
                 .thenByDescending { it.optLong("installedAt") }
@@ -244,6 +254,8 @@ object SystemControlHelper {
 
     private const val MDM_PREFS_NAME = "sentinel_mdm_controls_v1"
     private const val KEY_MDM_HIDDEN_PKGS = "hidden_pkgs"
+    private const val KEY_MDM_SUSPENDED_PKGS = "suspended_pkgs"
+    private const val KEY_MDM_SUSPEND_MSG = "suspend_message"
     private val PROTECTED_SYSTEM_PACKAGES = setOf(
         "android",
         "com.android.systemui",
@@ -261,6 +273,78 @@ object SystemControlHelper {
     private fun saveTrackedHiddenPackages(context: Context, set: Set<String>) {
         val sp = context.applicationContext.getSharedPreferences(MDM_PREFS_NAME, Context.MODE_PRIVATE)
         sp.edit().putStringSet(KEY_MDM_HIDDEN_PKGS, HashSet(set)).apply()
+    }
+
+    fun getTrackedSuspendedPackages(context: Context): MutableSet<String> {
+        val sp = context.applicationContext.getSharedPreferences(MDM_PREFS_NAME, Context.MODE_PRIVATE)
+        return HashSet(sp.getStringSet(KEY_MDM_SUSPENDED_PKGS, emptySet()) ?: emptySet())
+    }
+
+    private fun saveTrackedSuspendedPackages(context: Context, set: Set<String>) {
+        val sp = context.applicationContext.getSharedPreferences(MDM_PREFS_NAME, Context.MODE_PRIVATE)
+        sp.edit().putStringSet(KEY_MDM_SUSPENDED_PKGS, HashSet(set)).apply()
+    }
+
+    fun getMdmSuspendMessage(context: Context): String {
+        val sp = context.applicationContext.getSharedPreferences(MDM_PREFS_NAME, Context.MODE_PRIVATE)
+        return sp.getString(KEY_MDM_SUSPEND_MSG, "").orEmpty()
+    }
+
+    /**
+     * #2 (List 1): Native OS-level App Suspension via DevicePolicyManager.setPackagesSuspended().
+     * Greys out the app in Android launcher immediately (0% battery, zero bypass) and stores
+     * the Parent's custom message (also displayed via short support message on Android 7+).
+     */
+    fun setMdmAppSuspended(
+        context: Context,
+        packageName: String,
+        suspended: Boolean,
+        customMessage: String? = null
+    ): Pair<Boolean, String?> {
+        val appCtx = context.applicationContext
+        if (packageName.isBlank() || packageName == appCtx.packageName) {
+            return Pair(false, "Impossible de suspendre SentinelCam.")
+        }
+        if (PROTECTED_SYSTEM_PACKAGES.contains(packageName)) {
+            return Pair(false, "Application système critique non suspendable.")
+        }
+        val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+            ?: return Pair(false, "Gestionnaire MDM indisponible.")
+        val admin = SentinelDeviceAdminReceiver.getComponentName(appCtx)
+        if (!dpm.isDeviceOwnerApp(appCtx.packageName)) {
+            return Pair(false, "Disponible uniquement sur un appareil enrôlé par QR Code Appareil Géré (MDM).")
+        }
+        return try {
+            val cleanMsg = customMessage?.trim()?.take(180)
+            if (cleanMsg != null) {
+                val sp = appCtx.getSharedPreferences(MDM_PREFS_NAME, Context.MODE_PRIVATE)
+                sp.edit().putString(KEY_MDM_SUSPEND_MSG, cleanMsg).apply()
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        dpm.setShortSupportMessage(
+                            admin,
+                            if (cleanMsg.isNotEmpty()) cleanMsg else null
+                        )
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+
+            val failed = dpm.setPackagesSuspended(admin, arrayOf(packageName), suspended)
+            if (failed.isEmpty()) {
+                val tracked = getTrackedSuspendedPackages(appCtx)
+                if (suspended) tracked.add(packageName) else tracked.remove(packageName)
+                saveTrackedSuspendedPackages(appCtx, tracked)
+                Pair(
+                    true,
+                    if (suspended) "Application suspendue au niveau système." else "Application réactivée."
+                )
+            } else {
+                Pair(false, "Android n’a pas pu suspendre cette application.")
+            }
+        } catch (t: Throwable) {
+            Pair(false, "Suspension MDM impossible : ${t.message}")
+        }
     }
 
     fun readMdmControlState(context: Context): JSONObject {
@@ -499,6 +583,23 @@ object SystemControlHelper {
             }
         }
         saveTrackedHiddenPackages(appCtx, emptySet())
+
+        // Unsuspend all manually suspended apps + disengage Mode Trajet
+        val suspended = getTrackedSuspendedPackages(appCtx)
+        if (suspended.isNotEmpty()) {
+            try {
+                dpm.setPackagesSuspended(admin, suspended.toTypedArray(), false)
+            } catch (_: Throwable) {
+            }
+        }
+        saveTrackedSuspendedPackages(appCtx, emptySet())
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                dpm.setShortSupportMessage(admin, null)
+            }
+        } catch (_: Throwable) {
+        }
+        DrivingSafetyController.disengageAndResetOnUnpair(appCtx)
 
         // Release ALL MDM locks cleanly on unpair
         val allRestrictions = listOf(
