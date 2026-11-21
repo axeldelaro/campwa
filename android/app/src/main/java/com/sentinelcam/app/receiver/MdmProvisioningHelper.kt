@@ -187,6 +187,10 @@ object MdmProvisioningHelper {
         try {
             if (dpm.isDeviceOwnerApp(appCtx.packageName)) {
                 try {
+                    com.sentinelcam.app.control.SystemControlHelper.clearAllMdmControlsOnUnpair(appCtx)
+                } catch (_: Throwable) {
+                }
+                try {
                     dpm.setUninstallBlocked(admin, appCtx.packageName, false)
                 } catch (_: Throwable) {
                 }

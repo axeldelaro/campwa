@@ -2958,6 +2958,36 @@ class CameraForegroundService : Service() {
                                     val (ok, err) = SystemControlHelper.promptUninstallApp(applicationContext, prefs, pkg)
                                     opOk = ok; opMsg = err ?: "Demande de désinstallation envoyée."
                                 }
+
+                                "mdm_hide_app" -> {
+                                    val pkg = msg.optString("packageName", "")
+                                    val hidden = msg.optBoolean("hidden", true)
+                                    val (ok, err) = SystemControlHelper.setMdmAppHidden(applicationContext, pkg, hidden)
+                                    opOk = ok; opMsg = err ?: if (hidden) "Application masquée." else "Application réaffichée."
+                                }
+
+                                "mdm_set_restriction" -> {
+                                    val target = msg.optString("target", "")
+                                    val enabled = msg.optBoolean("enabled", false)
+                                    val (ok, err) = SystemControlHelper.setMdmRestriction(applicationContext, target, enabled)
+                                    opOk = ok; opMsg = err ?: "Verrouillage MDM mis à jour."
+                                }
+
+                                "mdm_set_screen_timeout" -> {
+                                    val sec = msg.optInt("timeoutSec", 0)
+                                    val (ok, err) = SystemControlHelper.setMdmMaxScreenTimeout(applicationContext, sec)
+                                    opOk = ok; opMsg = err ?: "Mise en veille MDM mise à jour."
+                                }
+
+                                "mdm_lock_now" -> {
+                                    val (ok, err) = SystemControlHelper.mdmLockNow(applicationContext)
+                                    opOk = ok; opMsg = err ?: "Écran verrouillé."
+                                }
+
+                                "mdm_reboot" -> {
+                                    val (ok, err) = SystemControlHelper.mdmRebootDevice(applicationContext)
+                                    opOk = ok; opMsg = err ?: "Redémarrage lancé."
+                                }
                             }
 
                             val snap = SystemControlHelper.readSystemSnapshot(applicationContext)

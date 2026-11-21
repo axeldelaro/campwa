@@ -1088,11 +1088,38 @@ export class SentinelWebRtcController {
   }
 
   public async sendSystemControl(opts: {
-    action: 'get_status' | 'set_volume' | 'set_ringer' | 'set_brightness' | 'launch_app' | 'uninstall_app';
+    action:
+      | 'get_status'
+      | 'set_volume'
+      | 'set_ringer'
+      | 'set_brightness'
+      | 'launch_app'
+      | 'uninstall_app'
+      | 'mdm_hide_app'
+      | 'mdm_set_restriction'
+      | 'mdm_set_screen_timeout'
+      | 'mdm_lock_now'
+      | 'mdm_reboot';
     stream?: 'music' | 'ring' | 'alarm';
     percent?: number;
     mode?: 'normal' | 'vibrate' | 'silent';
     packageName?: string;
+    hidden?: boolean;
+    target?:
+      | 'wallpaper'
+      | 'location'
+      | 'date_time'
+      | 'unknown_sources'
+      | 'install_apps'
+      | 'uninstall_apps'
+      | 'safe_boot'
+      | 'factory_reset'
+      | 'usb_debug'
+      | 'screenshots'
+      | 'camera'
+      | 'tethering';
+    enabled?: boolean;
+    timeoutSec?: number;
   }): Promise<void> {
     if (!this.signaling || !this.authenticated) return;
     await this.signaling.send(

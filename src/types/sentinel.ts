@@ -1292,16 +1292,46 @@ export interface InstalledAppInventoryItem {
   isSystem: boolean;
   sideloaded: boolean;
   hasLauncher: boolean;
+  mdmHidden?: boolean;
 }
+
+export type MdmRestrictionTarget =
+  | 'wallpaper'
+  | 'location'
+  | 'date_time'
+  | 'unknown_sources'
+  | 'install_apps'
+  | 'uninstall_apps'
+  | 'safe_boot'
+  | 'factory_reset'
+  | 'usb_debug'
+  | 'screenshots'
+  | 'camera'
+  | 'tethering';
 
 export interface CmdSystemControlMsg {
   type: 'CMD_SYSTEM_CONTROL';
   requestId: string;
-  action: 'get_status' | 'set_volume' | 'set_ringer' | 'set_brightness' | 'launch_app' | 'uninstall_app';
+  action:
+    | 'get_status'
+    | 'set_volume'
+    | 'set_ringer'
+    | 'set_brightness'
+    | 'launch_app'
+    | 'uninstall_app'
+    | 'mdm_hide_app'
+    | 'mdm_set_restriction'
+    | 'mdm_set_screen_timeout'
+    | 'mdm_lock_now'
+    | 'mdm_reboot';
   stream?: 'music' | 'ring' | 'alarm';
   percent?: number;
   mode?: 'normal' | 'vibrate' | 'silent';
   packageName?: string;
+  hidden?: boolean;
+  target?: MdmRestrictionTarget;
+  enabled?: boolean;
+  timeoutSec?: number;
   ts: number;
 }
 
@@ -1322,6 +1352,20 @@ export interface DataSystemStatusMsg {
   wifiSummary: string;
   androidVersion: string;
   model: string;
+  mdmDeviceOwner?: boolean;
+  mdmLockWallpaper?: boolean;
+  mdmLockLocation?: boolean;
+  mdmMaxScreenTimeoutSec?: number;
+  mdmLockDateTime?: boolean;
+  mdmBlockUnknownSources?: boolean;
+  mdmBlockInstallApps?: boolean;
+  mdmBlockUninstallApps?: boolean;
+  mdmBlockSafeBoot?: boolean;
+  mdmBlockFactoryReset?: boolean;
+  mdmBlockUsbDebug?: boolean;
+  mdmBlockScreenshots?: boolean;
+  mdmDisableCamera?: boolean;
+  mdmBlockTethering?: boolean;
   installedApps: InstalledAppInventoryItem[];
   ts: number;
 }

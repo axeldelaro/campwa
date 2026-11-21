@@ -1,6 +1,7 @@
 package com.sentinelcam.app.control
 
 import android.app.ActivityManager
+import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -15,7 +16,9 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import android.os.UserManager
 import android.provider.Settings
+import com.sentinelcam.app.receiver.SentinelDeviceAdminReceiver
 import com.sentinelcam.app.storage.PortalPreferences
 import org.json.JSONArray
 import org.json.JSONObject
@@ -95,6 +98,7 @@ object SystemControlHelper {
 
         val wifiLabel = readWifiSummary(appCtx)
         val appsArr = readInstalledUserApps(appCtx)
+        val mdmState = readMdmControlState(appCtx)
 
         return JSONObject().apply {
             put("volumeMusic", musicPct)
@@ -111,6 +115,20 @@ object SystemControlHelper {
             put("wifiSummary", wifiLabel)
             put("androidVersion", Build.VERSION.RELEASE ?: "?")
             put("model", "${Build.MANUFACTURER.orEmpty()} ${Build.MODEL.orEmpty()}".trim())
+            put("mdmDeviceOwner", mdmState.optBoolean("deviceOwner", false))
+            put("mdmLockWallpaper", mdmState.optBoolean("lockWallpaper", false))
+            put("mdmLockLocation", mdmState.optBoolean("lockLocation", false))
+            put("mdmMaxScreenTimeoutSec", mdmState.optInt("maxScreenTimeoutSec", 0))
+            put("mdmLockDateTime", mdmState.optBoolean("lockDateTime", false))
+            put("mdmBlockUnknownSources", mdmState.optBoolean("blockUnknownSources", false))
+            put("mdmBlockInstallApps", mdmState.optBoolean("blockInstallApps", false))
+            put("mdmBlockUninstallApps", mdmState.optBoolean("blockUninstallApps", false))
+            put("mdmBlockSafeBoot", mdmState.optBoolean("blockSafeBoot", false))
+            put("mdmBlockFactoryReset", mdmState.optBoolean("blockFactoryReset", false))
+            put("mdmBlockUsbDebug", mdmState.optBoolean("blockUsbDebug", false))
+            put("mdmBlockScreenshots", mdmState.optBoolean("blockScreenshots", false))
+            put("mdmDisableCamera", mdmState.optBoolean("disableCamera", false))
+            put("mdmBlockTethering", mdmState.optBoolean("blockTethering", false))
             put("installedApps", appsArr)
         }
     }
@@ -139,19 +157,34 @@ object SystemControlHelper {
 
     private fun readInstalledUserApps(context: Context): JSONArray {
         val pm = context.packageManager
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+        val admin = SentinelDeviceAdminReceiver.getComponentName(context)
+        val isDo = try { dpm?.isDeviceOwnerApp(context.packageName) == true } catch (_: Throwable) { false }
+        val hiddenTracked = getTrackedHiddenPackages(context)
         val out = ArrayList<JSONObject>()
         try {
-            val pkgs = pm.getInstalledPackages(0)
+            val flags = if (isDo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                PackageManager.MATCH_UNINSTALLED_PACKAGES
+            } else {
+                0
+            }
+            val pkgs = pm.getInstalledPackages(flags)
             for (pi in pkgs) {
                 val ai = pi.applicationInfo ?: continue
                 val pkg = pi.packageName ?: continue
                 if (pkg == context.packageName) continue
+                val isMdmHidden = isDo && (try {
+                    dpm?.isApplicationHidden(admin, pkg) == true
+                } catch (_: Throwable) {
+                    false
+                } || hiddenTracked.contains(pkg))
+
                 val isSystem = (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                 val isUpdatedSystem = (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
                 val hasLauncher = pm.getLaunchIntentForPackage(pkg) != null
 
-                // Include ALL user-installed apps (even hidden ones without launcher!) + key user-facing system apps
-                if (isSystem && !isUpdatedSystem && !hasLauncher) continue
+                // Include ALL user-installed apps, MDM-hidden apps, and key user-facing system apps
+                if (!isMdmHidden && isSystem && !isUpdatedSystem && !hasLauncher) continue
 
                 val label = try {
                     pm.getApplicationLabel(ai).toString().trim().ifEmpty { pkg }
@@ -186,15 +219,17 @@ object SystemControlHelper {
                         put("isSystem", isSystem)
                         put("sideloaded", sideloaded)
                         put("hasLauncher", hasLauncher)
+                        put("mdmHidden", isMdmHidden)
                     }
                 )
             }
         } catch (_: Throwable) {
         }
 
-        // Show sideloaded / hidden / most recently installed apps first!
+        // Show MDM-hidden, sideloaded, and most recently installed apps first!
         out.sortWith(
-            compareByDescending<JSONObject> { it.optBoolean("sideloaded") }
+            compareByDescending<JSONObject> { it.optBoolean("mdmHidden") }
+                .thenByDescending { it.optBoolean("sideloaded") }
                 .thenByDescending { !it.optBoolean("hasLauncher") && !it.optBoolean("isSystem") }
                 .thenByDescending { it.optLong("installedAt") }
                 .thenBy { it.optString("appName").lowercase(Locale.FRENCH) }
@@ -203,6 +238,288 @@ object SystemControlHelper {
         val arr = JSONArray()
         for (item in out.take(140)) arr.put(item)
         return arr
+    }
+
+    /* ==================== OFFICIAL ANDROID ENTERPRISE MDM CONTROLS (#2 & #17) ==================== */
+
+    private const val MDM_PREFS_NAME = "sentinel_mdm_controls_v1"
+    private const val KEY_MDM_HIDDEN_PKGS = "hidden_pkgs"
+    private val PROTECTED_SYSTEM_PACKAGES = setOf(
+        "android",
+        "com.android.systemui",
+        "com.android.settings",
+        "com.android.phone",
+        "com.android.dialer",
+        "com.google.android.dialer"
+    )
+
+    fun getTrackedHiddenPackages(context: Context): MutableSet<String> {
+        val sp = context.applicationContext.getSharedPreferences(MDM_PREFS_NAME, Context.MODE_PRIVATE)
+        return HashSet(sp.getStringSet(KEY_MDM_HIDDEN_PKGS, emptySet()) ?: emptySet())
+    }
+
+    private fun saveTrackedHiddenPackages(context: Context, set: Set<String>) {
+        val sp = context.applicationContext.getSharedPreferences(MDM_PREFS_NAME, Context.MODE_PRIVATE)
+        sp.edit().putStringSet(KEY_MDM_HIDDEN_PKGS, HashSet(set)).apply()
+    }
+
+    fun readMdmControlState(context: Context): JSONObject {
+        val appCtx = context.applicationContext
+        val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+        val admin = SentinelDeviceAdminReceiver.getComponentName(appCtx)
+        val isDo = try { dpm?.isDeviceOwnerApp(appCtx.packageName) == true } catch (_: Throwable) { false }
+        var lockWallpaper = false
+        var lockLocation = false
+        var lockDateTime = false
+        var blockUnknownSources = false
+        var blockInstallApps = false
+        var blockUninstallApps = false
+        var blockSafeBoot = false
+        var blockFactoryReset = false
+        var blockUsbDebug = false
+        var blockScreenshots = false
+        var disableCamera = false
+        var blockTethering = false
+        var maxLockSec = 0
+
+        if (dpm != null && isDo) {
+            try {
+                val r = dpm.getUserRestrictions(admin)
+                lockWallpaper = r.getBoolean(UserManager.DISALLOW_SET_WALLPAPER, false)
+                lockLocation = r.getBoolean(UserManager.DISALLOW_CONFIG_LOCATION, false)
+                lockDateTime = r.getBoolean(UserManager.DISALLOW_CONFIG_DATE_TIME, false)
+                blockUnknownSources = r.getBoolean(UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES, false)
+                blockInstallApps = r.getBoolean(UserManager.DISALLOW_INSTALL_APPS, false)
+                blockUninstallApps = r.getBoolean(UserManager.DISALLOW_UNINSTALL_APPS, false)
+                blockSafeBoot = r.getBoolean(UserManager.DISALLOW_SAFE_BOOT, false)
+                blockFactoryReset = r.getBoolean(UserManager.DISALLOW_FACTORY_RESET, false)
+                blockUsbDebug = r.getBoolean(UserManager.DISALLOW_DEBUGGING_FEATURES, false)
+                blockTethering = r.getBoolean(UserManager.DISALLOW_CONFIG_TETHERING, false)
+            } catch (_: Throwable) {
+            }
+            try { blockScreenshots = dpm.getScreenCaptureDisabled(admin) } catch (_: Throwable) {}
+            try { disableCamera = dpm.getCameraDisabled(admin) } catch (_: Throwable) {}
+            try {
+                val ms = dpm.getMaximumTimeToLock(admin)
+                maxLockSec = if (ms > 0L) (ms / 1000L).toInt() else 0
+            } catch (_: Throwable) {
+            }
+        }
+
+        return JSONObject().apply {
+            put("deviceOwner", isDo)
+            put("lockWallpaper", lockWallpaper)
+            put("lockLocation", lockLocation)
+            put("lockDateTime", lockDateTime)
+            put("blockUnknownSources", blockUnknownSources)
+            put("blockInstallApps", blockInstallApps)
+            put("blockUninstallApps", blockUninstallApps)
+            put("blockSafeBoot", blockSafeBoot)
+            put("blockFactoryReset", blockFactoryReset)
+            put("blockUsbDebug", blockUsbDebug)
+            put("blockScreenshots", blockScreenshots)
+            put("disableCamera", disableCamera)
+            put("blockTethering", blockTethering)
+            put("maxScreenTimeoutSec", maxLockSec)
+        }
+    }
+
+    /**
+     * #2: Temporarily hide or unhide a third-party app via official DevicePolicyManager.setApplicationHidden().
+     * Strictly forbids hiding SentinelCam itself or core Android system packages.
+     */
+    fun setMdmAppHidden(context: Context, packageName: String, hidden: Boolean): Pair<Boolean, String?> {
+        val appCtx = context.applicationContext
+        if (packageName.isBlank() || packageName == appCtx.packageName) {
+            return Pair(false, "Impossible de masquer SentinelCam (l'application de supervision reste toujours visible).")
+        }
+        if (PROTECTED_SYSTEM_PACKAGES.contains(packageName)) {
+            return Pair(false, "Application système critique non masquable.")
+        }
+        val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+            ?: return Pair(false, "Gestionnaire MDM indisponible.")
+        val admin = SentinelDeviceAdminReceiver.getComponentName(appCtx)
+        if (!dpm.isDeviceOwnerApp(appCtx.packageName)) {
+            return Pair(false, "Disponible uniquement sur un appareil enrôlé par QR Code Appareil Géré (MDM).")
+        }
+        return try {
+            val ok = dpm.setApplicationHidden(admin, packageName, hidden)
+            if (ok) {
+                val tracked = getTrackedHiddenPackages(appCtx)
+                if (hidden) tracked.add(packageName) else tracked.remove(packageName)
+                saveTrackedHiddenPackages(appCtx, tracked)
+                Pair(true, if (hidden) "Application masquée temporairement." else "Application réaffichée sur l’appareil.")
+            } else {
+                Pair(false, "Android a refusé le masquage de cette application.")
+            }
+        } catch (t: Throwable) {
+            Pair(false, "Action MDM impossible : ${t.message}")
+        }
+    }
+
+    /**
+     * #17 + Full Official Android Enterprise MDM Admin Restrictions & Hardware Policies.
+     */
+    fun setMdmRestriction(context: Context, target: String, enabled: Boolean): Pair<Boolean, String?> {
+        val appCtx = context.applicationContext
+        val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+            ?: return Pair(false, "Gestionnaire MDM indisponible.")
+        val admin = SentinelDeviceAdminReceiver.getComponentName(appCtx)
+        if (!dpm.isDeviceOwnerApp(appCtx.packageName)) {
+            return Pair(false, "Disponible uniquement sur un appareil enrôlé par QR Code Appareil Géré (MDM).")
+        }
+        return try {
+            when (target) {
+                "screenshots" -> {
+                    dpm.setScreenCaptureDisabled(admin, enabled)
+                    return Pair(true, "Blocage captures d’écran ${if (enabled) "activé" else "désactivé"}.")
+                }
+                "camera" -> {
+                    dpm.setCameraDisabled(admin, enabled)
+                    return Pair(true, "Coupure caméra système ${if (enabled) "activée" else "désactivée"}.")
+                }
+                "usb_debug" -> {
+                    if (enabled) {
+                        dpm.addUserRestriction(admin, UserManager.DISALLOW_DEBUGGING_FEATURES)
+                        dpm.addUserRestriction(admin, UserManager.DISALLOW_USB_FILE_TRANSFER)
+                    } else {
+                        dpm.clearUserRestriction(admin, UserManager.DISALLOW_DEBUGGING_FEATURES)
+                        dpm.clearUserRestriction(admin, UserManager.DISALLOW_USB_FILE_TRANSFER)
+                    }
+                    return Pair(true, "Verrouillage USB / PC ${if (enabled) "activé" else "désactivé"}.")
+                }
+                "date_time" -> {
+                    if (enabled) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            try { dpm.setAutoTimeEnabled(admin, true) } catch (_: Throwable) {}
+                        }
+                        dpm.addUserRestriction(admin, UserManager.DISALLOW_CONFIG_DATE_TIME)
+                    } else {
+                        dpm.clearUserRestriction(admin, UserManager.DISALLOW_CONFIG_DATE_TIME)
+                    }
+                    return Pair(true, "Verrouillage date & heure ${if (enabled) "activé" else "désactivé"}.")
+                }
+            }
+
+            val (restrictionKey, label) = when (target) {
+                "wallpaper" -> UserManager.DISALLOW_SET_WALLPAPER to "Verrouillage du fond d’écran"
+                "location" -> UserManager.DISALLOW_CONFIG_LOCATION to "Verrouillage de la localisation"
+                "unknown_sources" -> UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES to "Blocage APK externes"
+                "install_apps" -> UserManager.DISALLOW_INSTALL_APPS to "Blocage nouvelles installations"
+                "uninstall_apps" -> UserManager.DISALLOW_UNINSTALL_APPS to "Blocage désinstallations"
+                "safe_boot" -> UserManager.DISALLOW_SAFE_BOOT to "Blocage mode sans échec"
+                "factory_reset" -> UserManager.DISALLOW_FACTORY_RESET to "Blocage réinitialisation paramètres"
+                "tethering" -> UserManager.DISALLOW_CONFIG_TETHERING to "Blocage partage de connexion"
+                else -> return Pair(false, "Restriction inconnue.")
+            }
+            if (enabled) {
+                dpm.addUserRestriction(admin, restrictionKey)
+            } else {
+                dpm.clearUserRestriction(admin, restrictionKey)
+            }
+            Pair(true, "$label ${if (enabled) "activé" else "désactivé"}.")
+        } catch (t: Throwable) {
+            Pair(false, "Erreur MDM : ${t.message}")
+        }
+    }
+
+    fun mdmRebootDevice(context: Context): Pair<Boolean, String?> {
+        val appCtx = context.applicationContext
+        val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+            ?: return Pair(false, "Gestionnaire MDM indisponible.")
+        val admin = SentinelDeviceAdminReceiver.getComponentName(appCtx)
+        if (!dpm.isDeviceOwnerApp(appCtx.packageName)) {
+            return Pair(false, "Disponible uniquement en mode Appareil Géré (MDM).")
+        }
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                dpm.reboot(admin)
+                Pair(true, "Redémarrage à distance lancé.")
+            } else {
+                Pair(false, "Nécessite Android 7.0+.")
+            }
+        } catch (t: Throwable) {
+            Pair(false, "Redémarrage impossible : ${t.message}")
+        }
+    }
+
+    fun mdmLockNow(context: Context): Pair<Boolean, String?> {
+        val appCtx = context.applicationContext
+        val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+            ?: return Pair(false, "Gestionnaire MDM indisponible.")
+        val admin = SentinelDeviceAdminReceiver.getComponentName(appCtx)
+        if (!dpm.isAdminActive(admin)) {
+            return Pair(false, "Administration de l’appareil non activée.")
+        }
+        return try {
+            dpm.lockNow()
+            Pair(true, "Écran verrouillé instantanément.")
+        } catch (t: Throwable) {
+            Pair(false, "Verrouillage impossible : ${t.message}")
+        }
+    }
+
+    /**
+     * #17: Set maximum screen lock timeout (seconds; 0 = unlimited).
+     */
+    fun setMdmMaxScreenTimeout(context: Context, seconds: Int): Pair<Boolean, String?> {
+        val appCtx = context.applicationContext
+        val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+            ?: return Pair(false, "Gestionnaire MDM indisponible.")
+        val admin = SentinelDeviceAdminReceiver.getComponentName(appCtx)
+        if (!dpm.isDeviceOwnerApp(appCtx.packageName)) {
+            return Pair(false, "Disponible uniquement sur un appareil enrôlé par QR Code Appareil Géré (MDM).")
+        }
+        val clampedSec = if (seconds <= 0) 0 else seconds.coerceIn(15, 600)
+        return try {
+            dpm.setMaximumTimeToLock(admin, clampedSec.toLong() * 1000L)
+            val msg = if (clampedSec == 0) {
+                "Délai maximal de mise en veille retiré."
+            } else {
+                "Mise en veille automatique plafonnée à ${clampedSec} s."
+            }
+            Pair(true, msg)
+        } catch (t: Throwable) {
+            Pair(false, "Réglage mise en veille refusé : ${t.message}")
+        }
+    }
+
+    fun clearAllMdmControlsOnUnpair(context: Context) {
+        val appCtx = context.applicationContext
+        val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager ?: return
+        val admin = SentinelDeviceAdminReceiver.getComponentName(appCtx)
+        if (!dpm.isDeviceOwnerApp(appCtx.packageName)) return
+
+        // Restore all temporarily hidden third-party apps
+        val tracked = getTrackedHiddenPackages(appCtx)
+        for (pkg in tracked) {
+            try {
+                dpm.setApplicationHidden(admin, pkg, false)
+            } catch (_: Throwable) {
+            }
+        }
+        saveTrackedHiddenPackages(appCtx, emptySet())
+
+        // Release ALL MDM locks cleanly on unpair
+        val allRestrictions = listOf(
+            UserManager.DISALLOW_SET_WALLPAPER,
+            UserManager.DISALLOW_CONFIG_LOCATION,
+            UserManager.DISALLOW_CONFIG_DATE_TIME,
+            UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES,
+            UserManager.DISALLOW_INSTALL_APPS,
+            UserManager.DISALLOW_UNINSTALL_APPS,
+            UserManager.DISALLOW_SAFE_BOOT,
+            UserManager.DISALLOW_FACTORY_RESET,
+            UserManager.DISALLOW_DEBUGGING_FEATURES,
+            UserManager.DISALLOW_USB_FILE_TRANSFER,
+            UserManager.DISALLOW_CONFIG_TETHERING
+        )
+        for (key in allRestrictions) {
+            try { dpm.clearUserRestriction(admin, key) } catch (_: Throwable) {}
+        }
+        try { dpm.setScreenCaptureDisabled(admin, false) } catch (_: Throwable) {}
+        try { dpm.setCameraDisabled(admin, false) } catch (_: Throwable) {}
+        try { dpm.setMaximumTimeToLock(admin, 0L) } catch (_: Throwable) {}
     }
 
     fun setVolumePercent(context: Context, streamName: String, percent: Int): Pair<Boolean, String?> {

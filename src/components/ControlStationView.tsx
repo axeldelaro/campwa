@@ -138,7 +138,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [messagesSubTab, setMessagesSubTab] = useState<'sms' | 'social' | 'calls' | 'insights'>('sms');
   const [mediaSubTab, setMediaSubTab] = useState<'live' | 'photos' | 'timeline' | 'recordings'>('photos');
   const [locationSubTab, setLocationSubTab] = useState<'map' | 'places' | 'driving'>('map');
-  const [rulesSubTab, setRulesSubTab] = useState<'protection' | 'system'>('protection');
+  const [rulesSubTab, setRulesSubTab] = useState<'protection' | 'system'>('system');
 
   // Social Messages Archive + Direct Reply State (v24/v25)
   const [socialThreadsData, setSocialThreadsData] = useState<DataSocialThreadsMsg | null>(null);
@@ -1306,8 +1306,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       </div>
 
-      {/* Desktop Top 5-Tab Bar */}
-      <div className="hidden grid-cols-5 gap-1.5 rounded-2xl border border-white/[0.08] bg-zinc-900/80 p-1.5 shadow-[0_4px_20px_rgba(0,0,0,0.25)] backdrop-blur-md sm:grid">
+      {/* Desktop Minimal 3-Tab Bar (Accueil · Activité · Admin) */}
+      <div className="hidden grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.08] bg-zinc-900/80 p-1.5 shadow-[0_4px_20px_rgba(0,0,0,0.25)] backdrop-blur-md sm:grid">
         <button
           type="button"
           disabled={!canUseDeviceControl}
@@ -1335,46 +1335,32 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           type="button"
           onClick={handleOpenMessagesTab}
           className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition ${
-            viewerTab === 'messages' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
+            viewerTab === 'messages' || viewerTab === 'media' || viewerTab === 'location'
+              ? 'bg-white text-zinc-950'
+              : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
           }`}
         >
           <MessageSquare className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">Messages</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={handleOpenMediaTab}
-          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition ${
-            viewerTab === 'media' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
-          }`}
-        >
-          <ImageIcon className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">Médias</span>
-        </button>
-
-        <button
-          type="button"
-          disabled={!canViewLocation}
-          onClick={handleOpenLocationTab}
-          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition disabled:opacity-35 ${
-            viewerTab === 'location' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
-          }`}
-        >
-          <MapPin className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">Position</span>
+          <span className="truncate">Activité</span>
         </button>
 
         <button
           type="button"
           disabled={!canUseDeviceControl}
-          onClick={() => handleOpenHomeOrRulesTab('rules')}
+          onClick={() => {
+            handleOpenHomeOrRulesTab('rules');
+            if (!systemStatus && !systemStatusLoading) {
+              setSystemStatusLoading(true);
+              void controllerRef.current?.sendSystemControl({ action: 'get_status' });
+              window.setTimeout(() => setSystemStatusLoading(false), 10000);
+            }
+          }}
           className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition disabled:opacity-35 ${
             viewerTab === 'rules' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
           }`}
         >
           <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">Règles</span>
+          <span className="truncate">Admin</span>
           {(telemetry?.securityAlertsCount ?? 0) > 0 && (
             <span
               className={`rounded px-1 py-0.5 font-mono text-[10px] ${
@@ -1387,9 +1373,9 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </button>
       </div>
 
-      {/* Mobile Native-Style Fixed Bottom 5-Tab Navigation */}
+      {/* Mobile Native-Style Fixed Bottom 3-Tab Navigation */}
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.08] bg-[#09090b]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl sm:hidden">
-        <div className="grid grid-cols-5 px-1 py-1.5">
+        <div className="grid grid-cols-3 px-2 py-1.5">
           <button
             type="button"
             disabled={!canUseDeviceControl}
@@ -1419,40 +1405,32 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             type="button"
             onClick={handleOpenMessagesTab}
             className={`flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-medium transition ${
-              viewerTab === 'messages' ? 'text-white' : 'text-zinc-500'
+              viewerTab === 'messages' || viewerTab === 'media' || viewerTab === 'location'
+                ? 'text-white'
+                : 'text-zinc-500'
             }`}
           >
-            <MessageSquare className={`h-5 w-5 ${viewerTab === 'messages' ? 'text-emerald-400' : ''}`} />
-            <span>Messages</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleOpenMediaTab}
-            className={`flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-medium transition ${
-              viewerTab === 'media' ? 'text-white' : 'text-zinc-500'
-            }`}
-          >
-            <ImageIcon className={`h-5 w-5 ${viewerTab === 'media' ? 'text-emerald-400' : ''}`} />
-            <span>Médias</span>
-          </button>
-
-          <button
-            type="button"
-            disabled={!canViewLocation}
-            onClick={handleOpenLocationTab}
-            className={`flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-medium transition disabled:opacity-35 ${
-              viewerTab === 'location' ? 'text-white' : 'text-zinc-500'
-            }`}
-          >
-            <MapPin className={`h-5 w-5 ${viewerTab === 'location' ? 'text-emerald-400' : ''}`} />
-            <span>Position</span>
+            <MessageSquare
+              className={`h-5 w-5 ${
+                viewerTab === 'messages' || viewerTab === 'media' || viewerTab === 'location'
+                  ? 'text-emerald-400'
+                  : ''
+              }`}
+            />
+            <span>Activité</span>
           </button>
 
           <button
             type="button"
             disabled={!canUseDeviceControl}
-            onClick={() => handleOpenHomeOrRulesTab('rules')}
+            onClick={() => {
+              handleOpenHomeOrRulesTab('rules');
+              if (!systemStatus && !systemStatusLoading) {
+                setSystemStatusLoading(true);
+                void controllerRef.current?.sendSystemControl({ action: 'get_status' });
+                window.setTimeout(() => setSystemStatusLoading(false), 10000);
+              }
+            }}
             className={`relative flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-medium transition disabled:opacity-35 ${
               viewerTab === 'rules' ? 'text-white' : 'text-zinc-500'
             }`}
@@ -1465,10 +1443,47 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 </span>
               )}
             </div>
-            <span>Règles</span>
+            <span>Admin</span>
           </button>
         </div>
       </nav>
+
+      {/* Sub-navigation bar inside Activité (Messages · Médias · Position) */}
+      {(viewerTab === 'messages' || viewerTab === 'media' || viewerTab === 'location') && (
+        <div className="grid grid-cols-3 gap-1 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
+          <button
+            type="button"
+            onClick={handleOpenMessagesTab}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium transition ${
+              viewerTab === 'messages' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <MessageSquare className="h-3.5 w-3.5 shrink-0" />
+            <span>Messages</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenMediaTab}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium transition ${
+              viewerTab === 'media' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+            <span>Médias</span>
+          </button>
+          <button
+            type="button"
+            disabled={!canViewLocation}
+            onClick={handleOpenLocationTab}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium transition disabled:opacity-35 ${
+              viewerTab === 'location' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <MapPin className="h-3.5 w-3.5 shrink-0" />
+            <span>Position</span>
+          </button>
+        </div>
+      )}
 
       {/* Instant Phone Notifications Without Opening the Website */}
       <ParentPushAlertsCard
@@ -2810,18 +2825,6 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
           <div className="grid grid-cols-2 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
             <button
               type="button"
-              onClick={() => setRulesSubTab('protection')}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
-                rulesSubTab === 'protection'
-                  ? 'bg-white text-zinc-950'
-                  : 'text-zinc-400 hover:text-white'
-              }`}
-            >
-              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-              <span>Protection & Règles</span>
-            </button>
-            <button
-              type="button"
               onClick={() => {
                 setRulesSubTab('system');
                 if (!systemStatus && !systemStatusLoading) {
@@ -2837,7 +2840,19 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               }`}
             >
               <Sliders className="h-3.5 w-3.5 shrink-0" />
-              <span>Système & Fond d’écran</span>
+              <span>MDM & Système</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setRulesSubTab('protection')}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+                rulesSubTab === 'protection'
+                  ? 'bg-white text-zinc-950'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+              <span>Règles & Quotas</span>
             </button>
           </div>
 
@@ -2886,16 +2901,10 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             />
           ) : (
             <div className="space-y-3.5">
-              <WallpaperCard
-                onApplyWallpaper={async (base64Jpeg, target) => {
-                  setControlFeedback(null);
-                  await controllerRef.current?.setRemoteWallpaper(base64Jpeg, target);
-                }}
-              />
-
               <SystemCommandCard
                 data={systemStatus}
                 loading={systemStatusLoading}
+                defaultOpen={true}
                 onRefresh={async () => {
                   setSystemStatusLoading(true);
                   await controllerRef.current?.sendSystemControl({ action: 'get_status' });
@@ -2931,6 +2940,43 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                     action: 'uninstall_app',
                     packageName,
                   });
+                }}
+                onMdmSetAppHidden={async (packageName, hidden) => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'mdm_hide_app',
+                    packageName,
+                    hidden,
+                  });
+                }}
+                onMdmSetRestriction={async (target, enabled) => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'mdm_set_restriction',
+                    target,
+                    enabled,
+                  });
+                }}
+                onMdmSetScreenTimeout={async (timeoutSec) => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'mdm_set_screen_timeout',
+                    timeoutSec,
+                  });
+                }}
+                onMdmLockNow={async () => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'mdm_lock_now',
+                  });
+                }}
+                onMdmReboot={async () => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'mdm_reboot',
+                  });
+                }}
+              />
+
+              <WallpaperCard
+                onApplyWallpaper={async (base64Jpeg, target) => {
+                  setControlFeedback(null);
+                  await controllerRef.current?.setRemoteWallpaper(base64Jpeg, target);
                 }}
               />
             </div>

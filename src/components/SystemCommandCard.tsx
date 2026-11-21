@@ -1,44 +1,82 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  CameraOff,
   ChevronDown,
   ChevronUp,
+  Clock,
   Cpu,
   ExternalLink,
+  Eye,
+  EyeOff,
   HardDrive,
+  Image as ImageIcon,
+  Lock,
+  MapPin,
+  Power,
   RefreshCw,
   Search,
+  ShieldCheck,
   Sun,
   Trash2,
   Volume2,
   VolumeX,
   Wifi,
 } from 'lucide-react';
-import type { DataSystemStatusMsg } from '../types/sentinel';
+import type { DataSystemStatusMsg, MdmRestrictionTarget } from '../types/sentinel';
 
 interface SystemCommandCardProps {
   data: DataSystemStatusMsg | null;
   loading: boolean;
+  defaultOpen?: boolean;
   onRefresh: () => Promise<void>;
   onSetVolume: (stream: 'music' | 'ring' | 'alarm', percent: number) => Promise<void>;
   onSetRinger: (mode: 'normal' | 'vibrate' | 'silent') => Promise<void>;
   onSetBrightness: (percent: number) => Promise<void>;
   onLaunchApp: (packageName: string) => Promise<void>;
   onUninstallApp: (packageName: string) => Promise<void>;
+  onMdmSetAppHidden?: (packageName: string, hidden: boolean) => Promise<void>;
+  onMdmSetRestriction?: (target: MdmRestrictionTarget, enabled: boolean) => Promise<void>;
+  onMdmSetScreenTimeout?: (timeoutSec: number) => Promise<void>;
+  onMdmLockNow?: () => Promise<void>;
+  onMdmReboot?: () => Promise<void>;
 }
+
+const TIMEOUT_OPTIONS: Array<{ sec: number; label: string }> = [
+  { sec: 0, label: 'Libre' },
+  { sec: 15, label: '15 s' },
+  { sec: 30, label: '30 s' },
+  { sec: 60, label: '1 min' },
+  { sec: 120, label: '2 min' },
+  { sec: 300, label: '5 min' },
+];
 
 export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
   data,
   loading,
+  defaultOpen = true,
   onRefresh,
   onSetVolume,
   onSetRinger,
   onSetBrightness,
   onLaunchApp,
   onUninstallApp,
+  onMdmSetAppHidden,
+  onMdmSetRestriction,
+  onMdmSetScreenTimeout,
+  onMdmLockNow,
+  onMdmReboot,
 }) => {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [appFilter, setAppFilter] = useState('');
   const [onlySideloaded, setOnlySideloaded] = useState(false);
+  const [onlyHidden, setOnlyHidden] = useState(false);
+  const [confirmReboot, setConfirmReboot] = useState(false);
+
+  useEffect(() => {
+    if (open && !data && !loading) {
+      void onRefresh();
+    }
+  }, [open, data, loading, onRefresh]);
 
   const handleToggleOpen = () => {
     const next = !open;
@@ -49,31 +87,60 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
   };
 
   const apps = data?.installedApps ?? [];
+  const isMdm = Boolean(data?.mdmDeviceOwner);
   const sideloadCount = apps.filter((a) => a.sideloaded).length;
+  const hiddenCount = apps.filter((a) => a.mdmHidden).length;
   const filteredApps = apps.filter((a) => {
     if (onlySideloaded && !a.sideloaded) return false;
+    if (onlyHidden && !a.mdmHidden) return false;
     const q = appFilter.trim().toLowerCase();
     if (!q) return true;
     return a.appName.toLowerCase().includes(q) || a.packageName.toLowerCase().includes(q);
   });
 
+  const mdmToggles: Array<{
+    key: MdmRestrictionTarget;
+    label: string;
+    active: boolean;
+  }> = [
+    { key: 'wallpaper', label: 'Verrouiller fond d’écran', active: Boolean(data?.mdmLockWallpaper) },
+    { key: 'location', label: 'Verrouiller localisation', active: Boolean(data?.mdmLockLocation) },
+    { key: 'date_time', label: 'Verrouiller date & heure', active: Boolean(data?.mdmLockDateTime) },
+    { key: 'unknown_sources', label: 'Bloquer APK externes', active: Boolean(data?.mdmBlockUnknownSources) },
+    { key: 'install_apps', label: 'Bloquer installations', active: Boolean(data?.mdmBlockInstallApps) },
+    { key: 'uninstall_apps', label: 'Bloquer désinstallations', active: Boolean(data?.mdmBlockUninstallApps) },
+    { key: 'safe_boot', label: 'Bloquer mode sans échec', active: Boolean(data?.mdmBlockSafeBoot) },
+    { key: 'factory_reset', label: 'Bloquer reset paramètres', active: Boolean(data?.mdmBlockFactoryReset) },
+    { key: 'usb_debug', label: 'Bloquer USB / PC', active: Boolean(data?.mdmBlockUsbDebug) },
+    { key: 'screenshots', label: 'Bloquer captures d’écran', active: Boolean(data?.mdmBlockScreenshots) },
+    { key: 'camera', label: 'Couper caméra système', active: Boolean(data?.mdmDisableCamera) },
+    { key: 'tethering', label: 'Bloquer partage Wi-Fi', active: Boolean(data?.mdmBlockTethering) },
+  ];
+
   return (
-    <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-zinc-900/65">
+    <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-zinc-900/70">
       <button
         type="button"
         onClick={handleToggleOpen}
         className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-white/[0.02]"
       >
         <div className="flex min-w-0 items-center gap-2.5">
-          <Cpu className="h-4 w-4 shrink-0 text-zinc-400" />
+          <ShieldCheck className={`h-4 w-4 shrink-0 ${isMdm ? 'text-emerald-400' : 'text-zinc-400'}`} />
           <div className="min-w-0">
-            <div className="text-sm font-medium text-white">Centre de commande & Système</div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-white">Contrôle Admin MDM & Système</span>
+              {isMdm && (
+                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                  MDM Actif
+                </span>
+              )}
+            </div>
             <div className="truncate text-[11px] text-zinc-500">
               {data
                 ? `${data.wifiSummary} · ${(data.freeStorageMb / 1024).toFixed(1)} Go libres${
-                    sideloadCount > 0 ? ` · ${sideloadCount} appli(s) hors Store` : ''
+                    hiddenCount > 0 ? ` · ${hiddenCount} masquée(s)` : ''
                   }`
-                : 'Volumes, sonnerie, luminosité et inventaire complet des applis'}
+                : 'Verrouillages MDM, masquage d’applis, volumes et inventaire'}
             </div>
           </div>
         </div>
@@ -104,10 +171,127 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
           {!data ? (
             <div className="flex items-center justify-center py-6 text-xs text-zinc-400">
               <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-              Chargement des paramètres du téléphone…
+              Chargement des contrôles système & MDM…
             </div>
           ) : (
             <>
+              {/* ==================== MDM ADMIN CONTROL BLOCK (#2 & #17 + FULL MDM) ==================== */}
+              <div className="space-y-3 rounded-xl border border-emerald-500/20 bg-zinc-950/90 p-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
+                    <Lock className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Verrouillages système MDM</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={!onMdmLockNow}
+                      onClick={() => void onMdmLockNow?.()}
+                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-zinc-900 px-2 py-1 text-[10px] font-medium text-zinc-200 hover:border-white/25 disabled:opacity-40"
+                      title="Verrouiller l’écran immédiatement"
+                    >
+                      <Lock className="h-3 w-3" />
+                      <span>Verrouiller</span>
+                    </button>
+                    {isMdm &&
+                      onMdmReboot &&
+                      (confirmReboot ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConfirmReboot(false);
+                            void onMdmReboot();
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg bg-rose-500 px-2 py-1 text-[10px] font-semibold text-white"
+                        >
+                          Confirmer
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmReboot(true)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-[10px] font-medium text-rose-200 hover:bg-rose-500/20"
+                          title="Redémarrer le téléphone à distance"
+                        >
+                          <Power className="h-3 w-3" />
+                          <span>Reboot</span>
+                        </button>
+                      ))}
+                  </div>
+                </div>
+
+                {!isMdm && (
+                  <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-200">
+                    Mode Appareil Géré (MDM) non détecté sur cet appareil. Utilisez l’enrôlement par{' '}
+                    <span className="font-semibold">QR Appareil Géré</span> pour activer les verrouillages système et le masquage d’applis.
+                  </div>
+                )}
+
+                {/* 2-Column Clean Admin Restrictions Grid */}
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  {mdmToggles.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      disabled={!isMdm || !onMdmSetRestriction}
+                      onClick={() => void onMdmSetRestriction?.(item.key, !item.active)}
+                      className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-xs transition disabled:opacity-40 ${
+                        item.active
+                          ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-100'
+                          : 'border-white/[0.07] bg-zinc-900/70 text-zinc-300 hover:border-white/15'
+                      }`}
+                    >
+                      <span className="inline-flex min-w-0 items-center gap-1.5 truncate">
+                        {item.key === 'wallpaper' && <ImageIcon className="h-3.5 w-3.5 shrink-0 text-emerald-400" />}
+                        {item.key === 'location' && <MapPin className="h-3.5 w-3.5 shrink-0 text-emerald-400" />}
+                        {item.key === 'camera' && <CameraOff className="h-3.5 w-3.5 shrink-0 text-rose-300" />}
+                        <span className="truncate">{item.label}</span>
+                      </span>
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          item.active ? 'bg-emerald-500 text-zinc-950' : 'bg-zinc-800 text-zinc-400'
+                        }`}
+                      >
+                        {item.active ? 'ON' : 'OFF'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* #17 Max Screen Timeout Selector */}
+                <div className="space-y-1.5 border-t border-white/[0.06] pt-2.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="inline-flex items-center gap-1.5 text-zinc-300">
+                      <Clock className="h-3.5 w-3.5 text-sky-400" />
+                      <span>Mise en veille écran maximale</span>
+                    </span>
+                    <span className="font-mono text-sky-300">
+                      {(data.mdmMaxScreenTimeoutSec ?? 0) > 0 ? `${data.mdmMaxScreenTimeoutSec} s` : 'Libre'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-6 gap-1">
+                    {TIMEOUT_OPTIONS.map((opt) => {
+                      const active = (data.mdmMaxScreenTimeoutSec ?? 0) === opt.sec;
+                      return (
+                        <button
+                          key={opt.sec}
+                          type="button"
+                          disabled={!isMdm || !onMdmSetScreenTimeout}
+                          onClick={() => void onMdmSetScreenTimeout?.(opt.sec)}
+                          className={`rounded-lg border py-1.5 text-[10px] font-medium transition disabled:opacity-40 ${
+                            active
+                              ? 'border-sky-400 bg-sky-500/20 text-sky-100'
+                              : 'border-white/[0.07] bg-zinc-900 text-zinc-400 hover:text-white'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
               {/* Hardware Telemetry Strip */}
               <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
                 <div className="rounded-xl border border-white/[0.06] bg-zinc-950/75 p-2.5">
@@ -132,9 +316,8 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                 </div>
               </div>
 
-              {/* Ringer Mode */}
-              <div className="space-y-1.5">
-                <div className="text-xs font-medium text-zinc-300">Mode sonnerie</div>
+              {/* Ringer Mode + Volumes + Brightness */}
+              <div className="space-y-3 rounded-xl border border-white/[0.06] bg-zinc-950/75 p-3">
                 <div className="grid grid-cols-3 gap-1.5 text-xs">
                   {(
                     [
@@ -150,7 +333,7 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                       className={`inline-flex items-center justify-center gap-1.5 rounded-xl border py-2 font-medium transition ${
                         data.ringerMode === id
                           ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
-                          : 'border-white/[0.08] bg-zinc-950 text-zinc-400 hover:text-white'
+                          : 'border-white/[0.08] bg-zinc-900 text-zinc-400 hover:text-white'
                       }`}
                     >
                       <Icon className="h-3.5 w-3.5" />
@@ -158,10 +341,7 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                     </button>
                   ))}
                 </div>
-              </div>
 
-              {/* Volume Sliders & Brightness */}
-              <div className="space-y-3 rounded-xl border border-white/[0.06] bg-zinc-950/75 p-3">
                 {(
                   [
                     { key: 'music', label: 'Volume Média', value: data.volumeMusic },
@@ -213,33 +393,43 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                     }
                     className="w-full accent-amber-400"
                   />
-                  {!data.canWriteSettings && (
-                    <div className="text-[10px] text-amber-300/80">
-                      Autorisez « Paramètres système » sur le téléphone pour piloter la luminosité.
-                    </div>
-                  )}
                 </div>
               </div>
 
-              {/* Complete Installed Apps Inventory */}
+              {/* Complete Installed Apps Inventory + #2 MDM Temporary Hide/Unhide */}
               <div className="space-y-2 border-t border-white/[0.06] pt-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-white">
-                    Applications installées ({apps.length})
+                    Applications ({apps.length})
                   </span>
-                  {sideloadCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setOnlySideloaded((v) => !v)}
-                      className={`rounded-lg border px-2 py-0.5 text-[10px] font-medium ${
-                        onlySideloaded
-                          ? 'border-amber-400 bg-amber-500/20 text-amber-200'
-                          : 'border-white/10 bg-zinc-950 text-amber-300'
-                      }`}
-                    >
-                      Hors Play Store ({sideloadCount})
-                    </button>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {hiddenCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setOnlyHidden((v) => !v)}
+                        className={`rounded-lg border px-2 py-0.5 text-[10px] font-medium ${
+                          onlyHidden
+                            ? 'border-purple-400 bg-purple-500/20 text-purple-200'
+                            : 'border-white/10 bg-zinc-950 text-purple-300'
+                        }`}
+                      >
+                        Masquées ({hiddenCount})
+                      </button>
+                    )}
+                    {sideloadCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setOnlySideloaded((v) => !v)}
+                        className={`rounded-lg border px-2 py-0.5 text-[10px] font-medium ${
+                          onlySideloaded
+                            ? 'border-amber-400 bg-amber-500/20 text-amber-200'
+                            : 'border-white/10 bg-zinc-950 text-amber-300'
+                        }`}
+                      >
+                        Hors Store ({sideloadCount})
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="relative">
@@ -253,31 +443,47 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                   />
                 </div>
 
-                <div className="max-h-64 divide-y divide-white/[0.05] overflow-y-auto rounded-xl border border-white/[0.06] bg-zinc-950/60">
-                  {filteredApps.slice(0, 80).map((app) => (
+                <div className="max-h-72 divide-y divide-white/[0.05] overflow-y-auto rounded-xl border border-white/[0.06] bg-zinc-950/60">
+                  {filteredApps.slice(0, 90).map((app) => (
                     <div key={app.packageName} className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="truncate font-medium text-white">{app.appName}</span>
+                          <span className={`truncate font-medium ${app.mdmHidden ? 'text-zinc-500 line-through' : 'text-white'}`}>
+                            {app.appName}
+                          </span>
+                          {app.mdmHidden && (
+                            <span className="rounded bg-purple-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-purple-200">
+                              Masquée MDM
+                            </span>
+                          )}
                           {app.sideloaded && (
                             <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-amber-200">
                               Hors Store
                             </span>
                           )}
-                          {!app.hasLauncher && !app.isSystem && (
-                            <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-rose-200">
-                              Masquée
-                            </span>
-                          )}
                         </div>
-                        <div className="text-[10px] text-zinc-500">
-                          Installée le {new Date(app.installedAt).toLocaleDateString('fr-FR')}
-                          {app.versionName ? ` · v${app.versionName}` : ''}
+                        <div className="truncate text-[10px] text-zinc-500">
+                          {app.versionName ? `v${app.versionName} · ` : ''}
+                          {new Date(app.installedAt).toLocaleDateString('fr-FR')}
                         </div>
                       </div>
 
                       <div className="flex shrink-0 items-center gap-1">
-                        {app.hasLauncher && (
+                        {isMdm && onMdmSetAppHidden && (
+                          <button
+                            type="button"
+                            onClick={() => void onMdmSetAppHidden(app.packageName, !app.mdmHidden)}
+                            className={`rounded-lg border p-1.5 transition ${
+                              app.mdmHidden
+                                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+                                : 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20'
+                            }`}
+                            title={app.mdmHidden ? 'Réafficher sur le téléphone' : 'Masquer temporairement (MDM)'}
+                          >
+                            {app.mdmHidden ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                          </button>
+                        )}
+                        {app.hasLauncher && !app.mdmHidden && (
                           <button
                             type="button"
                             onClick={() => void onLaunchApp(app.packageName)}
@@ -287,7 +493,7 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                             <ExternalLink className="h-3.5 w-3.5" />
                           </button>
                         )}
-                        {!app.isSystem && (
+                        {!app.isSystem && !app.mdmHidden && (
                           <button
                             type="button"
                             onClick={() => void onUninstallApp(app.packageName)}
