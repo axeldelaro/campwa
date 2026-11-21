@@ -5,10 +5,11 @@ import android.app.admin.DevicePolicyManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.PersistableBundle
 
 /**
- * Official Android 12+ (API 31+) GET_PROVISIONING_MODE Handler for Android Enterprise QR Provisioning.
- * Instructs Android's Setup Wizard to enroll the factory-reset phone as a Fully Managed Device.
+ * Official Android 10–15+ GET_PROVISIONING_MODE Handler for Android Enterprise QR Provisioning.
+ * Responds immediately with PROVISIONING_MODE_FULLY_MANAGED_DEVICE and forwards admin extras.
  */
 class ProvisioningModeActivity : Activity() {
 
@@ -16,13 +17,22 @@ class ProvisioningModeActivity : Activity() {
         super.onCreate(savedInstanceState)
         val result = Intent()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            result.putExtra(
-                DevicePolicyManager.EXTRA_PROVISIONING_MODE,
-                DevicePolicyManager.PROVISIONING_MODE_FULLY_MANAGED_DEVICE
+            val allowed = intent?.getIntegerArrayListExtra(
+                DevicePolicyManager.EXTRA_PROVISIONING_ALLOWED_PROVISIONING_MODES
             )
+            val chosenMode = if (allowed != null && allowed.isNotEmpty()) {
+                when {
+                    allowed.contains(DevicePolicyManager.PROVISIONING_MODE_FULLY_MANAGED_DEVICE) ->
+                        DevicePolicyManager.PROVISIONING_MODE_FULLY_MANAGED_DEVICE
+                    else -> allowed[0]
+                }
+            } else {
+                DevicePolicyManager.PROVISIONING_MODE_FULLY_MANAGED_DEVICE
+            }
+            result.putExtra(DevicePolicyManager.EXTRA_PROVISIONING_MODE, chosenMode)
         }
         @Suppress("DEPRECATION")
-        val extras = intent?.getParcelableExtra<android.os.PersistableBundle>(
+        val extras = intent?.getParcelableExtra<PersistableBundle>(
             DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE
         )
         if (extras != null) {

@@ -21,14 +21,24 @@ class SentinelDeviceAdminReceiver : DeviceAdminReceiver() {
     override fun onProfileProvisioningComplete(context: Context, intent: Intent) {
         super.onProfileProvisioningComplete(context, intent)
         try {
-            val extras = intent.getParcelableExtra<PersistableBundle>(
+            val persistable = intent.getParcelableExtra<PersistableBundle>(
                 DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE
             )
-            MdmProvisioningHelper.applyManagedDeviceProvisioning(context, extras)
-            val launch = Intent(context, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            val bundle = intent.getBundleExtra(
+                DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE
+            )
+            MdmProvisioningHelper.applyManagedDeviceProvisioning(
+                context = context,
+                persistableExtras = persistable,
+                bundleExtras = bundle
+            )
+            // On Android 8–10 (before ADMIN_POLICY_COMPLIANCE), launch MainActivity cleanly
+            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
+                val launch = Intent(context, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                }
+                context.startActivity(launch)
             }
-            context.startActivity(launch)
         } catch (_: Throwable) {
         }
     }

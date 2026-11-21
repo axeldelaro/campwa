@@ -117,12 +117,21 @@ jobs:
           fi
           cp "$APK_OUT" ./SentinelCam.apk
           ls -lh ./SentinelCam.apk
-          MDM_SIG_HASH=$(keytool -exportcert -keystore "$KEYSTORE_PATH" -alias "$KEY_ALIAS" -storepass "$KEYSTORE_PASSWORD" -rfc \
-            | openssl x509 -outform DER \
-            | openssl dgst -binary -sha256 \
-            | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          if [ -x "$APKSIGNER" ]; then
+            MDM_SIG_HASH=$("$APKSIGNER" verify --print-certs ./SentinelCam.apk \
+              | grep -m1 "Signer #1 certificate SHA-256 digest:" \
+              | awk '{print $NF}' \
+              | xxd -r -p \
+              | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+          else
+            MDM_SIG_HASH=$(keytool -exportcert -keystore "$KEYSTORE_PATH" -alias "$KEY_ALIAS" -storepass "$KEYSTORE_PASSWORD" -rfc \
+              | openssl x509 -outform DER \
+              | openssl dgst -binary -sha256 \
+              | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+          fi
           echo "MDM_SIG_HASH=$MDM_SIG_HASH" >> "$GITHUB_ENV"
-          echo "Computed Android Enterprise Signature Checksum: $MDM_SIG_HASH"
+          echo "Computed Android Enterprise Signature Checksum (from actual APK): $MDM_SIG_HASH"
 
       - name: Upload SentinelCam.apk to Workflow Artifacts
         uses: actions/upload-artifact@v4

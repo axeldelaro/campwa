@@ -4,6 +4,9 @@ import android.Manifest
 import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PersistableBundle
 import com.sentinelcam.app.crypto.CryptoProtocol
 import com.sentinelcam.app.service.CameraForegroundService
@@ -14,11 +17,10 @@ import com.sentinelcam.app.storage.PortalPreferences
  * Official, Transparent Android Enterprise Fully Managed (Device Owner) Provisioning Helper.
  *
  * - Activates ONLY after an explicit factory-reset QR Code provisioning through Android's
- *   official Setup Wizard (which displays Google's full-screen "Managed Device" disclosure
- *   and maintains a permanent visible managed-device notice on Lock Screen & Settings).
+ *   official Setup Wizard (Google's full-screen "Managed Device" disclosure + permanent notice).
+ * - Never blocks or crashes Setup Wizard (defers foreground service startup safely until after
+ *   ADMIN_POLICY_COMPLIANCE returns RESULT_OK).
  * - Never hides or disables the launcher icon.
- * - Pre-links the device with the exact same Parent Family Key / Device Code / Admin PIN
- *   used by standard code pairing, and cleanly releases Device Owner on Parent unpair.
  */
 object MdmProvisioningHelper {
 
@@ -28,7 +30,11 @@ object MdmProvisioningHelper {
     const val EXTRA_ADMIN_PIN = "adminPin"
     const val EXTRA_CHILD_NAME = "childName"
 
-    fun applyManagedDeviceProvisioning(context: Context, extras: PersistableBundle?) {
+    fun applyManagedDeviceProvisioning(
+        context: Context,
+        persistableExtras: PersistableBundle? = null,
+        bundleExtras: Bundle? = null
+    ) {
         val appCtx = context.applicationContext
         val dpm = appCtx.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
         val admin = SentinelDeviceAdminReceiver.getComponentName(appCtx)
@@ -95,59 +101,77 @@ object MdmProvisioningHelper {
         }
 
         // 2. Bind the exact same Parent-Managed credentials as standard pairing
-        val prefs = PortalPreferences(appCtx)
-        val rawFamily = extras?.getString(EXTRA_FAMILY_KEY).orEmpty()
-        val rawDeviceCode = extras?.getString(EXTRA_DEVICE_CODE).orEmpty()
-        val rawAdminPin = extras?.getString(EXTRA_ADMIN_PIN).orEmpty().trim()
-        val rawPairCode = extras?.getString(EXTRA_PAIR_CODE).orEmpty()
-        val rawChildName = extras?.getString(EXTRA_CHILD_NAME).orEmpty().trim()
-
-        val famKey = CryptoProtocol.normalizeFamilyKey(rawFamily)
-        val deviceCode = CryptoProtocol.normalizePairingCode(rawDeviceCode)
-        val pairCode = CryptoProtocol.normalizePairingCode(rawPairCode)
-
-        if (famKey.length == 12 && deviceCode.length == 6) {
-            prefs.parentFamilyKey = famKey
-            prefs.setPairingCodeDirect(deviceCode)
-            prefs.parentManaged = true
-            prefs.unpairRequestPending = false
-            prefs.unpairRequestedAt = 0L
-            prefs.onboardingCompleted = true
-            prefs.userManuallyStopped = false
-            prefs.adminProtectionEnabled = true
-            prefs.blockSettingsAndStore = true
-            prefs.globalAllowDeviceControl = true
-            prefs.globalAllowLocation = true
-            prefs.globalAllowLocationHistory = true
-            prefs.globalAllowGallery = true
-            prefs.globalAllowContacts = true
-            prefs.globalAllowSmsRelay = true
-            prefs.globalAllowDeviceInfo = true
-            prefs.globalAllowIntercom = true
-            if (rawAdminPin.length in 4..12) {
-                prefs.setAdminPin(rawAdminPin)
-            }
-            val labelInfo = if (rawChildName.isNotEmpty()) " ($rawChildName)" else ""
-            prefs.appendSecurityEvent(
-                "admin",
-                "Enrôlement Appareil Géré (MDM) terminé$labelInfo",
-                if (isDeviceOwner) {
-                    "Appareil enrôlé officiellement en mode Appareil entièrement géré (Device Owner) et associé au compte Parent."
-                } else {
-                    "Appareil pré-configuré par QR code et associé au compte Parent."
-                }
-            )
-            PortalWatchdogJobService.scheduleWatchdog(appCtx)
-            KeepAliveReceiver.scheduleNextPulse(appCtx)
-            CameraForegroundService.startFromUi(appCtx)
+        fun readExtra(key: String): String {
+            return persistableExtras?.getString(key)
+                ?: bundleExtras?.getString(key)
+                ?: ""
         }
 
-        // 3. Also notify the Parent's open QR screen live if it is still listening on pairCode
-        if (pairCode.length == 6) {
+        val famKey = CryptoProtocol.normalizeFamilyKey(readExtra(EXTRA_FAMILY_KEY))
+        val deviceCode = CryptoProtocol.normalizePairingCode(readExtra(EXTRA_DEVICE_CODE))
+        val rawAdminPin = readExtra(EXTRA_ADMIN_PIN).trim()
+        val pairCode = CryptoProtocol.normalizePairingCode(readExtra(EXTRA_PAIR_CODE))
+        val rawChildName = readExtra(EXTRA_CHILD_NAME).trim()
+
+        if (famKey.length == 12 && deviceCode.length == 6) {
             try {
-                CameraForegroundService.pairWithParentCode(appCtx, pairCode)
+                val prefs = PortalPreferences(appCtx)
+                prefs.parentFamilyKey = famKey
+                prefs.setPairingCodeDirect(deviceCode)
+                prefs.parentManaged = true
+                prefs.unpairRequestPending = false
+                prefs.unpairRequestedAt = 0L
+                prefs.onboardingCompleted = true
+                prefs.userManuallyStopped = false
+                prefs.adminProtectionEnabled = true
+                prefs.blockSettingsAndStore = true
+                prefs.globalAllowDeviceControl = true
+                prefs.globalAllowLocation = true
+                prefs.globalAllowLocationHistory = true
+                prefs.globalAllowGallery = true
+                prefs.globalAllowContacts = true
+                prefs.globalAllowSmsRelay = true
+                prefs.globalAllowDeviceInfo = true
+                prefs.globalAllowIntercom = true
+                if (rawAdminPin.length in 4..12) {
+                    prefs.setAdminPin(rawAdminPin)
+                }
+                val labelInfo = if (rawChildName.isNotEmpty()) " ($rawChildName)" else ""
+                prefs.appendSecurityEvent(
+                    "admin",
+                    "Enrôlement Appareil Géré (MDM) terminé$labelInfo",
+                    if (isDeviceOwner) {
+                        "Appareil enrôlé officiellement en mode Appareil entièrement géré (Device Owner) et associé au compte Parent."
+                    } else {
+                        "Appareil pré-configuré par QR code et associé au compte Parent."
+                    }
+                )
             } catch (_: Throwable) {
             }
+
+            // Defer service & pairing startup until Setup Wizard finishes cleanly (avoids Android 11/12/MIUI OOBE abort!)
+            try {
+                PortalWatchdogJobService.scheduleWatchdog(appCtx)
+                KeepAliveReceiver.scheduleImmediateRevive(appCtx, 6_000L)
+            } catch (_: Throwable) {
+            }
+
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    CameraForegroundService.ensureRunningSafely(appCtx)
+                    if (pairCode.length == 6) {
+                        CameraForegroundService.pairWithParentCode(appCtx, pairCode)
+                    }
+                } catch (_: Throwable) {
+                }
+            }, 5_500L)
+        } else if (pairCode.length == 6) {
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    CameraForegroundService.pairWithParentCode(appCtx, pairCode)
+                } catch (_: Throwable) {
+                }
+            }, 5_500L)
         }
     }
 
