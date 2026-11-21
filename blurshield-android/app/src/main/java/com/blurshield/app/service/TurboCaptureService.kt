@@ -87,9 +87,9 @@ class TurboCaptureService : Service() {
             }
 
             val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
-            // ~28 Hz (36ms) on live video motion, relaxing to ~6 Hz (165ms) on static screens!
-            val targetMs = if (frameStatic) 165L else 36L
-            val delay = (targetMs - elapsedMs).coerceIn(14L, 180L)
+            // ~35 Hz (28ms) on live video motion + 120Hz Kalman interpolation, relaxing to ~7 Hz (145ms) on static screens!
+            val targetMs = if (frameStatic) 145L else 28L
+            val delay = (targetMs - elapsedMs).coerceIn(10L, 160L)
             if (isRunning) {
                 workerHandler?.postDelayed(this, delay)
             }
@@ -150,13 +150,13 @@ class TurboCaptureService : Service() {
         val screenH = metrics.heightPixels.coerceAtLeast(640)
         val dpi = metrics.densityDpi.coerceAtLeast(160)
 
-        val ratio = 288f / minOf(screenW, screenH).toFloat()
+        val ratio = 320f / minOf(screenW, screenH).toFloat()
         captureW = ((screenW * ratio).toInt() / 2) * 2
         captureH = ((screenH * ratio).toInt() / 2) * 2
 
         val ht = HandlerThread("BlurShieldTurbo").apply {
             start()
-            priority = Thread.NORM_PRIORITY + 1
+            priority = Thread.NORM_PRIORITY + 2
         }
         workerThread = ht
         workerHandler = Handler(ht.looper)

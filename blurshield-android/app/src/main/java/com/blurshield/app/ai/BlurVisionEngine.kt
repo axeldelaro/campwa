@@ -9,11 +9,16 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.PointF
 import android.graphics.RectF
+import android.os.Build
 import com.blurshield.app.config.BlurConfigSnapshot
 import com.blurshield.app.config.BlurStyle
 import com.blurshield.app.config.FaceGenderMode
+import com.blurshield.app.config.FaceSubZone
+import com.blurshield.app.config.MaskShape
+import com.blurshield.app.overlay.BlurShaderEngine
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceContour
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetector
@@ -24,18 +29,23 @@ import java.nio.FloatBuffer
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
 data class BlurRegion(
     val id: String,
-    val kind: String, // "face" | "nsfw"
+    val kind: String, // "face" | "nsfw" | "body"
     val rect: RectF, // normalized [0..1]
     val contour: List<PointF>?,
     val rotationDeg: Float = 0f,
+    val eulerYaw: Float = 0f,
     val confidence: Float = 1f,
     val patch: Bitmap? = null,
-    val avgColor: Int = Color.rgb(130, 128, 125)
+    val alphaMask: Bitmap? = null, // Feature #1 Silhouette / Feature #5 Skin-Tone pixel mask
+    val avgColor: Int = Color.rgb(130, 128, 125),
+    val reactiveEmoji: String = "😎",
+    val isSubZoneBar: Boolean = false
 )
 
 data class DetectionFrameResult(
@@ -44,22 +54,26 @@ data class DetectionFrameResult(
 )
 
 /**
- * High-Performance Parallel Neural Vision Engine for BlurShield AI:
- * - Concurrent ML Kit Face Contours (36-point Bézier) + NudeNet v3 YOLOv8n ONNX (4 threads + ALL_OPT).
- * - Granular zone filtering (Faces by gender, Genitalia, Breasts, Buttocks, Belly, Covered sensitive).
- * - Screen Region-of-Interest (ROI) filtering + live Gaussian / Mosaic / Frosted / Solid patch generation.
+ * BlurShield AI v2.0 Parallel Neural Vision Engine:
+ * - 3-way concurrent inference: ML Kit Face (133-pt contours + 3D Euler pose + expressions),
+ *   NudeNet v3 YOLOv8n ONNX (4 threads + ALL_OPT), and ML Kit Selfie Segmentation (#1 Silhouette).
+ * - Surgical Face Sub-Zone masking (#3): Full Face, Eyes Only, Mouth Only, Upper Face, Eyes+Mouth, Hair+Head.
+ * - 3D Head Pose Euler X/Y/Z tracking & side-profile compensation (#4).
+ * - Multi-Ethnic Skin-Tone pixel contour refinement for NSFW regions (#5).
+ * - High-resolution live patches for Android 13+ AGSL GPU Shaders (#9) & Reactive Emoji (#10).
  */
 class BlurVisionEngine(context: Context) {
 
     private val appContext = context.applicationContext
-    private val parallelPool = Executors.newFixedThreadPool(2) { r ->
+    private val parallelPool = Executors.newFixedThreadPool(3) { r ->
         Thread(r, "BlurShieldAI").apply {
             isDaemon = true
-            priority = Thread.NORM_PRIORITY + 1
+            priority = Thread.NORM_PRIORITY + 2
         }
     }
 
     private var faceDetector: FaceDetector? = null
+    private val silhouetteSegmenter = SilhouetteSegmenter()
     private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
     private var inputName: String = "images"
@@ -80,7 +94,8 @@ class BlurVisionEngine(context: Context) {
                 val opts = FaceDetectorOptions.Builder()
                     .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                     .setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
-                    .setMinFaceSize(0.045f)
+                    .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                    .setMinFaceSize(0.038f)
                     .enableTracking()
                     .build()
                 faceDetector = FaceDetection.getClient(opts)
@@ -129,12 +144,14 @@ class BlurVisionEngine(context: Context) {
             return DetectionFrameResult(emptyList(), 0L)
         }
 
-        val needMlKitFaces = cfg.blurFaces && cfg.faceGenderMode == FaceGenderMode.ALL
+        // Run ML Kit Face whenever faces are enabled (gives 133-pt contours, 3D Euler & expressions even when gender filter is active)
+        val needMlKitFaces = cfg.blurFaces
         val needOnnx = cfg.anyNsfwEnabled || cfg.blurFaces
+        val needSilhouette = cfg.needsSilhouetteEngine
         ensureInitialized(needFaces = needMlKitFaces, needOnnx = needOnnx)
 
         val faceFuture = if (needMlKitFaces) {
-            parallelPool.submit(Callable { runMlKitFaces(frame) })
+            parallelPool.submit(Callable { runMlKitFaces(frame, cfg) })
         } else null
 
         val runOnnxInParallel = cfg.anyNsfwEnabled || (cfg.blurFaces && cfg.faceGenderMode != FaceGenderMode.ALL)
@@ -142,29 +159,72 @@ class BlurVisionEngine(context: Context) {
             parallelPool.submit(Callable { runNudeNet(frame, cfg) })
         } else null
 
-        val merged = ArrayList<BlurRegion>(10)
+        val silhouetteFuture = if (needSilhouette) {
+            parallelPool.submit(Callable { silhouetteSegmenter.segment(frame) })
+        } else null
 
-        if (faceFuture != null) {
-            try {
-                merged.addAll(faceFuture.get(150L, TimeUnit.MILLISECONDS))
-            } catch (_: Throwable) {
+        val mlFaces = if (faceFuture != null) {
+            try { faceFuture.get(150L, TimeUnit.MILLISECONDS) } catch (_: Throwable) { emptyList() }
+        } else emptyList()
+
+        val onnxRegions = if (onnxFuture != null) {
+            try { onnxFuture.get(220L, TimeUnit.MILLISECONDS) } catch (_: Throwable) { emptyList() }
+        } else if (cfg.blurFaces && mlFaces.isEmpty()) {
+            // Backup ONNX face pass for steep side-profiles or occluded faces missed by ML Kit
+            runNudeNet(frame, cfg)
+        } else emptyList()
+
+        val silhouette = if (silhouetteFuture != null) {
+            try { silhouetteFuture.get(130L, TimeUnit.MILLISECONDS) } catch (_: Throwable) { null }
+        } else null
+
+        val merged = ArrayList<BlurRegion>(12)
+
+        // 1) Fuse ML Kit faces with ONNX gender filtering when Female/Male-only is selected
+        if (cfg.blurFaces) {
+            if (cfg.faceGenderMode == FaceGenderMode.ALL) {
+                merged.addAll(mlFaces)
+                for (r in onnxRegions) {
+                    if (r.kind == "face" && merged.none { it.kind == "face" && iou(it.rect, r.rect) > 0.22f }) {
+                        merged.add(r)
+                    }
+                }
+            } else {
+                // Keep only ONNX gender-matched faces, enriched with ML Kit precision contours/3D pose/expressions!
+                for (r in onnxRegions) {
+                    if (r.kind != "face") continue
+                    val mlMatches = mlFaces.filter { iou(it.rect, r.rect) > 0.18f }
+                    if (mlMatches.isNotEmpty()) {
+                        merged.addAll(mlMatches)
+                    } else {
+                        merged.add(r)
+                    }
+                }
             }
         }
 
-        if (onnxFuture != null) {
-            try {
-                val onnxRegions = onnxFuture.get(220L, TimeUnit.MILLISECONDS)
-                for (r in onnxRegions) {
-                    if (r.kind == "face" && merged.any { it.kind == "face" && iou(it.rect, r.rect) > 0.25f }) {
-                        continue
-                    }
-                    merged.add(r)
-                }
-            } catch (_: Throwable) {
+        // 2) Add all enabled NSFW detections
+        for (r in onnxRegions) {
+            if (r.kind == "nsfw") merged.add(r)
+        }
+
+        // 3) Feature #1: Optional Whole-Body Pixel Silhouette Mode
+        if (cfg.blurWholeBodySilhouette && silhouette != null && silhouette.personBoundsNorm != null && silhouette.coverageRatio > 0.035f) {
+            val bounds = silhouette.personBoundsNorm
+            val bodyAlpha = silhouette.extractRegionAlphaMask(bounds, padFrac = 0.02f, featherPct = cfg.edgeFeatherPct)
+            if (bodyAlpha != null) {
+                merged.add(
+                    BlurRegion(
+                        id = "silhouette-body-0",
+                        kind = "body",
+                        rect = bounds,
+                        contour = null,
+                        confidence = 0.98f,
+                        alphaMask = bodyAlpha,
+                        reactiveEmoji = cfg.emojiPack.baseEmoji
+                    )
+                )
             }
-        } else if (cfg.blurFaces && merged.isEmpty()) {
-            // Backup ONNX face pass for side-profile or occluded faces missed by ML Kit
-            merged.addAll(runNudeNet(frame, cfg))
         }
 
         // Apply Screen ROI (Region of Interest) + optional system bar exclusion
@@ -176,53 +236,314 @@ class BlurVisionEngine(context: Context) {
             cy in minY..maxY
         }
 
-        // Generate style-specific live color/blur patches directly from the live frame
+        // Generate style-specific live patches + pixel-accurate alpha masks (#1 Silhouette + #5 Skin-Tone Refinement)
+        val padBase = cfg.maskPaddingPct / 100f
         val withPatches = filtered.map { region ->
-            val (patch, avg) = buildStyledPatch(frame, region.rect, region.kind == "nsfw", cfg)
-            region.copy(patch = patch, avgColor = avg)
+            val isNsfw = region.kind == "nsfw"
+            val isBody = region.kind == "body"
+            val padFrac = if (isBody) 0.02f else padBase + (if (isNsfw) 0.04f else 0f)
+
+            var alphaMask = region.alphaMask
+            if (alphaMask == null && !region.isSubZoneBar) {
+                if (isNsfw && cfg.skinToneRefinement) {
+                    // Feature #5: YCbCr + HSV multi-ethnic skin-tone pixel contour refinement
+                    alphaMask = SkinToneRefiner.refineSkinMask(frame, region.rect, padFrac, cfg.edgeFeatherPct)
+                }
+                if (silhouette != null && cfg.silhouetteSegmentation) {
+                    val useSilhouette = (cfg.maskShape == MaskShape.SILHOUETTE) ||
+                        (region.kind == "face" && cfg.faceSubZone == FaceSubZone.HAIR_AND_HEAD) ||
+                        isNsfw
+                    if (useSilhouette) {
+                        alphaMask = if (alphaMask != null) {
+                            silhouette.intersectWithMask(alphaMask, region.rect, padFrac)
+                        } else if (cfg.maskShape == MaskShape.SILHOUETTE || region.kind == "face" && cfg.faceSubZone == FaceSubZone.HAIR_AND_HEAD) {
+                            silhouette.extractRegionAlphaMask(region.rect, padFrac, cfg.edgeFeatherPct)
+                        } else null
+                    }
+                }
+            }
+
+            val (patch, avg) = buildStyledPatch(frame, region.rect, padFrac, cfg)
+            region.copy(patch = patch, alphaMask = alphaMask, avgColor = avg)
         }
 
         val elapsedMs = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
         return DetectionFrameResult(withPatches, elapsedMs)
     }
 
-    private fun runMlKitFaces(frame: Bitmap): List<BlurRegion> {
+    private fun runMlKitFaces(frame: Bitmap, cfg: BlurConfigSnapshot): List<BlurRegion> {
         val detector = faceDetector ?: return emptyList()
         val w = frame.width.coerceAtLeast(1).toFloat()
         val h = frame.height.coerceAtLeast(1).toFloat()
-        val out = ArrayList<BlurRegion>(6)
+        val out = ArrayList<BlurRegion>(8)
         try {
             val img = InputImage.fromBitmap(frame, 0)
             val faces = Tasks.await(detector.process(img), 140L, TimeUnit.MILLISECONDS)
             for ((idx, face) in faces.withIndex()) {
                 val b = face.boundingBox
-                val left = (b.left / w).coerceIn(0f, 1f)
-                val top = (b.top / h).coerceIn(0f, 1f)
-                val right = (b.right / w).coerceIn(0f, 1f)
-                val bottom = (b.bottom / h).coerceIn(0f, 1f)
-                if (right - left < 0.022f || bottom - top < 0.022f) continue
+                val baseLeft = (b.left / w).coerceIn(0f, 1f)
+                val baseTop = (b.top / h).coerceIn(0f, 1f)
+                val baseRight = (b.right / w).coerceIn(0f, 1f)
+                val baseBottom = (b.bottom / h).coerceIn(0f, 1f)
+                val bw = baseRight - baseLeft
+                val bh = baseBottom - baseTop
+                if (bw < 0.020f || bh < 0.020f) continue
 
-                val rawContour = face.getContour(FaceContour.FACE)?.points
-                val normContour = if (rawContour != null && rawContour.size >= 8) {
-                    rawContour.map { pt -> PointF((pt.x / w).coerceIn(0f, 1f), (pt.y / h).coerceIn(0f, 1f)) }
-                } else {
-                    null
-                }
+                // Feature #4: 3D Euler Angle Tracking (Pitch X, Yaw Y, Roll Z)
+                val eulerY = face.headEulerAngleY
+                val eulerZ = if (cfg.headPose3dTracking) -face.headEulerAngleZ else 0f
+                val yawShift = if (cfg.headPose3dTracking && abs(eulerY) > 18f) {
+                    (eulerY / 90f) * bw * 0.14f
+                } else 0f
 
-                out.add(
-                    BlurRegion(
-                        id = "mlface-${face.trackingId ?: idx}",
-                        kind = "face",
-                        rect = RectF(left, top, right, bottom),
-                        contour = normContour,
-                        rotationDeg = face.headEulerAngleZ,
-                        confidence = 0.99f
-                    )
+                // Feature #10: Live Facial Expression -> Reactive Emoji
+                val emoji = BlurShaderEngine.resolveEmoji(
+                    pack = cfg.emojiPack,
+                    isNsfw = false,
+                    smileProb = face.smilingProbability ?: -1f,
+                    leftEyeOpen = face.leftEyeOpenProbability ?: -1f,
+                    rightEyeOpen = face.rightEyeOpenProbability ?: -1f
                 )
+
+                val trackKey = "mlface-${face.trackingId ?: idx}"
+
+                // Feature #3: Surgical Face Sub-Zone Extraction (using ML Kit 133-pt facial contours)
+                when (cfg.faceSubZone) {
+                    FaceSubZone.FULL_FACE -> {
+                        val contour = extractNormContour(face, FaceContour.FACE, w, h)
+                        val rect = RectF(
+                            (baseLeft + yawShift).coerceIn(0f, 1f),
+                            baseTop,
+                            (baseRight + yawShift).coerceIn(0f, 1f),
+                            baseBottom
+                        )
+                        out.add(
+                            BlurRegion(
+                                id = trackKey,
+                                kind = "face",
+                                rect = rect,
+                                contour = contour,
+                                rotationDeg = eulerZ,
+                                eulerYaw = eulerY,
+                                confidence = 0.99f,
+                                reactiveEmoji = emoji
+                            )
+                        )
+                    }
+
+                    FaceSubZone.HAIR_AND_HEAD -> {
+                        val rawFace = extractNormContour(face, FaceContour.FACE, w, h)
+                        val hairContour = rawFace?.map { pt ->
+                            val relY = (pt.y - baseTop) / bh.coerceAtLeast(0.01f)
+                            val liftY = if (relY < 0.45f) bh * 0.36f * (1f - relY / 0.45f) else 0f
+                            val widenX = (pt.x - (baseLeft + baseRight) * 0.5f) * 0.16f
+                            PointF((pt.x + widenX).coerceIn(0f, 1f), (pt.y - liftY).coerceIn(0f, 1f))
+                        }
+                        val rect = RectF(
+                            (baseLeft - bw * 0.16f + yawShift).coerceIn(0f, 1f),
+                            (baseTop - bh * 0.36f).coerceIn(0f, 1f),
+                            (baseRight + bw * 0.16f + yawShift).coerceIn(0f, 1f),
+                            (baseBottom + bh * 0.04f).coerceIn(0f, 1f)
+                        )
+                        out.add(
+                            BlurRegion(
+                                id = "$trackKey-head",
+                                kind = "face",
+                                rect = rect,
+                                contour = hairContour,
+                                rotationDeg = eulerZ,
+                                eulerYaw = eulerY,
+                                confidence = 0.99f,
+                                reactiveEmoji = emoji
+                            )
+                        )
+                    }
+
+                    FaceSubZone.EYES_ONLY -> {
+                        val eyeRect = computeEyesRect(face, baseLeft, baseTop, bw, bh, w, h)
+                        out.add(
+                            BlurRegion(
+                                id = "$trackKey-eyes",
+                                kind = "face",
+                                rect = eyeRect,
+                                contour = null,
+                                rotationDeg = eulerZ,
+                                eulerYaw = eulerY,
+                                confidence = 0.99f,
+                                reactiveEmoji = "🕶️",
+                                isSubZoneBar = true
+                            )
+                        )
+                    }
+
+                    FaceSubZone.MOUTH_ONLY -> {
+                        val mouthRect = computeMouthRect(face, baseLeft, baseTop, bw, bh, w, h)
+                        out.add(
+                            BlurRegion(
+                                id = "$trackKey-mouth",
+                                kind = "face",
+                                rect = mouthRect,
+                                contour = null,
+                                rotationDeg = eulerZ,
+                                eulerYaw = eulerY,
+                                confidence = 0.99f,
+                                reactiveEmoji = "🤐",
+                                isSubZoneBar = true
+                            )
+                        )
+                    }
+
+                    FaceSubZone.UPPER_FACE -> {
+                        val upperRect = RectF(
+                            (baseLeft - bw * 0.04f + yawShift).coerceIn(0f, 1f),
+                            (baseTop - bh * 0.06f).coerceIn(0f, 1f),
+                            (baseRight + bw * 0.04f + yawShift).coerceIn(0f, 1f),
+                            (baseTop + bh * 0.62f).coerceIn(0f, 1f)
+                        )
+                        out.add(
+                            BlurRegion(
+                                id = "$trackKey-upper",
+                                kind = "face",
+                                rect = upperRect,
+                                contour = null,
+                                rotationDeg = eulerZ,
+                                eulerYaw = eulerY,
+                                confidence = 0.99f,
+                                reactiveEmoji = emoji,
+                                isSubZoneBar = true
+                            )
+                        )
+                    }
+
+                    FaceSubZone.EYES_AND_MOUTH -> {
+                        val eyeRect = computeEyesRect(face, baseLeft, baseTop, bw, bh, w, h)
+                        val mouthRect = computeMouthRect(face, baseLeft, baseTop, bw, bh, w, h)
+                        out.add(
+                            BlurRegion(
+                                id = "$trackKey-eyes",
+                                kind = "face",
+                                rect = eyeRect,
+                                contour = null,
+                                rotationDeg = eulerZ,
+                                eulerYaw = eulerY,
+                                confidence = 0.99f,
+                                reactiveEmoji = "🕶️",
+                                isSubZoneBar = true
+                            )
+                        )
+                        out.add(
+                            BlurRegion(
+                                id = "$trackKey-mouth",
+                                kind = "face",
+                                rect = mouthRect,
+                                contour = null,
+                                rotationDeg = eulerZ,
+                                eulerYaw = eulerY,
+                                confidence = 0.99f,
+                                reactiveEmoji = "🤐",
+                                isSubZoneBar = true
+                            )
+                        )
+                    }
+                }
             }
         } catch (_: Throwable) {
         }
         return out
+    }
+
+    private fun extractNormContour(face: Face, contourType: Int, w: Float, h: Float): List<PointF>? {
+        val raw = face.getContour(contourType)?.points
+        if (raw == null || raw.size < 6) return null
+        return raw.map { pt -> PointF((pt.x / w).coerceIn(0f, 1f), (pt.y / h).coerceIn(0f, 1f)) }
+    }
+
+    private fun computeEyesRect(
+        face: Face,
+        baseLeft: Float,
+        baseTop: Float,
+        bw: Float,
+        bh: Float,
+        w: Float,
+        h: Float
+    ): RectF {
+        val pts = ArrayList<PointF>(40)
+        face.getContour(FaceContour.LEFT_EYE)?.points?.let { pts.addAll(it) }
+        face.getContour(FaceContour.RIGHT_EYE)?.points?.let { pts.addAll(it) }
+        face.getContour(FaceContour.LEFT_EYEBROW_TOP)?.points?.let { pts.addAll(it) }
+        face.getContour(FaceContour.RIGHT_EYEBROW_TOP)?.points?.let { pts.addAll(it) }
+
+        if (pts.size >= 6) {
+            var minX = Float.MAX_VALUE
+            var minY = Float.MAX_VALUE
+            var maxX = -Float.MAX_VALUE
+            var maxY = -Float.MAX_VALUE
+            for (p in pts) {
+                val nx = p.x / w
+                val ny = p.y / h
+                if (nx < minX) minX = nx
+                if (ny < minY) minY = ny
+                if (nx > maxX) maxX = nx
+                if (ny > maxY) maxY = ny
+            }
+            val ew = (maxX - minX).coerceAtLeast(bw * 0.45f)
+            val eh = (maxY - minY).coerceAtLeast(bh * 0.16f)
+            return RectF(
+                (minX - ew * 0.16f).coerceIn(0f, 1f),
+                (minY - eh * 0.25f).coerceIn(0f, 1f),
+                (maxX + ew * 0.16f).coerceIn(0f, 1f),
+                (maxY + eh * 0.38f).coerceIn(0f, 1f)
+            )
+        }
+        return RectF(
+            (baseLeft + bw * 0.06f).coerceIn(0f, 1f),
+            (baseTop + bh * 0.22f).coerceIn(0f, 1f),
+            (baseLeft + bw * 0.94f).coerceIn(0f, 1f),
+            (baseTop + bh * 0.48f).coerceIn(0f, 1f)
+        )
+    }
+
+    private fun computeMouthRect(
+        face: Face,
+        baseLeft: Float,
+        baseTop: Float,
+        bw: Float,
+        bh: Float,
+        w: Float,
+        h: Float
+    ): RectF {
+        val pts = ArrayList<PointF>(32)
+        face.getContour(FaceContour.UPPER_LIP_TOP)?.points?.let { pts.addAll(it) }
+        face.getContour(FaceContour.LOWER_LIP_BOTTOM)?.points?.let { pts.addAll(it) }
+
+        if (pts.size >= 6) {
+            var minX = Float.MAX_VALUE
+            var minY = Float.MAX_VALUE
+            var maxX = -Float.MAX_VALUE
+            var maxY = -Float.MAX_VALUE
+            for (p in pts) {
+                val nx = p.x / w
+                val ny = p.y / h
+                if (nx < minX) minX = nx
+                if (ny < minY) minY = ny
+                if (nx > maxX) maxX = nx
+                if (ny > maxY) maxY = ny
+            }
+            val mw = (maxX - minX).coerceAtLeast(bw * 0.28f)
+            val mh = (maxY - minY).coerceAtLeast(bh * 0.12f)
+            return RectF(
+                (minX - mw * 0.20f).coerceIn(0f, 1f),
+                (minY - mh * 0.35f).coerceIn(0f, 1f),
+                (maxX + mw * 0.20f).coerceIn(0f, 1f),
+                (maxY + mh * 0.35f).coerceIn(0f, 1f)
+            )
+        }
+        return RectF(
+            (baseLeft + bw * 0.22f).coerceIn(0f, 1f),
+            (baseTop + bh * 0.66f).coerceIn(0f, 1f),
+            (baseLeft + bw * 0.78f).coerceIn(0f, 1f),
+            (baseTop + bh * 0.88f).coerceIn(0f, 1f)
+        )
     }
 
     private fun runNudeNet(frame: Bitmap, cfg: BlurConfigSnapshot): List<BlurRegion> {
@@ -300,7 +621,8 @@ class BlurVisionEngine(context: Context) {
                                 kind = kind,
                                 rect = RectF(left, top, right, bottom),
                                 contour = null,
-                                confidence = bestScore
+                                confidence = bestScore,
+                                reactiveEmoji = if (kind == "nsfw") "🛡️" else cfg.emojiPack.baseEmoji
                             )
                         )
                     }
@@ -316,29 +638,24 @@ class BlurVisionEngine(context: Context) {
     private fun classifyEnabledClass(cls: Int, score: Float, cfg: BlurConfigSnapshot): String? {
         val sens = cfg.sensitivityMode
         return when (cls) {
-            // Faces
             CLS_FACE_FEMALE -> if (cfg.blurFaces && cfg.faceGenderMode != FaceGenderMode.MALE_ONLY && score >= sens.faceThresh) "face" else null
             CLS_FACE_MALE -> if (cfg.blurFaces && cfg.faceGenderMode != FaceGenderMode.FEMALE_ONLY && score >= sens.faceThresh) "face" else null
 
-            // Genitalia / Anus
             CLS_GENITALIA_F_EXP, CLS_GENITALIA_M_EXP, CLS_ANUS_EXP ->
                 if (cfg.blurGenitalia && score >= sens.explicitThresh) "nsfw" else null
             CLS_GENITALIA_F_COV, CLS_ANUS_COV ->
                 if (cfg.blurGenitalia && cfg.blurCoveredSensitive && score >= sens.strictThresh) "nsfw" else null
 
-            // Breasts / Chest
             CLS_BREAST_F_EXP ->
                 if (cfg.blurBreasts && score >= sens.explicitThresh) "nsfw" else null
             CLS_BREAST_F_COV, CLS_BREAST_M_EXP ->
                 if (cfg.blurBreasts && cfg.blurCoveredSensitive && score >= sens.strictThresh) "nsfw" else null
 
-            // Buttocks
             CLS_BUTTOCKS_EXP ->
                 if (cfg.blurButtocks && score >= sens.explicitThresh) "nsfw" else null
             CLS_BUTTOCKS_COV ->
                 if (cfg.blurButtocks && cfg.blurCoveredSensitive && score >= sens.strictThresh) "nsfw" else null
 
-            // Belly
             CLS_BELLY_EXP ->
                 if (cfg.blurBelly && score >= sens.explicitThresh) "nsfw" else null
             CLS_BELLY_COV ->
@@ -351,12 +668,11 @@ class BlurVisionEngine(context: Context) {
     private fun buildStyledPatch(
         frame: Bitmap,
         normRect: RectF,
-        isNsfw: Boolean,
+        padFrac: Float,
         cfg: BlurConfigSnapshot
     ): Pair<Bitmap?, Int> {
         val fw = frame.width
         val fh = frame.height
-        val padFrac = (cfg.maskPaddingPct / 100f) + (if (isNsfw) 0.04f else 0f)
         val x1 = ((normRect.left - normRect.width() * padFrac) * fw).toInt().coerceIn(0, fw - 2)
         val y1 = ((normRect.top - normRect.height() * padFrac) * fh).toInt().coerceIn(0, fh - 2)
         val x2 = ((normRect.right + normRect.width() * padFrac) * fw).toInt().coerceIn(x1 + 2, fw)
@@ -372,11 +688,13 @@ class BlurVisionEngine(context: Context) {
         if (cfg.blurStyle == BlurStyle.SOLID_COLOR) {
             return Pair(null, avgColor)
         }
+        if (cfg.blurStyle == BlurStyle.CUSTOM_IMAGE) {
+            return Pair(null, avgColor)
+        }
 
         return try {
             when (cfg.blurStyle) {
                 BlurStyle.MOSAIC -> {
-                    // Higher blurIntensity (1..10) = bigger mosaic blocks (fewer columns)
                     val cols = (14 - cfg.blurIntensity).coerceIn(3, 12)
                     val rows = ((cols * cropH.toFloat() / cropW.toFloat()).toInt()).coerceIn(3, 14)
                     val patch = Bitmap.createBitmap(cols, rows, Bitmap.Config.ARGB_8888)
@@ -390,13 +708,33 @@ class BlurVisionEngine(context: Context) {
                     Pair(patch, avgColor)
                 }
 
-                BlurStyle.GAUSSIAN, BlurStyle.FROSTED -> {
-                    val targetW = 36
-                    val targetH = ((targetW * cropH.toFloat() / cropW.toFloat()).toInt()).coerceIn(24, 52)
+                BlurStyle.GPU_BOKEH, BlurStyle.GPU_FLUTED_GLASS, BlurStyle.GPU_LIQUID_RIPPLE,
+                BlurStyle.GPU_VORONOI_CRYSTAL, BlurStyle.GPU_CYBER_GLITCH -> {
+                    // Android 13+ AGSL GPU shaders sample sharp 96px crops directly on GPU;
+                    // Android 8-12 native fallback gets pre-blurred patch so privacy is always 100%.
+                    val hasAgsl = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    val targetW = if (hasAgsl) 88 else 40
+                    val targetH = ((targetW * cropH.toFloat() / cropW.toFloat()).toInt()).coerceIn(32, 112)
                     val cropped = Bitmap.createBitmap(frame, x1, y1, cropW, cropH)
                     val scaled = Bitmap.createScaledBitmap(cropped, targetW, targetH, true)
                     if (cropped !== scaled && !cropped.isRecycled) cropped.recycle()
-                    val radius = (3 + cfg.blurIntensity * 1.4f).toInt().coerceIn(4, 18)
+                    if (!hasAgsl) {
+                        val rad = (4 + cfg.blurIntensity * 1.4f).toInt().coerceIn(5, 18)
+                        FastStackBlur.blurInPlace(scaled, rad)
+                    } else if (cfg.blurStyle == BlurStyle.GPU_FLUTED_GLASS || cfg.blurStyle == BlurStyle.GPU_LIQUID_RIPPLE) {
+                        // Light pre-soften guarantees zero facial recognition even through glass/liquid refraction
+                        FastStackBlur.blurInPlace(scaled, (2 + cfg.blurIntensity / 2).coerceIn(2, 7))
+                    }
+                    Pair(scaled, avgColor)
+                }
+
+                BlurStyle.GAUSSIAN, BlurStyle.FROSTED, BlurStyle.EMOJI_REACTIVE -> {
+                    val targetW = 38
+                    val targetH = ((targetW * cropH.toFloat() / cropW.toFloat()).toInt()).coerceIn(26, 56)
+                    val cropped = Bitmap.createBitmap(frame, x1, y1, cropW, cropH)
+                    val scaled = Bitmap.createScaledBitmap(cropped, targetW, targetH, true)
+                    if (cropped !== scaled && !cropped.isRecycled) cropped.recycle()
+                    val radius = (3 + cfg.blurIntensity * 1.5f).toInt().coerceIn(4, 19)
                     FastStackBlur.blurInPlace(scaled, radius)
                     Pair(scaled, avgColor)
                 }
@@ -462,6 +800,7 @@ class BlurVisionEngine(context: Context) {
         try { parallelPool.shutdownNow() } catch (_: Throwable) {}
         try { faceDetector?.close() } catch (_: Throwable) {}
         faceDetector = null
+        try { silhouetteSegmenter.close() } catch (_: Throwable) {}
         try { ortSession?.close() } catch (_: Throwable) {}
         ortSession = null
         onnxReady = false
@@ -472,7 +811,6 @@ class BlurVisionEngine(context: Context) {
         private const val MODEL_SIZE = 320
         private const val NUM_CLASSES = 18
 
-        // Official NudeNet v3 18-class taxonomy
         private const val CLS_GENITALIA_F_COV = 0
         private const val CLS_FACE_FEMALE = 1
         private const val CLS_BUTTOCKS_EXP = 2

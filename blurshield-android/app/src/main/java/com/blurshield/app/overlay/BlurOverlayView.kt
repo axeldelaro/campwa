@@ -7,7 +7,10 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PointF
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
+import android.util.TypedValue
 import android.view.Choreographer
 import android.view.View
 import com.blurshield.app.ai.BlurRegion
@@ -15,16 +18,20 @@ import com.blurshield.app.config.BlurConfigSnapshot
 import com.blurshield.app.config.BlurStyle
 import com.blurshield.app.config.MaskShape
 import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * Hardware-Accelerated 60–120 FPS Real-Time Blur & Pixelation Overlay View.
- * - Supports 5 blur styles (Gaussian, Mosaic, Frosted Glass, Solid Color, Solid Black)
- * - Supports 3 shapes (Organic 36-point Bézier face contour, Soft Oval, Rounded Rect)
- * - Supports 0ms scroll-delta tracking + velocity-smoothed Choreographer interpolation
- * - Optional real-time FPS / latency HUD pill
+ * BlurShield AI v2.0 Hardware-Accelerated 60–120 FPS Real-Time Overlay:
+ * - #1 Pixel-Accurate Silhouette & #5 Skin-Tone Alpha Mask GPU Compositing (DST_IN)
+ * - #2 Predictive 2D Kalman Velocity Tracker (Zero-Lag 120Hz motion extrapolation + contour glide)
+ * - #3 Surgical Face Sub-Zone Rendering (Eyes / Mouth / Upper / Full / Hair)
+ * - #4 3D Euler Head Angle Rotation Tracking (smooth angular Kalman interpolation)
+ * - #9 Android 13+ AGSL GPU RuntimeShaders (Bokeh, Fluted Glass, Liquid, Voronoi, Cyber Glitch)
+ * - #10 Reactive Emoji & Custom Gallery Image Masking
+ * - Adjustable Edge Feathering (0..100%) & Opacity (35..100%) + Live FPS/Latency HUD
  */
 class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCallback {
 
@@ -33,17 +40,29 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
         val kind: String,
         val currentRect: RectF,
         val targetRect: RectF,
+        // Kalman 2D Velocity State (normalized units / second)
+        var vx: Float = 0f,
+        var vy: Float = 0f,
+        var vw: Float = 0f,
+        var vh: Float = 0f,
+        var currentAngle: Float = 0f,
+        var targetAngle: Float = 0f,
+        var vAngle: Float = 0f,
         var contour: List<PointF>?,
-        var rotationDeg: Float,
         var patch: Bitmap?,
+        var alphaMask: Bitmap?,
         var avgColor: Int,
+        var reactiveEmoji: String,
+        var isSubZoneBar: Boolean,
         var alpha: Float,
         var targetAlpha: Float,
-        var lastSeenMs: Long
+        var lastSeenMs: Long,
+        var lastMeasMs: Long
     )
 
     private val lock = Any()
-    private val masks = ArrayList<TrackedMask>(14)
+    private val masks = ArrayList<TrackedMask>(16)
+    private val shaderEngine = BlurShaderEngine()
     private var animRunning = false
 
     @Volatile
@@ -56,6 +75,8 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
     private var activeModeLabel: String = "Auto"
 
     private var lastFrameNs: Long = 0L
+    private var animStartNs: Long = System.nanoTime()
+    private var currentTimeSec: Float = 0f
     private var smoothedFps: Float = 60f
 
     private val mosaicPaint = Paint().apply {
@@ -66,6 +87,10 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
 
     private val smoothBitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
         isDither = true
+    }
+
+    private val maskClipPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
     }
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -79,18 +104,18 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
     }
 
     private val hudBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(190, 9, 9, 11)
+        color = Color.argb(196, 9, 9, 11)
         style = Paint.Style.FILL
     }
 
     private val hudBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(110, 52, 211, 153)
+        color = Color.argb(120, 52, 211, 153)
         style = Paint.Style.STROKE
     }
 
     private val hudTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.rgb(228, 255, 240)
-        textSize = 11f * resources.displayMetrics.scaledDensity
+        textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 11f, resources.displayMetrics)
         isFakeBoldText = true
     }
 
@@ -108,7 +133,13 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
     fun updateConfig(cfg: BlurConfigSnapshot, modeLabel: String = activeModeLabel) {
         currentConfig = cfg
         activeModeLabel = modeLabel
-        postInvalidateOnAnimation()
+        post {
+            if (cfg.blurStyle.isAnimated && getActiveCount() > 0) {
+                ensureAnimating()
+            } else {
+                postInvalidateOnAnimation()
+            }
+        }
     }
 
     fun updateDetections(
@@ -122,6 +153,9 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
         lastInferenceMs = inferenceMs
         activeModeLabel = modeLabel
 
+        val velGain = cfg.smoothnessMode.velGain
+        val useKalman = cfg.kalmanPrediction
+
         synchronized(lock) {
             val matchedIds = HashSet<String>(detected.size)
 
@@ -129,35 +163,87 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
                 val existing = findBestMatchLocked(det, matchedIds)
                 if (existing != null) {
                     matchedIds.add(existing.id)
+
+                    // Feature #2: Predictive 2D Kalman Velocity Update (cx, cy, w, h, angle)
+                    val dtSec = ((nowMs - existing.lastMeasMs).coerceIn(16L, 650L)) / 1000f
+                    if (useKalman && dtSec in 0.016f..0.60f) {
+                        val oldCx = existing.targetRect.centerX()
+                        val oldCy = existing.targetRect.centerY()
+                        val oldW = existing.targetRect.width()
+                        val oldH = existing.targetRect.height()
+
+                        val newCx = det.rect.centerX()
+                        val newCy = det.rect.centerY()
+                        val newW = det.rect.width()
+                        val newH = det.rect.height()
+
+                        val measVx = ((newCx - oldCx) / dtSec).coerceIn(-1.6f, 1.6f)
+                        val measVy = ((newCy - oldCy) / dtSec).coerceIn(-1.6f, 1.6f)
+                        val measVw = ((newW - oldW) / dtSec).coerceIn(-0.9f, 0.9f)
+                        val measVh = ((newH - oldH) / dtSec).coerceIn(-0.9f, 0.9f)
+                        val measVa = ((det.rotationDeg - existing.targetAngle) / dtSec).coerceIn(-180f, 180f)
+
+                        // Adaptive dead-zone eliminates micro-jitter on static faces
+                        existing.vx = if (abs(measVx) < 0.015f) existing.vx * 0.45f else existing.vx * (1f - velGain) + measVx * velGain
+                        existing.vy = if (abs(measVy) < 0.015f) existing.vy * 0.45f else existing.vy * (1f - velGain) + measVy * velGain
+                        existing.vw = existing.vw * (1f - velGain) + measVw * velGain
+                        existing.vh = existing.vh * (1f - velGain) + measVh * velGain
+                        existing.vAngle = existing.vAngle * (1f - velGain) + measVa * velGain
+                    } else {
+                        existing.vx = 0f
+                        existing.vy = 0f
+                        existing.vw = 0f
+                        existing.vh = 0f
+                        existing.vAngle = 0f
+                    }
+
                     existing.targetRect.set(det.rect)
+                    existing.targetAngle = det.rotationDeg
                     if (det.contour != null) existing.contour = det.contour
-                    existing.rotationDeg = det.rotationDeg
+                    existing.reactiveEmoji = det.reactiveEmoji
+                    existing.isSubZoneBar = det.isSubZoneBar
+
                     if (det.patch != null) {
                         val old = existing.patch
                         existing.patch = det.patch
                         existing.avgColor = det.avgColor
-                        if (old != null && old !== det.patch && !old.isRecycled) {
-                            old.recycle()
-                        }
-                    } else if (cfg.blurStyle == BlurStyle.SOLID_BLACK || cfg.blurStyle == BlurStyle.SOLID_COLOR) {
-                        recyclePatchSafely(existing)
+                        if (old != null && old !== det.patch && !old.isRecycled) old.recycle()
+                    } else if (cfg.blurStyle == BlurStyle.SOLID_BLACK || cfg.blurStyle == BlurStyle.SOLID_COLOR || cfg.blurStyle == BlurStyle.CUSTOM_IMAGE) {
+                        recycleBitmapSafely(existing.patch)
+                        existing.patch = null
                         existing.avgColor = det.avgColor
                     }
+
+                    if (det.alphaMask != null) {
+                        val oldMask = existing.alphaMask
+                        existing.alphaMask = det.alphaMask
+                        if (oldMask != null && oldMask !== det.alphaMask && !oldMask.isRecycled) oldMask.recycle()
+                    } else if (!cfg.silhouetteSegmentation && !cfg.skinToneRefinement) {
+                        recycleBitmapSafely(existing.alphaMask)
+                        existing.alphaMask = null
+                    }
+
                     existing.targetAlpha = 1f
                     existing.lastSeenMs = nowMs
+                    existing.lastMeasMs = nowMs
                 } else {
                     val created = TrackedMask(
                         id = det.id,
                         kind = det.kind,
                         currentRect = RectF(det.rect),
                         targetRect = RectF(det.rect),
+                        currentAngle = det.rotationDeg,
+                        targetAngle = det.rotationDeg,
                         contour = det.contour,
-                        rotationDeg = det.rotationDeg,
                         patch = det.patch,
+                        alphaMask = det.alphaMask,
                         avgColor = det.avgColor,
-                        alpha = 0.4f,
+                        reactiveEmoji = det.reactiveEmoji,
+                        isSubZoneBar = det.isSubZoneBar,
+                        alpha = 0.45f,
                         targetAlpha = 1f,
-                        lastSeenMs = nowMs
+                        lastSeenMs = nowMs,
+                        lastMeasMs = nowMs
                     )
                     masks.add(created)
                     matchedIds.add(created.id)
@@ -174,7 +260,7 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
                         m.targetAlpha = 0f
                     }
                     if (m.alpha <= 0.03f && m.targetAlpha == 0f) {
-                        recyclePatchSafely(m)
+                        recycleMaskBitmaps(m)
                         iter.remove()
                     }
                 }
@@ -193,10 +279,12 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
                 m.currentRect.offset(dxNorm, dyNorm)
                 m.targetRect.offset(dxNorm, dyNorm)
                 m.contour = m.contour?.map { pt -> PointF(pt.x + dxNorm, pt.y + dyNorm) }
-                if (m.currentRect.bottom < -0.06f || m.currentRect.top > 1.06f ||
-                    m.currentRect.right < -0.06f || m.currentRect.left > 1.06f
+                // Damp vertical velocity slightly during manual scroll to prevent double-shifting
+                m.vy *= 0.35f
+                if (m.currentRect.bottom < -0.08f || m.currentRect.top > 1.08f ||
+                    m.currentRect.right < -0.08f || m.currentRect.left > 1.08f
                 ) {
-                    recyclePatchSafely(m)
+                    recycleMaskBitmaps(m)
                     iter.remove()
                 }
             }
@@ -213,7 +301,7 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
 
     fun clearImmediate() {
         synchronized(lock) {
-            for (m in masks) recyclePatchSafely(m)
+            for (m in masks) recycleMaskBitmaps(m)
             masks.clear()
         }
         postInvalidate()
@@ -227,18 +315,29 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
 
     fun getActiveCount(): Int = synchronized(lock) { masks.count { it.alpha > 0.15f } }
 
-    private fun recyclePatchSafely(m: TrackedMask) {
+    private fun recycleMaskBitmaps(m: TrackedMask) {
+        recycleBitmapSafely(m.patch)
+        m.patch = null
+        recycleBitmapSafely(m.alphaMask)
+        m.alphaMask = null
+    }
+
+    private fun recycleBitmapSafely(b: Bitmap?) {
         try {
-            val b = m.patch
-            m.patch = null
             if (b != null && !b.isRecycled) b.recycle()
         } catch (_: Throwable) {
         }
     }
 
     private fun findBestMatchLocked(det: BlurRegion, alreadyMatched: Set<String>): TrackedMask? {
+        // Exact tracking ID match first (keeps ML Kit face tracking IDs rock-solid across fast motion!)
+        for (m in masks) {
+            if (m.id == det.id && m.kind == det.kind && !alreadyMatched.contains(m.id)) {
+                return m
+            }
+        }
         var best: TrackedMask? = null
-        var bestScore = 0.07f
+        var bestScore = 0.06f
         val dcx = det.rect.centerX()
         val dcy = det.rect.centerY()
 
@@ -248,7 +347,7 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
             val dx = m.targetRect.centerX() - dcx
             val dy = m.targetRect.centerY() - dcy
             val dist = sqrt(dx * dx + dy * dy)
-            val prox = (1f - dist * 3.0f).coerceAtLeast(0f) * 0.44f
+            val prox = (1f - dist * 2.8f).coerceAtLeast(0f) * 0.48f
             val score = overlap + prox
             if (score > bestScore) {
                 bestScore = score
@@ -278,43 +377,95 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
     }
 
     override fun doFrame(frameTimeNanos: Long) {
+        var dtSec = 0.016f
         if (lastFrameNs > 0L) {
-            val dtSec = (frameTimeNanos - lastFrameNs) / 1_000_000_000f
-            if (dtSec in 0.002f..0.25f) {
-                val instantFps = (1f / dtSec).coerceIn(15f, 144f)
+            val rawDt = (frameTimeNanos - lastFrameNs) / 1_000_000_000f
+            if (rawDt in 0.002f..0.25f) {
+                dtSec = rawDt
+                val instantFps = (1f / rawDt).coerceIn(15f, 144f)
                 smoothedFps = smoothedFps * 0.85f + instantFps * 0.15f
             }
         }
         lastFrameNs = frameTimeNanos
+        currentTimeSec = ((frameTimeNanos - animStartNs) / 1_000_000_000.0).toFloat()
 
-        val smooth = currentConfig?.smoothnessMode
-        val posLerp = smooth?.posLerp ?: 0.46f
-        val alphaIn = smooth?.alphaIn ?: 0.42f
-        val alphaOut = smooth?.alphaOut ?: 0.26f
+        val cfg = currentConfig
+        val smooth = cfg?.smoothnessMode
+        // Frame-rate independent exponential smoothing (feels identically silky at 60Hz, 90Hz & 120Hz!)
+        val basePosLerp = smooth?.posLerp ?: 0.56f
+        val frameScale = (dtSec * 60f).coerceIn(0.35f, 2.2f)
+        val posLerp = (1f - Math.pow((1f - basePosLerp).toDouble(), frameScale.toDouble()).toFloat()).coerceIn(0.12f, 0.92f)
+        val alphaIn = (1f - Math.pow((1f - (smooth?.alphaIn ?: 0.48f)).toDouble(), frameScale.toDouble()).toFloat()).coerceIn(0.15f, 0.92f)
+        val alphaOut = (1f - Math.pow((1f - (smooth?.alphaOut ?: 0.28f)).toDouble(), frameScale.toDouble()).toFloat()).coerceIn(0.10f, 0.85f)
+
+        val useKalman = cfg?.kalmanPrediction ?: true
+        val leadMaxSec = ((cfg?.kalmanLeadMs ?: 55) / 1000f).coerceIn(0f, 0.15f)
+        val animatedShader = cfg?.blurStyle?.isAnimated == true
+        val nowMs = System.currentTimeMillis()
 
         var needsNextFrame = false
         synchronized(lock) {
             val iter = masks.iterator()
             while (iter.hasNext()) {
                 val m = iter.next()
-                m.currentRect.left += (m.targetRect.left - m.currentRect.left) * posLerp
-                m.currentRect.top += (m.targetRect.top - m.currentRect.top) * posLerp
-                m.currentRect.right += (m.targetRect.right - m.currentRect.right) * posLerp
-                m.currentRect.bottom += (m.targetRect.bottom - m.currentRect.bottom) * posLerp
+
+                // Feature #2: Predictive Kalman target with smooth exponential decay after last AI frame
+                val ageSec = ((nowMs - m.lastMeasMs).coerceIn(0L, 450L)) / 1000f
+                val decay = exp(-ageSec * 6.5f)
+                val predSec = if (useKalman) (leadMaxSec * decay) else 0f
+
+                val predCx = (m.targetRect.centerX() + m.vx * predSec).coerceIn(0.01f, 0.99f)
+                val predCy = (m.targetRect.centerY() + m.vy * predSec).coerceIn(0.01f, 0.99f)
+                val predW = (m.targetRect.width() + m.vw * predSec * 0.5f).coerceIn(0.02f, 1.0f)
+                val predH = (m.targetRect.height() + m.vh * predSec * 0.5f).coerceIn(0.02f, 1.0f)
+                val predLeft = predCx - predW * 0.5f
+                val predTop = predCy - predH * 0.5f
+                val predRight = predCx + predW * 0.5f
+                val predBottom = predCy + predH * 0.5f
+                val predAngle = (m.targetAngle + m.vAngle * predSec * 0.6f).coerceIn(-65f, 65f)
+
+                val prevCx = m.currentRect.centerX()
+                val prevCy = m.currentRect.centerY()
+
+                m.currentRect.left += (predLeft - m.currentRect.left) * posLerp
+                m.currentRect.top += (predTop - m.currentRect.top) * posLerp
+                m.currentRect.right += (predRight - m.currentRect.right) * posLerp
+                m.currentRect.bottom += (predBottom - m.currentRect.bottom) * posLerp
+                m.currentAngle += (predAngle - m.currentAngle) * posLerp
+
+                // Glide organic 36-pt contour smoothly along with Kalman velocity delta at 120 FPS!
+                val dCx = m.currentRect.centerX() - prevCx
+                val dCy = m.currentRect.centerY() - prevCy
+                if (m.contour != null && (abs(dCx) > 0.0002f || abs(dCy) > 0.0002f)) {
+                    for (pt in m.contour!!) {
+                        pt.x += dCx
+                        pt.y += dCy
+                    }
+                }
+
+                // Smooth velocity damping between measurements
+                val velDamp = exp(-dtSec * 4.2f)
+                m.vx *= velDamp
+                m.vy *= velDamp
+                m.vw *= velDamp
+                m.vh *= velDamp
+                m.vAngle *= velDamp
 
                 val aRate = if (m.targetAlpha > m.alpha) alphaIn else alphaOut
                 m.alpha += (m.targetAlpha - m.alpha) * aRate
 
-                val moved = abs(m.targetRect.left - m.currentRect.left) > 0.0006f ||
-                    abs(m.targetRect.top - m.currentRect.top) > 0.0006f ||
-                    abs(m.targetRect.right - m.currentRect.right) > 0.0006f ||
-                    abs(m.targetRect.bottom - m.currentRect.bottom) > 0.0006f ||
+                val moved = abs(predLeft - m.currentRect.left) > 0.0005f ||
+                    abs(predTop - m.currentRect.top) > 0.0005f ||
+                    abs(predRight - m.currentRect.right) > 0.0005f ||
+                    abs(predBottom - m.currentRect.bottom) > 0.0005f ||
+                    abs(predAngle - m.currentAngle) > 0.25f ||
+                    abs(m.vx) > 0.008f || abs(m.vy) > 0.008f ||
                     abs(m.targetAlpha - m.alpha) > 0.01f
 
                 if (m.targetAlpha == 0f && m.alpha <= 0.03f) {
-                    recyclePatchSafely(m)
+                    recycleMaskBitmaps(m)
                     iter.remove()
-                } else if (moved) {
+                } else if (moved || animatedShader) {
                     needsNextFrame = true
                 }
             }
@@ -333,6 +484,7 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
         animRunning = false
         Choreographer.getInstance().removeFrameCallback(this)
         clearImmediate()
+        shaderEngine.close()
         super.onDetachedFromWindow()
     }
 
@@ -344,17 +496,21 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
         val cfg = currentConfig
 
         val style = cfg?.blurStyle ?: BlurStyle.GAUSSIAN
-        val shape = cfg?.maskShape ?: MaskShape.ORGANIC
-        val padBase = (cfg?.maskPaddingPct ?: 14) / 100f
+        val shape = cfg?.maskShape ?: MaskShape.SILHOUETTE
+        val padBase = (cfg?.maskPaddingPct ?: 12) / 100f
+        val featherPct = cfg?.edgeFeatherPct ?: 40
+        val opacityMul = ((cfg?.maskOpacityPct ?: 100) / 100f).coerceIn(0.35f, 1f)
+        val intensity = cfg?.blurIntensity ?: 7
 
         var drawnCount = 0
         synchronized(lock) {
             for (m in masks) {
                 if (m.alpha <= 0.03f) continue
                 drawnCount++
-                val alphaInt = (m.alpha * 255f).toInt().coerceIn(0, 255)
+                val alphaInt = (m.alpha * opacityMul * 255f).toInt().coerceIn(0, 255)
                 val isNsfw = m.kind == "nsfw"
-                val pad = padBase + (if (isNsfw) 0.04f else 0f)
+                val isBody = m.kind == "body"
+                val pad = if (isBody) 0.02f else padBase + (if (isNsfw) 0.04f else 0f)
 
                 drawRect.set(
                     (m.currentRect.left - m.currentRect.width() * pad) * w,
@@ -363,14 +519,31 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
                     (m.currentRect.bottom + m.currentRect.height() * pad) * h
                 )
 
+                val alphaMask = m.alphaMask
+                val usePixelAlphaMask = alphaMask != null && !alphaMask.isRecycled &&
+                    !m.isSubZoneBar && (isBody || isNsfw || shape == MaskShape.SILHOUETTE)
+
+                if (usePixelAlphaMask) {
+                    // Features #1 & #5: Razor-sharp pixel-accurate Silhouette / Skin-Tone GPU Layer Compositing!
+                    val saveCount = canvas.saveLayer(drawRect, null)
+                    drawStyleContent(canvas, style, m, cfg, intensity, alphaInt)
+                    canvas.drawBitmap(alphaMask!!, null, drawRect, maskClipPaint)
+                    canvas.restoreToCount(saveCount)
+                    continue
+                }
+
                 clipPath.reset()
                 val contour = m.contour
                 when {
-                    shape == MaskShape.ORGANIC && !isNsfw && contour != null && contour.size >= 8 -> {
-                        buildSmoothContourPath(clipPath, contour, w, h, 1f + pad * 0.9f)
+                    m.isSubZoneBar -> {
+                        val corner = min(drawRect.width(), drawRect.height()) * 0.38f
+                        clipPath.addRoundRect(drawRect, corner, corner, Path.Direction.CW)
+                    }
+                    (shape == MaskShape.ORGANIC || shape == MaskShape.SILHOUETTE) && !isNsfw && contour != null && contour.size >= 8 -> {
+                        buildSmoothContourPath(clipPath, contour, w, h, 1f + pad * 0.92f)
                     }
                     shape == MaskShape.ROUNDED_RECT -> {
-                        val corner = min(drawRect.width(), drawRect.height()) * 0.22f
+                        val corner = min(drawRect.width(), drawRect.height()) * 0.24f
                         clipPath.addRoundRect(drawRect, corner, corner, Path.Direction.CW)
                     }
                     else -> {
@@ -379,18 +552,23 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
                 }
 
                 canvas.save()
-                if (abs(m.rotationDeg) > 2f && (shape != MaskShape.ORGANIC || contour == null || isNsfw)) {
-                    canvas.rotate(m.rotationDeg, drawRect.centerX(), drawRect.centerY())
+                // Feature #4: Smooth 3D Euler head rotation around region center
+                val shouldRotate = abs(m.currentAngle) > 1.5f &&
+                    (m.isSubZoneBar || shape == MaskShape.OVAL || shape == MaskShape.ROUNDED_RECT ||
+                        contour == null || style == BlurStyle.EMOJI_REACTIVE || style == BlurStyle.CUSTOM_IMAGE)
+                if (shouldRotate) {
+                    canvas.rotate(m.currentAngle, drawRect.centerX(), drawRect.centerY())
                 }
 
-                // Soft feathered outer rim matching scene color
-                if (style != BlurStyle.SOLID_BLACK) {
-                    haloPaint.strokeWidth = (if (style == BlurStyle.FROSTED) 2.5f else 7f) * density
-                    haloPaint.color = if (style == BlurStyle.FROSTED) {
-                        Color.argb((alphaInt * 0.55f).toInt(), 255, 255, 255)
+                // Soft feathered edge blending (0..100%)
+                if (featherPct > 4 && style != BlurStyle.SOLID_BLACK && style != BlurStyle.EMOJI_REACTIVE) {
+                    val featherWidth = (2f + (featherPct / 100f) * 14f) * density
+                    haloPaint.strokeWidth = featherWidth
+                    haloPaint.color = if (style == BlurStyle.FROSTED || style == BlurStyle.GPU_FLUTED_GLASS) {
+                        Color.argb((alphaInt * 0.45f).toInt(), 255, 255, 255)
                     } else {
                         Color.argb(
-                            (alphaInt * 0.45f).toInt(),
+                            (alphaInt * (0.25f + (featherPct / 100f) * 0.35f)).toInt(),
                             Color.red(m.avgColor),
                             Color.green(m.avgColor),
                             Color.blue(m.avgColor)
@@ -400,60 +578,15 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
                 }
 
                 canvas.clipPath(clipPath)
-                val patch = m.patch
-                when (style) {
-                    BlurStyle.SOLID_BLACK -> {
-                        fillPaint.color = Color.argb(alphaInt, 10, 10, 14)
-                        canvas.drawRect(drawRect, fillPaint)
-                    }
-
-                    BlurStyle.SOLID_COLOR -> {
-                        fillPaint.color = Color.argb(
-                            alphaInt,
-                            Color.red(m.avgColor),
-                            Color.green(m.avgColor),
-                            Color.blue(m.avgColor)
-                        )
-                        canvas.drawRect(drawRect, fillPaint)
-                    }
-
-                    BlurStyle.MOSAIC -> {
-                        if (patch != null && !patch.isRecycled) {
-                            mosaicPaint.alpha = alphaInt
-                            canvas.drawBitmap(patch, null, drawRect, mosaicPaint)
-                        } else {
-                            fillPaint.color = Color.argb(alphaInt, Color.red(m.avgColor), Color.green(m.avgColor), Color.blue(m.avgColor))
-                            canvas.drawRect(drawRect, fillPaint)
-                        }
-                    }
-
-                    BlurStyle.GAUSSIAN -> {
-                        if (patch != null && !patch.isRecycled) {
-                            smoothBitmapPaint.alpha = alphaInt
-                            canvas.drawBitmap(patch, null, drawRect, smoothBitmapPaint)
-                        } else {
-                            fillPaint.color = Color.argb(alphaInt, Color.red(m.avgColor), Color.green(m.avgColor), Color.blue(m.avgColor))
-                            canvas.drawRect(drawRect, fillPaint)
-                        }
-                    }
-
-                    BlurStyle.FROSTED -> {
-                        if (patch != null && !patch.isRecycled) {
-                            smoothBitmapPaint.alpha = alphaInt
-                            canvas.drawBitmap(patch, null, drawRect, smoothBitmapPaint)
-                        }
-                        fillPaint.color = Color.argb((alphaInt * 0.38f).toInt(), 240, 246, 255)
-                        canvas.drawRect(drawRect, fillPaint)
-                    }
-                }
-
+                drawStyleContent(canvas, style, m, cfg, intensity, alphaInt)
                 canvas.restore()
             }
         }
 
         // Optional real-time Performance HUD
         if (cfg?.showPerfHud == true) {
-            val label = "$activeModeLabel • ${lastInferenceMs}ms • ${smoothedFps.toInt()} FPS • $drawnCount zone${if (drawnCount > 1) "s" else ""}"
+            val kTag = if (cfg.kalmanPrediction) "K120" else "Std"
+            val label = "$activeModeLabel • $kTag • ${lastInferenceMs}ms • ${smoothedFps.toInt()} FPS • $drawnCount z"
             val tw = hudTextPaint.measureText(label)
             val padH = 10f * density
             val topY = 38f * density
@@ -463,6 +596,72 @@ class BlurOverlayView(context: Context) : View(context), Choreographer.FrameCall
             canvas.drawRoundRect(hudRect, 12f * density, 12f * density, hudBorderPaint)
             val textY = hudRect.centerY() - (hudTextPaint.descent() + hudTextPaint.ascent()) * 0.5f
             canvas.drawText(label, hudRect.left + padH, textY, hudTextPaint)
+        }
+    }
+
+    private fun drawStyleContent(
+        canvas: Canvas,
+        style: BlurStyle,
+        m: TrackedMask,
+        cfg: BlurConfigSnapshot?,
+        intensity: Int,
+        alphaInt: Int
+    ) {
+        val patch = m.patch
+        when (style) {
+            BlurStyle.SOLID_BLACK -> {
+                fillPaint.color = Color.argb(alphaInt, 10, 10, 14)
+                canvas.drawRect(drawRect, fillPaint)
+            }
+
+            BlurStyle.SOLID_COLOR -> {
+                fillPaint.color = Color.argb(alphaInt, Color.red(m.avgColor), Color.green(m.avgColor), Color.blue(m.avgColor))
+                canvas.drawRect(drawRect, fillPaint)
+            }
+
+            BlurStyle.MOSAIC -> {
+                if (patch != null && !patch.isRecycled) {
+                    mosaicPaint.alpha = alphaInt
+                    canvas.drawBitmap(patch, null, drawRect, mosaicPaint)
+                } else {
+                    fillPaint.color = Color.argb(alphaInt, Color.red(m.avgColor), Color.green(m.avgColor), Color.blue(m.avgColor))
+                    canvas.drawRect(drawRect, fillPaint)
+                }
+            }
+
+            BlurStyle.GAUSSIAN -> {
+                if (patch != null && !patch.isRecycled) {
+                    smoothBitmapPaint.alpha = alphaInt
+                    canvas.drawBitmap(patch, null, drawRect, smoothBitmapPaint)
+                } else {
+                    fillPaint.color = Color.argb(alphaInt, Color.red(m.avgColor), Color.green(m.avgColor), Color.blue(m.avgColor))
+                    canvas.drawRect(drawRect, fillPaint)
+                }
+            }
+
+            BlurStyle.FROSTED -> {
+                if (patch != null && !patch.isRecycled) {
+                    smoothBitmapPaint.alpha = alphaInt
+                    canvas.drawBitmap(patch, null, drawRect, smoothBitmapPaint)
+                }
+                fillPaint.color = Color.argb((alphaInt * 0.36f).toInt(), 240, 246, 255)
+                canvas.drawRect(drawRect, fillPaint)
+            }
+
+            BlurStyle.GPU_BOKEH, BlurStyle.GPU_FLUTED_GLASS, BlurStyle.GPU_LIQUID_RIPPLE,
+            BlurStyle.GPU_VORONOI_CRYSTAL, BlurStyle.GPU_CYBER_GLITCH -> {
+                shaderEngine.drawGpuStyle(canvas, style, patch, drawRect, m.avgColor, intensity, alphaInt, currentTimeSec)
+            }
+
+            BlurStyle.EMOJI_REACTIVE -> {
+                shaderEngine.drawReactiveEmoji(canvas, drawRect, m.reactiveEmoji, patch, m.avgColor, alphaInt)
+            }
+
+            BlurStyle.CUSTOM_IMAGE -> {
+                if (cfg != null) {
+                    shaderEngine.drawCustomImage(canvas, drawRect, cfg, patch, m.avgColor, alphaInt)
+                }
+            }
         }
     }
 

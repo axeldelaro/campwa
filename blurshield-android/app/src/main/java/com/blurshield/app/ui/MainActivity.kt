@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -19,6 +21,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.widget.NestedScrollView
@@ -26,20 +29,23 @@ import com.blurshield.app.config.AppFilterMode
 import com.blurshield.app.config.BlurConfigSnapshot
 import com.blurshield.app.config.BlurSettings
 import com.blurshield.app.config.BlurStyle
+import com.blurshield.app.config.EmojiPack
 import com.blurshield.app.config.FaceGenderMode
+import com.blurshield.app.config.FaceSubZone
 import com.blurshield.app.config.MaskShape
 import com.blurshield.app.config.SensitivityMode
 import com.blurshield.app.config.SmoothnessMode
 import com.blurshield.app.service.BlurAccessibilityService
 import com.blurshield.app.service.TurboCaptureService
 import com.google.android.material.materialswitch.MaterialSwitch
+import java.io.File
+import java.io.FileOutputStream
 
 /**
- * Pure Native Kotlin Pro Control Dashboard for BlurShield AI:
- * - Zero WebView overhead (<120ms cold launch).
- * - Full granular controls: Face & NSFW zones, Blur style (Gaussian/Mosaic/Frosted/Solid/Black),
- *   Mask shape (Organic/Oval/Rounded), Intensity, Margin padding, Smoothness 120Hz, Screen ROI,
- *   Sensitivity, Per-App rules, Floating Pill, FPS HUD & Optional 30Hz Turbo Video Mode.
+ * BlurShield AI v2.0 Pure Native Kotlin Pro Control Dashboard:
+ * - Features #1 (Silhouette Segmentation), #2 (Kalman 0-Lag Tracking), #3 (Face Sub-Zones),
+ *   #4 (3D Head Euler Tracking), #5 (Skin-Tone Refinement), #9 (AGSL GPU Shaders 120Hz),
+ *   #10 (Reactive Emoji & Custom Gallery Image), plus Edge Feathering, Opacity & 35Hz Turbo Video.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -52,6 +58,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var turboButton: Button
     private lateinit var masterSwitch: MaterialSwitch
     private lateinit var appsButton: Button
+    private lateinit var emojiPackBox: View
+    private lateinit var customImageBox: LinearLayout
+    private lateinit var pickImageButton: Button
 
     private var updatingUi = false
 
@@ -64,6 +73,14 @@ class MainActivity : AppCompatActivity() {
         refreshStatusBanner()
     }
 
+    private val pickCustomImageLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            savePickedMaskImage(uri)
+        }
+    }
+
     private val serviceListener: () -> Unit = {
         runOnUiThread { refreshStatusBanner() }
     }
@@ -72,6 +89,7 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             previewView.setConfig(snap)
             refreshStatusBanner()
+            refreshContextualStylePanels(snap)
         }
     }
 
@@ -85,14 +103,52 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        val snap = settings.snapshot()
         refreshStatusBanner()
-        previewView.setConfig(settings.snapshot())
+        refreshContextualStylePanels(snap)
+        previewView.setConfig(snap)
     }
 
     override fun onDestroy() {
         BlurAccessibilityService.removeStateListener(serviceListener)
         BlurSettings.removeListener(settingsListener)
         super.onDestroy()
+    }
+
+    private fun savePickedMaskImage(uri: Uri) {
+        try {
+            val raw = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+            if (raw == null) {
+                Toast.makeText(this, "Impossible de lire cette image", Toast.LENGTH_SHORT).show()
+                return
+            }
+            val maxDim = 512f
+            val scale = (maxDim / maxOf(raw.width, raw.height).coerceAtLeast(1)).coerceAtMost(1f)
+            val finalBmp = if (scale < 0.99f) {
+                val scaled = Bitmap.createScaledBitmap(
+                    raw,
+                    (raw.width * scale).toInt().coerceAtLeast(32),
+                    (raw.height * scale).toInt().coerceAtLeast(32),
+                    true
+                )
+                if (scaled !== raw) raw.recycle()
+                scaled
+            } else raw
+
+            val outFile = File(filesDir, "custom_mask_image.png")
+            FileOutputStream(outFile).use { fos ->
+                finalBmp.compress(Bitmap.CompressFormat.PNG, 95, fos)
+            }
+            if (!finalBmp.isRecycled) finalBmp.recycle()
+
+            settings.update {
+                putString("custom_img_path", outFile.absolutePath)
+                putString("blur_style", BlurStyle.CUSTOM_IMAGE.id)
+            }
+            Toast.makeText(this, "Image de masquage enregistrée", Toast.LENGTH_SHORT).show()
+        } catch (_: Throwable) {
+            Toast.makeText(this, "Erreur lors de l'import de l'image", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
@@ -109,7 +165,7 @@ class MainActivity : AppCompatActivity() {
         return GradientDrawable().apply {
             cornerRadius = dp(12).toFloat()
             if (active) {
-                setColor(Color.argb(50, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)))
+                setColor(Color.argb(52, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)))
                 setStroke(dp(1), accentColor)
             } else {
                 setColor(Color.rgb(11, 11, 14))
@@ -132,7 +188,7 @@ class MainActivity : AppCompatActivity() {
         // ==================== HEADER & MASTER CONTROL ====================
         val heroCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = cardDrawable(Color.argb(65, 16, 185, 129), Color.rgb(16, 21, 22))
+            background = cardDrawable(Color.argb(70, 16, 185, 129), Color.rgb(16, 21, 22))
             setPadding(dp(16), dp(16), dp(16), dp(16))
         }
 
@@ -142,15 +198,15 @@ class MainActivity : AppCompatActivity() {
         }
         val titleCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         statusTitle = TextView(this).apply {
-            text = "BlurShield AI"
+            text = "BlurShield AI v2.0"
             setTextColor(Color.WHITE)
-            textSize = 18f
+            textSize = 18.5f
             typeface = Typeface.DEFAULT_BOLD
         }
         statusSubtitle = TextView(this).apply {
-            text = "Flou temps réel Visages & NSFW (100 % local)"
+            text = "Silhouette IA • Kalman 120Hz • Shaders GPU • 100 % local"
             setTextColor(Color.rgb(161, 161, 170))
-            textSize = 12f
+            textSize = 11.5f
         }
         titleCol.addView(statusTitle)
         titleCol.addView(statusSubtitle)
@@ -170,7 +226,6 @@ class MainActivity : AppCompatActivity() {
         headerRow.addView(masterSwitch)
         heroCard.addView(headerRow)
 
-        // Status + Turbo Video Row
         val modeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -183,7 +238,7 @@ class MainActivity : AppCompatActivity() {
             background = pillDrawable(true)
         }
         turboButton = Button(this).apply {
-            text = "Mode Turbo Vidéo 30Hz"
+            text = "Mode Turbo Vidéo 35Hz"
             isAllCaps = false
             textSize = 11.5f
             setTextColor(Color.rgb(224, 242, 254))
@@ -256,66 +311,142 @@ class MainActivity : AppCompatActivity() {
         a11yBanner.addView(a11yBtns)
         root.addView(a11yBanner, marginBottom(12))
 
-        // ==================== LIVE VISUAL PREVIEW ====================
-        val previewCard = createSectionCard("Aperçu temps réel du rendu")
+        // ==================== LIVE ANIMATED VISUAL PREVIEW ====================
+        val previewCard = createSectionCard("Aperçu temps réel 60 FPS (Contours, Shaders & 3D)")
         previewView = BlurPreviewView(this).apply { setConfig(snap) }
-        previewCard.addView(previewView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(156)))
+        previewCard.addView(previewView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(164)))
         root.addView(previewCard, marginBottom(12))
 
-        // ==================== 1. ZONES DE DÉTECTION ====================
-        val zonesCard = createSectionCard("Zones à flouter (Visages & NSFW)")
-        zonesCard.addView(createToggleRow("Visages (contour IA 36 points)", snap.blurFaces) { settings.blurFaces = it })
+        // ==================== 1. CONTOURS IA, VISAGES & NSFW (#1, #3, #4, #5) ====================
+        val zonesCard = createSectionCard("Contours IA Ultra-Précis & Zones (#1, #3, #4, #5)")
+        zonesCard.addView(createToggleRow("Visages (133 points Bézier IA)", snap.blurFaces) { settings.blurFaces = it })
         zonesCard.addView(
             createChipSelector(
-                label = "Filtre visages",
+                label = "Filtre genre visages",
                 options = FaceGenderMode.values().map { it to it.label },
                 initial = snap.faceGenderMode
             ) { settings.faceGenderMode = it }
         )
+        zonesCard.addView(
+            createChipSelector(
+                label = "Sous-zone chirurgicale du visage (#3)",
+                options = FaceSubZone.values().map { it to it.label },
+                initial = snap.faceSubZone,
+                accentColor = Color.rgb(56, 189, 248)
+            ) { settings.faceSubZone = it }
+        )
+        zonesCard.addView(createToggleRow("Suivi 3D angle de tête Euler X/Y/Z (#4)", snap.headPose3dTracking) { settings.headPose3dTracking = it })
+        zonesCard.addView(createDivider())
+        zonesCard.addView(createToggleRow("Détourage Silhouette IA au pixel près (#1)", snap.silhouetteSegmentation) { settings.silhouetteSegmentation = it })
+        zonesCard.addView(createToggleRow("Flouter toute la silhouette corps entier (#1)", snap.blurWholeBodySilhouette) { settings.blurWholeBodySilhouette = it })
         zonesCard.addView(createDivider())
         zonesCard.addView(createToggleRow("Zones intimes explicites", snap.blurGenitalia) { settings.blurGenitalia = it })
         zonesCard.addView(createToggleRow("Poitrine / Torse exposé", snap.blurBreasts) { settings.blurBreasts = it })
         zonesCard.addView(createToggleRow("Fesses exposées", snap.blurButtocks) { settings.blurButtocks = it })
         zonesCard.addView(createToggleRow("Ventre / Nombril exposé", snap.blurBelly) { settings.blurBelly = it })
         zonesCard.addView(createToggleRow("Mode strict (maillots / zones couvertes)", snap.blurCoveredSensitive) { settings.blurCoveredSensitive = it })
+        zonesCard.addView(createToggleRow("Affinage adaptatif couleur de peau NSFW (#5)", snap.skinToneRefinement) { settings.skinToneRefinement = it })
         root.addView(zonesCard, marginBottom(12))
 
-        // ==================== 2. TYPE DE FLOU & RENDU ====================
-        val styleCard = createSectionCard("Type de flou, forme & fluidité")
-        styleCard.addView(
-            createChipSelector(
-                label = "Style de masquage",
-                options = BlurStyle.values().map { it to it.label },
-                initial = snap.blurStyle
-            ) { settings.blurStyle = it }
-        )
+        // ==================== 2. 12 STYLES, SHADERS GPU & REMPLACEMENT (#9 & #10) ====================
+        val gpuTag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) "AGSL 120Hz natif" else "Mode GPU natif"
+        val styleCard = createSectionCard("12 Styles, Shaders GPU ($gpuTag) & Remplacement (#9, #10)")
+
+        val styleSelectorRef = createChipSelector(
+            label = "Style de masquage (Classique • GPU Shaders • Emoji / Image)",
+            options = BlurStyle.values().map { it to it.label },
+            initial = snap.blurStyle,
+            perRowOverride = 3,
+            accentColor = Color.rgb(168, 85, 247)
+        ) { settings.blurStyle = it }
+        styleCard.addView(styleSelectorRef)
+
+        // Contextual Emoji Pack selector (#10)
+        emojiPackBox = createChipSelector(
+            label = "Pack Emoji dynamique (#10 — suit sourire & clin d'œil)",
+            options = EmojiPack.values().map { it to it.label },
+            initial = snap.emojiPack,
+            perRowOverride = 3,
+            accentColor = Color.rgb(251, 191, 36)
+        ) { settings.emojiPack = it }
+        styleCard.addView(emojiPackBox)
+
+        // Contextual Custom Gallery Image picker (#10)
+        customImageBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, dp(6))
+        }
+        pickImageButton = Button(this).apply {
+            isAllCaps = false
+            textSize = 12.5f
+            setTextColor(Color.WHITE)
+            background = pillDrawable(true, Color.rgb(168, 85, 247))
+            setOnClickListener {
+                try {
+                    pickCustomImageLauncher.launch(arrayOf("image/*"))
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        customImageBox.addView(pickImageButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)))
+        styleCard.addView(customImageBox)
+
+        styleCard.addView(createDivider())
         styleCard.addView(
             createChipSelector(
                 label = "Forme du masque",
                 options = MaskShape.values().map { it to it.label },
-                initial = snap.maskShape
+                initial = snap.maskShape,
+                perRowOverride = 2
             ) { settings.maskShape = it }
-        )
-        styleCard.addView(
-            createSliderRow("Intensité du flou / taille pixels", snap.blurIntensity, 1, 10, "") {
-                settings.blurIntensity = it
-            }
-        )
-        styleCard.addView(
-            createSliderRow("Marge autour de la zone", snap.maskPaddingPct, 0, 45, " %") {
-                settings.maskPaddingPct = it
-            }
-        )
-        styleCard.addView(
-            createChipSelector(
-                label = "Fluidité & suivi de mouvement",
-                options = SmoothnessMode.values().map { it to it.label },
-                initial = snap.smoothnessMode
-            ) { settings.smoothnessMode = it }
         )
         root.addView(styleCard, marginBottom(12))
 
-        // ==================== 3. ZONE D'ÉCRAN (ROI) & SENSIBILITÉ ====================
+        // ==================== 3. RÉGLAGES CHIRURGICAUX & KALMAN 0-LAG (#2) ====================
+        val kalmanCard = createSectionCard("Fluidité Extrême 120Hz, Kalman 0-Lag (#2) & Finition")
+        kalmanCard.addView(
+            createSliderRow("Intensité du flou / shader / mosaïque", snap.blurIntensity, 1, 10, "") {
+                settings.blurIntensity = it
+            }
+        )
+        kalmanCard.addView(
+            createSliderRow("Marge de sécurité autour de la zone", snap.maskPaddingPct, 0, 45, " %") {
+                settings.maskPaddingPct = it
+            }
+        )
+        kalmanCard.addView(
+            createSliderRow("Fondu progressif des bords (Feathering)", snap.edgeFeatherPct, 0, 100, " %") {
+                settings.edgeFeatherPct = it
+            }
+        )
+        kalmanCard.addView(
+            createSliderRow("Opacité du masque", snap.maskOpacityPct, 35, 100, " %") {
+                settings.maskOpacityPct = it
+            }
+        )
+        kalmanCard.addView(createDivider())
+        kalmanCard.addView(
+            createChipSelector(
+                label = "Profil de suivi & fluidité",
+                options = SmoothnessMode.values().map { it to it.label },
+                initial = snap.smoothnessMode,
+                perRowOverride = 2,
+                accentColor = Color.rgb(56, 189, 248)
+            ) { settings.smoothnessMode = it }
+        )
+        kalmanCard.addView(
+            createToggleRow("Suivi prédictif Kalman + vecteur vitesse (#2)", snap.kalmanPrediction) {
+                settings.kalmanPrediction = it
+            }
+        )
+        kalmanCard.addView(
+            createSliderRow("Anticipation prédictive Kalman (0-Lag vidéo)", snap.kalmanLeadMs, 0, 140, " ms") {
+                settings.kalmanLeadMs = it
+            }
+        )
+        root.addView(kalmanCard, marginBottom(12))
+
+        // ==================== 4. ZONE D'ÉCRAN (ROI) & SENSIBILITÉ ====================
         val roiCard = createSectionCard("Zone d’écran active (ROI) & Sensibilité IA")
         roiCard.addView(
             createChipSelector(
@@ -341,7 +472,7 @@ class MainActivity : AppCompatActivity() {
         )
         root.addView(roiCard, marginBottom(12))
 
-        // ==================== 4. APPLICATIONS CIBLÉES ====================
+        // ==================== 5. APPLICATIONS CIBLÉES ====================
         val appsCard = createSectionCard("Applications ciblées / exclues")
         appsCard.addView(
             createChipSelector(
@@ -377,7 +508,7 @@ class MainActivity : AppCompatActivity() {
         })
         root.addView(appsCard, marginBottom(12))
 
-        // ==================== 5. CONFORT & PERFORMANCE ====================
+        // ==================== 6. CONFORT & PERFORMANCE ====================
         val perfCard = createSectionCard("Confort, contrôle rapide & batterie")
         perfCard.addView(
             createToggleRow("Pastille flottante Pause / Reprise (1 tap)", snap.showFloatingPill) {
@@ -385,7 +516,7 @@ class MainActivity : AppCompatActivity() {
             }
         )
         perfCard.addView(
-            createToggleRow("Afficher le compteur FPS & latence (HUD)", snap.showPerfHud) {
+            createToggleRow("Afficher le compteur FPS & Kalman HUD", snap.showPerfHud) {
                 settings.showPerfHud = it
             }
         )
@@ -395,7 +526,7 @@ class MainActivity : AppCompatActivity() {
             }
         )
         perfCard.addView(TextView(this).apply {
-            text = "Astuce : ajoutez la tuile « BlurShield AI » dans vos Réglages rapides Android pour activer ou mettre en pause en un glissement."
+            text = "Astuce : active le Mode Turbo Vidéo 35Hz + Kalman 0-Lag pour une fluidité quasi parfaite sur TikTok, Reels et YouTube."
             setTextColor(Color.rgb(113, 113, 122))
             textSize = 11f
             setPadding(0, dp(6), 0, 0)
@@ -403,8 +534,20 @@ class MainActivity : AppCompatActivity() {
         root.addView(perfCard, marginBottom(16))
 
         scroll.addView(root)
+        refreshContextualStylePanels(snap)
         refreshStatusBanner()
         return scroll
+    }
+
+    private fun refreshContextualStylePanels(snap: BlurConfigSnapshot) {
+        emojiPackBox.visibility = if (snap.blurStyle == BlurStyle.EMOJI_REACTIVE) View.VISIBLE else View.GONE
+        customImageBox.visibility = if (snap.blurStyle == BlurStyle.CUSTOM_IMAGE) View.VISIBLE else View.GONE
+        val hasImg = snap.customMaskImagePath.isNotBlank() && File(snap.customMaskImagePath).exists()
+        pickImageButton.text = if (hasImg) {
+            "Changer l'image perso (Galerie) ✓"
+        } else {
+            "Choisir une image perso dans la Galerie"
+        }
     }
 
     private fun createSectionCard(title: String): LinearLayout {
@@ -415,7 +558,7 @@ class MainActivity : AppCompatActivity() {
             addView(TextView(this@MainActivity).apply {
                 text = title
                 setTextColor(Color.WHITE)
-                textSize = 14f
+                textSize = 13.8f
                 typeface = Typeface.DEFAULT_BOLD
                 setPadding(0, 0, 0, dp(10))
             })
@@ -441,7 +584,7 @@ class MainActivity : AppCompatActivity() {
         val tv = TextView(this).apply {
             text = label
             setTextColor(Color.rgb(228, 228, 231))
-            textSize = 13f
+            textSize = 12.8f
         }
         val sw = MaterialSwitch(this).apply {
             isChecked = initial
@@ -461,6 +604,8 @@ class MainActivity : AppCompatActivity() {
         label: String,
         options: List<Pair<T, String>>,
         initial: T,
+        perRowOverride: Int? = null,
+        accentColor: Int = Color.rgb(16, 185, 129),
         onSelected: (T) -> Unit
     ): View {
         val box = LinearLayout(this).apply {
@@ -482,13 +627,13 @@ class MainActivity : AppCompatActivity() {
         fun refreshChips() {
             for ((value, tv) in chipViews) {
                 val active = value == current
-                tv.background = pillDrawable(active)
-                tv.setTextColor(if (active) Color.rgb(167, 243, 208) else Color.rgb(161, 161, 170))
+                tv.background = pillDrawable(active, accentColor)
+                tv.setTextColor(if (active) Color.WHITE else Color.rgb(161, 161, 170))
                 tv.typeface = if (active) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
             }
         }
 
-        val perRow = if (options.size <= 3) options.size else 3
+        val perRow = perRowOverride ?: if (options.size <= 3) options.size else 3
         options.forEachIndexed { index, (value, title) ->
             if (index > 0 && index % perRow == 0) {
                 currentRow = LinearLayout(this).apply {
@@ -499,9 +644,9 @@ class MainActivity : AppCompatActivity() {
             }
             val tv = TextView(this).apply {
                 text = title
-                textSize = 11.5f
+                textSize = 11.2f
                 gravity = Gravity.CENTER
-                setPadding(dp(8), dp(8), dp(8), dp(8))
+                setPadding(dp(6), dp(8), dp(6), dp(8))
                 setOnClickListener {
                     current = value
                     refreshChips()
@@ -596,7 +741,7 @@ class MainActivity : AppCompatActivity() {
         statusBadge.text = when {
             !a11yActive -> "Accessibilité inactive"
             !snap.enabled -> "En pause"
-            turbo -> "Turbo 30Hz • ${lat}ms"
+            turbo -> "Turbo 35Hz • ${lat}ms"
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> "Autonome Actif • ${lat}ms"
             else -> "Accessibilité active (Turbo requis)"
         }
@@ -605,7 +750,7 @@ class MainActivity : AppCompatActivity() {
             if (a11yActive && snap.enabled) Color.rgb(110, 231, 183) else Color.rgb(253, 230, 138)
         )
 
-        turboButton.text = if (turbo) "Arrêter Turbo 30Hz" else "Mode Turbo Vidéo 30Hz"
+        turboButton.text = if (turbo) "Arrêter Turbo 35Hz" else "Mode Turbo Vidéo 35Hz"
         turboButton.background = pillDrawable(turbo, Color.rgb(56, 189, 248))
     }
 

@@ -570,9 +570,9 @@ class BlurAccessibilityService : AccessibilityService() {
             lastInferenceMs = res.inferenceMs
             val detections = res.regions
 
-            val modeLabel = if (isTurbo) "Turbo 30Hz" else "Auto"
+            val modeLabel = if (isTurbo) "Turbo 35Hz" else "Auto"
             if (detections.isNotEmpty()) {
-                if (existingBoxes.isNotEmpty() && bgDiff < 15f) {
+                if (existingBoxes.isNotEmpty() && bgDiff < 15f && !snap.blurWholeBodySilhouette) {
                     val merged = ArrayList<BlurRegion>(detections)
                     for ((i, oldBox) in existingBoxes.withIndex()) {
                         val covered = detections.any { d ->

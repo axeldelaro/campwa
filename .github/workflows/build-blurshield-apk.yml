@@ -113,18 +113,21 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: blurshield-v1.0.${{ github.run_number }}
-          name: "BlurShield AI v1.0.${{ github.run_number }} (Flou Visages & NSFW Autonome • 120 FPS • Réglages Pro)"
+          tag_name: blurshield-v2.0.${{ github.run_number }}
+          name: "BlurShield AI v2.0.${{ github.run_number }} (Silhouette IA • Kalman 0-Lag 120Hz • Shaders GPU • Emoji Réactif)"
           body: |
-            ### BlurShield AI (`blurshield-v1.0.${{ github.run_number }}`)
+            ### BlurShield AI v2.0 (`blurshield-v2.0.${{ github.run_number }}`)
 
-            Application Android autonome dédiée exclusivement au **floutage temps réel des visages et contenus NSFW** (100 % local, aucun compte, aucun serveur, indépendant de SentinelCam).
+            Application Android autonome dédiée exclusivement au **floutage temps réel ultra-fluide des visages et contenus NSFW** (100 % local, aucun compte, indépendant de SentinelCam).
 
-            - **Superposition officielle par Service d’Accessibilité (`TYPE_ACCESSIBILITY_OVERLAY`)** : fonctionne au-dessus de toutes les applis sans popup, avec suivi du défilement en 0 ms et rendu GPU 60–120 FPS (`Choreographer`).
-            - **Mode Autonome (Android 11+)** + **Mode Turbo Vidéo 30 Hz** en 1 clic pour une fluidité quasi parfaite sur les vidéos rapides (TikTok, YouTube, Reels).
-            - **Zones granulaires** : Visages (Tous / Femmes / Hommes), Zones intimes, Poitrine/Torse, Fesses, Ventre/Nombril, Mode strict zones couvertes, et Zone d’écran active (ROI Haut/Bas).
-            - **5 types de flou & 3 formes** : Flou Gaussien réel (`FastStackBlur`), Mosaïque Pixel, Verre dépoli, Teinte unie, Masque noir • Contour organique 36 points, Ovale doux, Rectangle arrondi • Sliders d’intensité, marge et fluidité + aperçu en direct.
-            - **Contrôle rapide** : filtrage par applications (exclure ou cibler), pastille flottante Pause/Reprise, compteur FPS/latence HUD et tuile Réglages rapides Android.
+            - **#1 Segmentation Silhouette IA au pixel près** (`ML Kit Selfie Segmentation`) : détourage précis cheveux/épaules/corps + mode **Silhouette Corps Entier**.
+            - **#2 Suivi prédictif Kalman 0-Lag (120 FPS)** : anticipation du vecteur de vitesse entre 2 frames IA + glissement des contours organiques sans latence + **Mode Turbo Vidéo 35 Hz**.
+            - **#3 Masquage chirurgical par sous-zone du visage** : Visage complet, Yeux seuls, Bouche seule, Haut du visage, Yeux + Bouche, Tête + Cheveux (133 points IA).
+            - **#4 Suivi 3D angle de tête (Euler X/Y/Z)** : rotation et compensation de profil en temps réel.
+            - **#5 Affinage couleur de peau adaptatif (YCbCr/HSV)** : resserre les masques NSFW sur la peau réelle sans déborder sur les vêtements ou le décor.
+            - **#9 Shaders GPU natifs Android 13+ (`RuntimeShader` AGSL)** : Bokeh Optique, Verre Strié Cathédrale, Distorsion Liquide animée, Cristal Voronoi et Glitch Cyberpunk à 120 FPS (avec rendu natif haute vitesse API 26–32).
+            - **#10 Remplacement dynamique** : **Emoji réactif** (suit sourire & clin d'œil + inclinaison 3D) et **Image personnelle** depuis la Galerie.
+            - **Finition chirurgicale** : fondu progressif des bords (*Feathering* 0–100 %), opacité réglable (35–100 %), zone d’écran active (ROI), filtrage par applis, pastille flottante et tuile Réglages rapides.
           files: ./BlurShield.apk
           draft: false
           prerelease: false
