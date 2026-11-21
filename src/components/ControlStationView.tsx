@@ -191,9 +191,16 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [systemStatus, setSystemStatus] = useState<DataSystemStatusMsg | null>(null);
   const [systemStatusLoading, setSystemStatusLoading] = useState(false);
 
-  // Add Child Pairing
+  // Add Child Pairing (Code + Official MDM QR Enrollment)
   const [pairingActiveCode, setPairingActiveCode] = useState<string | null>(null);
   const [pairingStatus, setPairingStatus] = useState<string | null>(null);
+  const [pairingMdmSession, setPairingMdmSession] = useState<{
+    pairCode: string;
+    deviceCode: string;
+    familyKey: string;
+    adminPin: string;
+    childName: string;
+  } | null>(null);
   const pairingSessionRef = useRef<ParentPairingSession | null>(null);
 
   // SMS Messages App State
@@ -768,6 +775,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
       onPaired: (info) => {
         setPairingActiveCode(null);
         setPairingStatus(null);
+        setPairingMdmSession(null);
         const now = Date.now();
         if (accountRef.current) {
           void upsertAccountChild(accountRef.current, {
@@ -784,14 +792,39 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     });
     pairingSessionRef.current = session;
     setPairingActiveCode(session.getCode());
+    setPairingMdmSession({
+      pairCode: session.getCode(),
+      deviceCode: session.getAssignedDeviceCode(),
+      familyKey: session.getFamilyKey(),
+      adminPin: session.getAdminPin(),
+      childName: childName.trim() || `Enfant ${(curAccount.children.length ?? 0) + 1}`,
+    });
     setPairingStatus('En attente du smartphone…');
     await session.start();
+  };
+
+  const handlePreRegisterMdmChild = async () => {
+    const meta = pairingMdmSession;
+    const curAccount = accountRef.current;
+    if (!meta || !curAccount) return;
+    const now = Date.now();
+    const updated = await upsertAccountChild(curAccount, {
+      pairingCode: meta.deviceCode,
+      deviceId: `mdm-${meta.deviceCode.toLowerCase()}`,
+      deviceName: `${meta.childName} (MDM)`,
+      childName: meta.childName,
+      pairedAt: now,
+      lastConnectedAt: now,
+    });
+    setAccount(updated);
+    handleCancelParentPairing();
   };
 
   const handleCancelParentPairing = () => {
     pairingSessionRef.current?.stop();
     pairingSessionRef.current = null;
     setPairingActiveCode(null);
+    setPairingMdmSession(null);
     setPairingStatus(null);
   };
 
@@ -1184,6 +1217,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         pushSentFeedback={pushSentFeedback}
         pairingActiveCode={pairingActiveCode}
         pairingStatus={pairingStatus}
+        pairingMdmSession={pairingMdmSession}
         onLogin={handleLoginParentAccount}
         onRegister={handleRegisterParentAccount}
         onLogout={handleLogoutParentAccount}
@@ -1192,6 +1226,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         onRenameChild={handleRenameChild}
         onRemoveChild={handleRemoveChild}
         onStartAddChild={handleStartAddChild}
+        onPreRegisterMdmChild={handlePreRegisterMdmChild}
         onCancelAddChild={handleCancelParentPairing}
         onDirectConnect={(code) => void handleConnect(code)}
         onSendWakePush={() => void handleSendPushInvite()}

@@ -179,7 +179,31 @@
                 android:resource="@xml/sentinel_accessibility_config" />
         </service>
 
-        <!-- Standard Android Device Admin Receiver (Parental-Control Style Protection) -->
+        <!-- Official Android 12+ Enterprise QR Provisioning Mode Selector -->
+        <activity
+            android:name=".receiver.ProvisioningModeActivity"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.app.action.GET_PROVISIONING_MODE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Official Android 12+ Enterprise QR Policy Compliance Handler -->
+        <activity
+            android:name=".receiver.PolicyComplianceActivity"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.app.action.ADMIN_POLICY_COMPLIANCE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Standard Android Device Admin & Enterprise Fully Managed Receiver -->
         <receiver
             android:name=".receiver.SentinelDeviceAdminReceiver"
             android:label="SentinelCam Protection"
@@ -191,6 +215,7 @@
                 android:resource="@xml/device_admin_policies" />
             <intent-filter>
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+                <action android:name="android.app.action.PROFILE_PROVISIONING_COMPLETE" />
             </intent-filter>
         </receiver>
 

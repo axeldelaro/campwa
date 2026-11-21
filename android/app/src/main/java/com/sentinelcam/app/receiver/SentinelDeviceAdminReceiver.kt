@@ -1,9 +1,12 @@
 package com.sentinelcam.app.receiver
 
 import android.app.admin.DeviceAdminReceiver
+import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.PersistableBundle
+import com.sentinelcam.app.MainActivity
 import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.storage.PortalPreferences
 
@@ -13,6 +16,22 @@ import com.sentinelcam.app.storage.PortalPreferences
  * activated by the device owner with an Administrator PIN code.
  */
 class SentinelDeviceAdminReceiver : DeviceAdminReceiver() {
+
+    @Suppress("DEPRECATION")
+    override fun onProfileProvisioningComplete(context: Context, intent: Intent) {
+        super.onProfileProvisioningComplete(context, intent)
+        try {
+            val extras = intent.getParcelableExtra<PersistableBundle>(
+                DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE
+            )
+            MdmProvisioningHelper.applyManagedDeviceProvisioning(context, extras)
+            val launch = Intent(context, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            context.startActivity(launch)
+        } catch (_: Throwable) {
+        }
+    }
 
     override fun onEnabled(context: Context, intent: Intent) {
         super.onEnabled(context, intent)

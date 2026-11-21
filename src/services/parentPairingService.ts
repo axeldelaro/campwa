@@ -44,6 +44,18 @@ export class ParentPairingSession {
     return this.tempCode;
   }
 
+  public getAssignedDeviceCode(): string {
+    return this.assignedDeviceCode;
+  }
+
+  public getFamilyKey(): string {
+    return this.familyKey;
+  }
+
+  public getAdminPin(): string {
+    return this.adminPin;
+  }
+
   public async start(): Promise<void> {
     const keys = await deriveBootstrapKeys(this.tempCode);
     this.channel = new EncryptedSignalingChannel({

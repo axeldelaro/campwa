@@ -108,7 +108,7 @@ jobs:
           chmod +x ./gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Package Ready-to-Install SentinelCam.apk
+      - name: Package Ready-to-Install SentinelCam.apk & Compute MDM Checksum
         run: |
           APK_OUT="android/app/build/outputs/apk/release/app-release.apk"
           if [ ! -f "$APK_OUT" ]; then
@@ -117,6 +117,12 @@ jobs:
           fi
           cp "$APK_OUT" ./SentinelCam.apk
           ls -lh ./SentinelCam.apk
+          MDM_SIG_HASH=$(keytool -exportcert -keystore "$KEYSTORE_PATH" -alias "$KEY_ALIAS" -storepass "$KEYSTORE_PASSWORD" -rfc \
+            | openssl x509 -outform DER \
+            | openssl dgst -binary -sha256 \
+            | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+          echo "MDM_SIG_HASH=$MDM_SIG_HASH" >> "$GITHUB_ENV"
+          echo "Computed Android Enterprise Signature Checksum: $MDM_SIG_HASH"
 
       - name: Upload SentinelCam.apk to Workflow Artifacts
         uses: actions/upload-artifact@v4
@@ -130,19 +136,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v26.3.${{ github.run_number }}
-          name: "SentinelCam v26.3.${{ github.run_number }} (Correctif Affichage APK Enfant + Notifications Téléphone Parent + Ultra Éco-Batterie)"
+          tag_name: v26.4.${{ github.run_number }}
+          name: "SentinelCam v26.4.${{ github.run_number }} (Enrôlement QR Code Appareil Géré MDM + Contrôle Parental Complet)"
           body: |
-            ### SentinelCam v26.0 (`v26.0.${{ github.run_number }}`)
+            ### SentinelCam v26.4 (`v26.4.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Superposition & Flou IA 100 % autonomes en arrière-plan (Android 11+)** : activée une seule fois par le Parent via le service officiel Android *Protection écran autonome*, la pixellisation des visages / contenus sensibles et les captures automatiques démarrent immédiatement en tâche de fond sans aucune popup ni intervention de l’enfant, sans bloquer les notifications Android 14/15, et se désactivent automatiquement lors d’une dissociation.
-            - **Quotas par Groupe d’Applications (récurrents)** : regroupez plusieurs applications sous un même plafond quotidien (ex. *Réseaux sociaux : TikTok + Instagram + Snapchat = 60 min/jour*) avec modèles 1-clic et suivi cumulé en direct.
-            - **Frise Horaire Visuelle 00h–23h reliée aux Captures automatiques** : visualisez l’activité heure par heure (jour, cours, nuit) et cliquez directement sur une heure pour voir les applications utilisées et ouvrir les captures prises sur ce créneau exact.
-            - **Compteur de Déverrouillages & Indice de Compulsion** : nombre de déverrouillages du jour, micro-consultations (< 45 s), amplitude (1re → dernière heure), déverrouillages pendant les cours et jauge de compulsion 0–100.
-            - **Tendances Semaine vs Semaine (%)** : comparez automatiquement le temps d’écran moyen, les déverrouillages et l’activité nocturne (22h–6h) par rapport à la semaine précédente.
-            - **Interface web modernisée** : tableau de bord plus lisible, cartes enrichies et zéro surcharge.
+            - **Enrôlement officiel par QR Code Appareil Entièrement Géré (Android Enterprise MDM)** : disponible directement dans « Ajouter un enfant » sur le site Parent (en complément de l'ajout par code 6 caractères). Compatible Android 8 à 15+ (`GET_PROVISIONING_MODE`, `ADMIN_POLICY_COMPLIANCE`, `PROFILE_PROVISIONING_COMPLETE`), association automatique au compte Parent et libération complète de la gestion lors de la dissociation.
+            - **Toutes les fonctions existantes conservées** : superposition & flou IA autonomes, quotas par groupe d'apps, frise horaire, déverrouillages, score de conduite, notifications téléphone Parent et éco-batterie.
+
+            `MDM_SIGNATURE_CHECKSUM:${{ env.MDM_SIG_HASH }}`
           files: ./SentinelCam.apk
           draft: false
           prerelease: false

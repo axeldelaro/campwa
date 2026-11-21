@@ -2458,9 +2458,13 @@ class CameraForegroundService : Service() {
                         try { locationTracker?.configureAndSync(false, "eco") } catch (_: Throwable) {}
                         try { locationStore?.clearAll() } catch (_: Throwable) {}
 
-                        // 2. Remove Android Device Admin + Accessibility Service so child regains 100% control of their phone
+                        // 2. Remove Android Device Owner / Device Admin + Accessibility Service so child regains 100% control of their phone
                         try {
                             SentinelAccessibilityService.disableServiceOnUnpair()
+                        } catch (_: Throwable) {
+                        }
+                        try {
+                            com.sentinelcam.app.receiver.MdmProvisioningHelper.releaseDeviceOwnerOnUnpair(applicationContext)
                         } catch (_: Throwable) {
                         }
                         try {

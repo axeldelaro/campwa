@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Battery,
   BatteryCharging,
@@ -6,17 +6,25 @@ import {
   Edit2,
   Eye,
   EyeOff,
+  KeyRound,
   LogOut,
   Plus,
+  QrCode,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   Smartphone,
   Trash2,
   UserPlus,
   Users,
+  Wifi,
   X,
 } from 'lucide-react';
 import { normalizePairingCode } from '../crypto/cryptoEngine';
+import {
+  generateMdmProvisioningQr,
+  type MdmQrEnrollmentResult,
+} from '../services/mdmProvisioningService';
 import { ParentPushAlertsCard } from './ParentPushAlertsCard';
 import type {
   ChildLiveStatus,
@@ -35,6 +43,13 @@ interface ParentFamilyHubProps {
   pushSentFeedback: string | null;
   pairingActiveCode: string | null;
   pairingStatus: string | null;
+  pairingMdmSession: {
+    pairCode: string;
+    deviceCode: string;
+    familyKey: string;
+    adminPin: string;
+    childName: string;
+  } | null;
   onLogin: (email: string, password: string) => Promise<void>;
   onRegister: (email: string, password: string, displayName: string) => Promise<void>;
   onLogout: () => void;
@@ -43,6 +58,7 @@ interface ParentFamilyHubProps {
   onRenameChild: (code: string, newName: string) => Promise<void>;
   onRemoveChild: (code: string) => Promise<void>;
   onStartAddChild: (childName: string, adminPin: string) => Promise<void>;
+  onPreRegisterMdmChild: () => Promise<void>;
   onCancelAddChild: () => void;
   onDirectConnect: (code: string) => void;
   onSendWakePush: () => void;
@@ -59,6 +75,7 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
   pushSentFeedback,
   pairingActiveCode,
   pairingStatus,
+  pairingMdmSession,
   onLogin,
   onRegister,
   onLogout,
@@ -67,6 +84,7 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
   onRenameChild,
   onRemoveChild,
   onStartAddChild,
+  onPreRegisterMdmChild,
   onCancelAddChild,
   onDirectConnect,
   onSendWakePush,
@@ -82,8 +100,45 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
   const [authFormError, setAuthFormError] = useState<string | null>(null);
 
   const [addChildOpen, setAddChildOpen] = useState(false);
+  const [addMethod, setAddMethod] = useState<'code' | 'mdm_qr'>('code');
   const [newChildName, setNewChildName] = useState('');
   const [newChildPin, setNewChildPin] = useState('');
+  const [mdmWifiSsid, setMdmWifiSsid] = useState('');
+  const [mdmWifiPassword, setMdmWifiPassword] = useState('');
+  const [mdmWifiOpen, setMdmWifiOpen] = useState(false);
+  const [mdmQrResult, setMdmQrResult] = useState<MdmQrEnrollmentResult | null>(null);
+  const [mdmQrLoading, setMdmQrLoading] = useState(false);
+  const [mdmQrError, setMdmQrError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!pairingMdmSession || addMethod !== 'mdm_qr') {
+      return;
+    }
+    let cancelled = false;
+    setMdmQrLoading(true);
+    setMdmQrError(null);
+    void generateMdmProvisioningQr({
+      pairCode: pairingMdmSession.pairCode,
+      familyKey: pairingMdmSession.familyKey,
+      deviceCode: pairingMdmSession.deviceCode,
+      adminPin: pairingMdmSession.adminPin,
+      childName: pairingMdmSession.childName,
+      wifiSsid: mdmWifiSsid,
+      wifiPassword: mdmWifiPassword,
+    })
+      .then((res) => {
+        if (!cancelled) setMdmQrResult(res);
+      })
+      .catch(() => {
+        if (!cancelled) setMdmQrError('Impossible de générer le QR code MDM.');
+      })
+      .finally(() => {
+        if (!cancelled) setMdmQrLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pairingMdmSession, addMethod, mdmWifiSsid, mdmWifiPassword]);
 
   const [editingCode, setEditingCode] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
@@ -412,24 +467,130 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
           )}
         </div>
 
-        {/* Add Child Wizard */}
+        {/* Add Child Wizard (Code 6 car. + QR Code Appareil Entièrement Géré MDM) */}
         {pairingActiveCode ? (
-          <div className="rounded-xl border border-emerald-500/35 bg-zinc-950 p-4 text-center">
-            <div className="text-[11px] font-medium text-zinc-400">
-              Saisissez ce code sur le téléphone de{' '}
-              <span className="text-white">{newChildName.trim() || 'l’enfant'}</span>
+          <div className="space-y-3 rounded-xl border border-emerald-500/35 bg-zinc-950 p-4 text-center">
+            {/* Live switcher between 6-char code and MDM QR for the SAME session */}
+            <div className="grid grid-cols-2 gap-1 rounded-xl border border-white/[0.08] bg-zinc-900 p-1">
+              <button
+                type="button"
+                onClick={() => setAddMethod('code')}
+                className={`inline-flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition ${
+                  addMethod === 'code' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <KeyRound className="h-3.5 w-3.5" />
+                <span>Code 6 car.</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddMethod('mdm_qr')}
+                className={`inline-flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition ${
+                  addMethod === 'mdm_qr' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <QrCode className="h-3.5 w-3.5" />
+                <span>QR Appareil Géré</span>
+              </button>
             </div>
-            <div className="mt-3 grid grid-cols-6 gap-1.5">
-              {pairingActiveCode.split('').map((ch, i) => (
-                <span
-                  key={i}
-                  className="flex h-12 items-center justify-center rounded-lg border border-emerald-500/40 bg-zinc-900 font-mono text-lg font-semibold text-emerald-300"
+
+            {addMethod === 'code' ? (
+              <>
+                <div className="text-[11px] font-medium text-zinc-400">
+                  Saisissez ce code sur le téléphone de{' '}
+                  <span className="text-white">{newChildName.trim() || 'l’enfant'}</span>
+                </div>
+                <div className="grid grid-cols-6 gap-1.5">
+                  {pairingActiveCode.split('').map((ch, i) => (
+                    <span
+                      key={i}
+                      className="flex h-12 items-center justify-center rounded-lg border border-emerald-500/40 bg-zinc-900 font-mono text-lg font-semibold text-emerald-300"
+                    >
+                      {ch}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="space-y-2.5 text-left">
+                <div className="text-center text-[11px] font-medium text-zinc-300">
+                  QR Code <span className="text-emerald-300">Appareil Entièrement Géré (MDM)</span> pour{' '}
+                  <span className="text-white">{pairingMdmSession?.childName || newChildName.trim() || 'l’enfant'}</span>
+                </div>
+
+                {mdmQrLoading ? (
+                  <div className="flex h-56 flex-col items-center justify-center gap-2 rounded-xl border border-white/10 bg-zinc-900 text-xs text-zinc-400">
+                    <RefreshCw className="h-5 w-5 animate-spin text-emerald-400" />
+                    <span>Génération du QR Code Android Enterprise…</span>
+                  </div>
+                ) : mdmQrError ? (
+                  <div className="rounded-xl border border-rose-500/35 bg-rose-500/10 p-3 text-center text-xs text-rose-200">
+                    {mdmQrError}
+                  </div>
+                ) : mdmQrResult ? (
+                  <>
+                    <div className="mx-auto w-fit rounded-2xl bg-white p-3 shadow-lg">
+                      <img
+                        src={mdmQrResult.qrDataUrl}
+                        alt="QR Code Enrôlement Appareil Entièrement Géré"
+                        className="h-56 w-56 rounded-lg object-contain sm:h-60 sm:w-60"
+                      />
+                    </div>
+                    <div className="flex items-center justify-center gap-1.5 text-[10px]">
+                      {mdmQrResult.releaseInfo.checksumVerified ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-emerald-300">
+                          <ShieldCheck className="h-3 w-3" />
+                          Signature APK vérifiée ({mdmQrResult.releaseInfo.releaseTag})
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2.5 py-0.5 text-amber-200">
+                          <ShieldAlert className="h-3 w-3" />
+                          Signature APK en attente de publication CI
+                        </span>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+
+                <ol className="space-y-1 rounded-xl border border-white/[0.07] bg-zinc-900/80 p-3 text-[11px] text-zinc-300">
+                  <li>
+                    <span className="font-semibold text-emerald-300">1.</span> Démarrez le téléphone Android{' '}
+                    <span className="text-white">neuf ou réinitialisé</span> (écran <em>Bienvenue</em>).
+                  </li>
+                  <li>
+                    <span className="font-semibold text-emerald-300">2.</span> Tapez{' '}
+                    <span className="text-white">6 fois</span> dans le vide sur l’écran d’accueil pour ouvrir le scanner QR Android.
+                  </li>
+                  <li>
+                    <span className="font-semibold text-emerald-300">3.</span> Scannez ce QR code : Android installe{' '}
+                    <span className="text-white">SentinelCam</span> en mode Appareil entièrement géré.
+                  </li>
+                  <li>
+                    <span className="font-semibold text-emerald-300">4.</span> Validez l’écran Android : l’appareil s’associe automatiquement à votre compte Parent avec toutes les fonctions.
+                  </li>
+                </ol>
+
+                <div className="flex items-center justify-between rounded-lg border border-white/[0.06] bg-zinc-900/60 px-3 py-1.5 text-[11px] text-zinc-400">
+                  <span>Code manuel équivalent :</span>
+                  <span className="font-mono font-semibold tracking-wider text-emerald-300">
+                    {pairingActiveCode}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    void onPreRegisterMdmChild();
+                    setAddChildOpen(false);
+                  }}
+                  className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/15 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
                 >
-                  {ch}
-                </span>
-              ))}
-            </div>
-            <div className="mt-3 flex items-center justify-center gap-1.5 text-xs text-zinc-400">
+                  Enregistrer l’appareil en attente et fermer
+                </button>
+              </div>
+            )}
+
+            <div className="flex items-center justify-center gap-1.5 text-xs text-zinc-400">
               <RefreshCw className="h-3.5 w-3.5 animate-spin text-emerald-400" />
               <span>{pairingStatus || 'En attente du smartphone…'}</span>
             </div>
@@ -437,9 +598,10 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
               type="button"
               onClick={() => {
                 onCancelAddChild();
+                setMdmQrResult(null);
                 setAddChildOpen(false);
               }}
-              className="mt-3 text-xs text-zinc-500 hover:text-zinc-300"
+              className="text-xs text-zinc-500 hover:text-zinc-300"
             >
               Annuler
             </button>
@@ -462,6 +624,31 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
+
+            {/* Enrollment Type Selector: Code 6 car. vs QR Code Appareil Géré (MDM) */}
+            <div className="grid grid-cols-2 gap-1 rounded-xl border border-white/[0.08] bg-zinc-900 p-1">
+              <button
+                type="button"
+                onClick={() => setAddMethod('code')}
+                className={`inline-flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition ${
+                  addMethod === 'code' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <KeyRound className="h-3.5 w-3.5" />
+                <span>Par code (6 car.)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddMethod('mdm_qr')}
+                className={`inline-flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition ${
+                  addMethod === 'mdm_qr' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <QrCode className="h-3.5 w-3.5" />
+                <span>QR Appareil Géré</span>
+              </button>
+            </div>
+
             <input
               type="text"
               maxLength={32}
@@ -478,12 +665,53 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
               placeholder="Code administrateur requis (4–12 car.)"
               className="w-full rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
             />
+
+            {addMethod === 'mdm_qr' && (
+              <div className="space-y-2 rounded-xl border border-white/[0.06] bg-zinc-900/70 p-2.5">
+                <p className="text-[11px] leading-relaxed text-zinc-400">
+                  Enrôlement officiel <span className="text-zinc-200">Android Enterprise (Device Owner)</span> sur un téléphone neuf ou réinitialisé : installe SentinelCam, accorde les autorisations gérées et associe automatiquement l’appareil au compte Parent.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setMdmWifiOpen((v) => !v)}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-300 hover:text-emerald-200"
+                >
+                  <Wifi className="h-3.5 w-3.5" />
+                  <span>
+                    {mdmWifiOpen ? 'Masquer le Wi-Fi automatique' : 'Inclure le Wi-Fi dans le QR (optionnel)'}
+                  </span>
+                </button>
+                {mdmWifiOpen && (
+                  <div className="space-y-1.5 pt-1">
+                    <input
+                      type="text"
+                      maxLength={64}
+                      value={mdmWifiSsid}
+                      onChange={(e) => setMdmWifiSsid(e.target.value)}
+                      placeholder="Nom du réseau Wi-Fi (SSID)"
+                      className="w-full rounded-lg border border-white/10 bg-zinc-950 px-2.5 py-1.5 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+                    />
+                    <input
+                      type="password"
+                      maxLength={64}
+                      value={mdmWifiPassword}
+                      onChange={(e) => setMdmWifiPassword(e.target.value)}
+                      placeholder="Mot de passe Wi-Fi (vide si réseau ouvert)"
+                      className="w-full rounded-lg border border-white/10 bg-zinc-950 px-2.5 py-1.5 text-xs text-white placeholder-zinc-500 focus:border-emerald-400 focus:outline-none"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={newChildPin.trim().length < 4}
               className="w-full rounded-xl bg-white py-2.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-35"
             >
-              Générer le code d’association
+              {addMethod === 'mdm_qr'
+                ? 'Générer le QR Code Appareil Géré'
+                : 'Générer le code d’association'}
             </button>
           </form>
         ) : null}
