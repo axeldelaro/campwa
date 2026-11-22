@@ -113,18 +113,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demonmom-v1.0.${{ github.run_number }}
-          name: "DemonMom AI v1.0.${{ github.run_number }} (Avatar IA • 23 Pouvoirs • Dossiers Masqués • Verrouillage 20 Taps)"
+          tag_name: demonmom-v2.0.${{ github.run_number }}
+          name: "DemonMom AI v2.0.${{ github.run_number }} (Design Photo-Réaliste • +16 Pouvoirs Accessibilité • Vidéo Au Coin • UI 4 Onglets)"
           body: |
-            ### DemonMom AI v1.0 (`demonmom-v1.0.${{ github.run_number }}`)
+            ### DemonMom AI v2.0 (`demonmom-v2.0.${{ github.run_number }}`)
 
-            Application Android 100 % autonome (indépendante de SentinelCam et BlurShield AI) : transforme la photo d'une personne en un **petit avatar démon possessif** qui vit sur l'écran avec **23 fonctionnalités ludiques et de contrôle parental local**.
+            Mise à jour majeure **Design Photo-Réaliste + 16 pouvoirs d'Accessibilité sévères & interactifs + Interface épurée 4 onglets** :
 
-            - **Avatar IA vivant 60–120 FPS (#24)** : détourage local du visage (`ML Kit Face Contours` + `Selfie Segmentation`), corps animé (Démon, Maman Poule, Chibi, Tête pure), physique de lancer/rebond, escalade des bords, cache-cache et bulles de dialogue.
-            - **Censure IA Jalouse & NSFW (#1–#6)** : flou jaloux, **Face-Swap** collant sa propre tête sur les autres visages (#2), filtre jalousie par genre (#3), bouclier NSFW dramatique NudeNet (#4), bandeau yeux (#5) et sabotage GPU AGSL progressif (#6).
-            - **Contrôle Parental « Maman Démon » (#7–#13, #19–#23)** : demande de permission (#7), quota par appli (#8), mini-jeux de négociation +10 min (#9), couvre-feu bonnet de nuit (#10), mode Devoirs (#11), anti-doomscroll (#12), panique Paramètres (#13), luminosité nuit (#19), alerte batterie < 20 % (#20), jauge d'humeur dynamique (#21), commentaires par appli (#22), alerte vitesse GPS passif (#23).
-            - **Bêtises & Dossiers Masqués (#14–#16, #25)** : changement de fond d'écran aléatoire avec **sauvegarde & restauration 1 clic** (#14), pop-ups photo tirées façon *Desktop Goose* (#15), flash plein écran (#16), et explorateur natif supportant les **dossiers cachés (`.*`) et `.nomedia`**.
-            - **Verrouillage Défi (Administrateur + Accessibilité)** : sortie propre garantie à tout moment en **tapotant le démon 20 fois de suite** puis en saisissant le code **`100205`** (retire aussi automatiquement l'Administrateur).
+            - **Avatar Photo-Réaliste HD (512×640)** : détourage studio du vrai portrait/buste (tête + cheveux + épaules), ombre portée douce, ailes sombres texturées, **cornes 3D posées aux coordonnées exactes du front**, **yeux braise sur les vraies pupilles** en mode Furieux et 4 styles réalistes.
+            - **16 nouveaux pouvoirs Accessibilité & Discipline** : #26 contre-scroll gestuel, #27 Retour compulsif, #29 mise en pause forcée des vidéos, #31 vol de clics & #37 anti-Like/Follow, #32 sabotage de saisie clavier, #34 fermeture du panneau de notifications, #35 blocage Réglages Rapides, **#38 Punition « Au coin ! » avec vidéo en boucle du dossier (masqués `.*` inclus)**, #39 lignes à recopier anti-copier-coller, #42 Zone Morte clavier, #44 Liste Noire Totale, #50 esquive du doigt, #53 Quiz surprise, #61 diaporama forcé 4 photos, #65 4 profils de sévérité en 1 clic.
+            - **Verrouillage strict des Paramètres Android + Administrateur** : sortie propre garantie en tapotant le démon **20 fois de suite** + code **`100205`**.
+            - **Interface épurée 4 onglets** : *Démon*, *Studio*, *Pouvoirs*, *Réglages*.
           files: ./DemonMom.apk
           draft: false
           prerelease: false

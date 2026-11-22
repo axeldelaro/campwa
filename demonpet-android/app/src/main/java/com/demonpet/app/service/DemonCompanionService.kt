@@ -147,6 +147,7 @@ class DemonCompanionService : Service() {
                     DemonDeviceAdminReceiver.removeAdminSafely(applicationContext)
                     settings.update {
                         putBoolean("challenge_locked", false)
+                        putBoolean("strict_settings_lock", false)
                         putBoolean("enabled", false)
                     }
                     stopSelf()
@@ -168,6 +169,15 @@ class DemonCompanionService : Service() {
         when (kind) {
             "popup" -> fallbackOverlay?.showDraggedPhotoPopup(snap)
             "flash" -> fallbackOverlay?.showFullscreenPhotoFlash(snap)
+            "slideshow" -> fallbackOverlay?.showForcedSlideshow(snap)
+            "corner" -> fallbackOverlay?.showTimeoutCornerWithVideo(
+                reason = "Test Punition Au Coin (vidéo du dossier) 😈",
+                durationSec = snap.timeoutCornerSec.coerceAtMost(20),
+                cfg = snap
+            )
+            "lines" -> fallbackOverlay?.showPunishmentLinesOverlay(snap)
+            "deadzone" -> fallbackOverlay?.showDeadZoneKeyboardOverlay(15)
+            "quiz" -> fallbackOverlay?.showSurpriseQuizOverlay(snap)
             "wallpaper" -> {
                 fallbackOverlay?.say("Nouveau fond d'écran ! 🖼️😈", 3_500L)
                 Thread { MediaFolderHelper.applyRandomWallpaperPrank(applicationContext, snap) }.start()

@@ -17,9 +17,7 @@ import com.demonpet.app.media.MediaFolderHelper
 import java.io.File
 
 /**
- * Native Full-Storage Folder Browser supporting HIDDEN `.dotfolders` and `.nomedia` directories!
- * Lets the user browse `/storage/emulated/0` freely, toggle hidden folders (ON by default),
- * see live image counts per folder, and pick ANY visible or hidden media folder in 1 tap.
+ * Native Full-Storage Folder Browser supporting HIDDEN `.dotfolders`, `.nomedia`, Photos AND Videos!
  */
 object FolderPickerDialog {
 
@@ -53,7 +51,7 @@ object FolderPickerDialog {
             setPadding(0, 0, 0, dp(8))
         }
         val upBtn = Button(context).apply {
-            text = "⬆ Dossier parent"
+            text = "⬆ Parent"
             isAllCaps = false
             textSize = 11.5f
             setTextColor(Color.WHITE)
@@ -65,7 +63,7 @@ object FolderPickerDialog {
             minHeight = 0; minimumHeight = 0
         }
         val hiddenCb = CheckBox(context).apply {
-            text = "Dossiers masqués (.*)"
+            text = "Masqués (.*)"
             isChecked = showHidden
             setTextColor(Color.rgb(228, 228, 231))
             textSize = 11.5f
@@ -83,9 +81,10 @@ object FolderPickerDialog {
 
         fun renderDir() {
             listLayout.removeAllViews()
-            val curImgCount = MediaFolderHelper.countImagesInFolder(currentDir, includeHidden = true)
+            val curImgs = MediaFolderHelper.countImagesInFolder(currentDir, includeHidden = true)
+            val curVids = MediaFolderHelper.countVideosInFolder(currentDir, includeHidden = true)
             val rel = currentDir.absolutePath.removePrefix(rootDir.absolutePath).ifEmpty { "/" }
-            pathTv.text = "$rel  ($curImgCount photo${if (curImgCount > 1) "s" else ""} ici)"
+            pathTv.text = "$rel  ($curImgs img • $curVids vid)"
 
             val rawDirs = currentDir.listFiles()?.filter { it.isDirectory }?.filter {
                 showHidden || !it.name.startsWith(".")
@@ -104,6 +103,7 @@ object FolderPickerDialog {
             for (dir in rawDirs) {
                 val isHidden = dir.name.startsWith(".")
                 val imgCnt = MediaFolderHelper.countImagesInFolder(dir, includeHidden = true)
+                val vidCnt = MediaFolderHelper.countVideosInFolder(dir, includeHidden = true)
                 val hasNomedia = File(dir, ".nomedia").exists()
 
                 val row = LinearLayout(context).apply {
@@ -120,18 +120,22 @@ object FolderPickerDialog {
                     }
                 }
                 val title = TextView(context).apply {
-                    val tag = buildString {
+                    text = buildString {
                         if (isHidden) append("🔒 ")
                         append(dir.name)
                         if (hasNomedia) append(" (.nomedia)")
                     }
-                    text = tag
                     setTextColor(if (isHidden) Color.rgb(233, 213, 255) else Color.WHITE)
                     textSize = 12.5f
                 }
+                val badge = buildString {
+                    if (imgCnt > 0) append("${imgCnt}p ")
+                    if (vidCnt > 0) append("${vidCnt}v ")
+                    append("→")
+                }
                 val countTv = TextView(context).apply {
-                    text = if (imgCnt > 0) "$imgCnt img →" else "→"
-                    setTextColor(if (imgCnt > 0) Color.rgb(52, 211, 153) else Color.rgb(113, 113, 122))
+                    text = badge
+                    setTextColor(if (imgCnt + vidCnt > 0) Color.rgb(52, 211, 153) else Color.rgb(113, 113, 122))
                     textSize = 11f
                 }
                 row.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -157,7 +161,7 @@ object FolderPickerDialog {
         renderDir()
 
         AlertDialog.Builder(context)
-            .setTitle("Choisir le dossier de photos (masqués inclus)")
+            .setTitle("Choisir le dossier (Photos & Vidéos)")
             .setView(container)
             .setPositiveButton("Choisir ce dossier") { _, _ ->
                 onSelected(currentDir.absolutePath)

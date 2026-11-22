@@ -17,15 +17,15 @@ import java.io.FileOutputStream
 import kotlin.random.Random
 
 /**
- * Media & Hidden Folder Engine:
- * - Reads images from ANY folder including hidden `.dotfolders`, `.nomedia` folders, and hidden files
+ * Media & Hidden Folder Engine (Photos + Videos):
+ * - Reads images AND videos from ANY folder including hidden `.dotfolders`, `.nomedia` folders, and hidden files
  *   via All Files Access (`MANAGE_EXTERNAL_STORAGE`), with Android SAF DocumentTree fallback.
- * - Safe downsampled decoding (never OOMs on 24MP photos).
- * - Backs up & restores original wallpaper cleanly before applying #14 wallpaper pranks!
+ * - Supports #14 wallpaper backup/restore, #15 popups, #16 flash, #38 Timeout Corner Video, #61 Slideshow.
  */
 object MediaFolderHelper {
 
     private val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif")
+    private val VIDEO_EXTS = setOf("mp4", "webm", "mkv", "mov", "3gp", "m4v", "avi")
     private const val BACKUP_WALLPAPER_NAME = "original_wallpaper_backup.jpg"
 
     fun hasAllFilesAccess(): Boolean {
@@ -37,10 +37,20 @@ object MediaFolderHelper {
     }
 
     fun isImageFileName(name: String): Boolean {
+        val ext = extOf(name) ?: return false
+        return IMAGE_EXTS.contains(ext)
+    }
+
+    fun isVideoFileName(name: String): Boolean {
+        val ext = extOf(name) ?: return false
+        return VIDEO_EXTS.contains(ext)
+    }
+
+    private fun extOf(name: String): String? {
         val clean = name.lowercase()
         val dot = clean.lastIndexOf('.')
-        if (dot <= 0 || dot == clean.lastIndex) return false
-        return IMAGE_EXTS.contains(clean.substring(dot + 1))
+        if (dot <= 0 || dot == clean.lastIndex) return null
+        return clean.substring(dot + 1)
     }
 
     fun countImagesInFolder(dir: File, includeHidden: Boolean = true): Int {
@@ -54,33 +64,54 @@ object MediaFolderHelper {
         return count
     }
 
-    fun countConfiguredImages(context: Context, cfg: DemonConfigSnapshot): Int {
+    fun countVideosInFolder(dir: File, includeHidden: Boolean = true): Int {
+        if (!dir.exists() || !dir.isDirectory) return 0
+        val children = dir.listFiles() ?: return 0
+        var count = 0
+        for (f in children) {
+            if (!includeHidden && f.name.startsWith(".")) continue
+            if (f.isFile && isVideoFileName(f.name)) count++
+        }
+        return count
+    }
+
+    /** Returns Pair(imageCount, videoCount) */
+    fun countConfiguredMedia(context: Context, cfg: DemonConfigSnapshot): Pair<Int, Int> {
         if (cfg.mediaFolderPath.isNotBlank()) {
             val dir = File(cfg.mediaFolderPath)
             if (dir.exists() && dir.isDirectory) {
-                return listFilesInFolder(dir, cfg.includeHiddenFiles).size
+                val imgs = listMediaInFolder(dir, cfg.includeHiddenFiles, videos = false).size
+                val vids = listMediaInFolder(dir, cfg.includeHiddenFiles, videos = true).size
+                return Pair(imgs, vids)
             }
         }
         if (cfg.mediaTreeUri.isNotBlank()) {
             return try {
-                val tree = DocumentFile.fromTreeUri(context, Uri.parse(cfg.mediaTreeUri)) ?: return 0
-                tree.listFiles().count { it.isFile && isImageFileName(it.name.orEmpty()) }
+                val tree = DocumentFile.fromTreeUri(context, Uri.parse(cfg.mediaTreeUri)) ?: return Pair(0, 0)
+                val files = tree.listFiles().filter { it.isFile }
+                val imgs = files.count { isImageFileName(it.name.orEmpty()) }
+                val vids = files.count { isVideoFileName(it.name.orEmpty()) }
+                Pair(imgs, vids)
             } catch (_: Throwable) {
-                0
+                Pair(0, 0)
             }
         }
-        return 0
+        return Pair(0, 0)
     }
 
-    private fun listFilesInFolder(dir: File, includeHidden: Boolean): List<File> {
+    fun countConfiguredImages(context: Context, cfg: DemonConfigSnapshot): Int =
+        countConfiguredMedia(context, cfg).first
+
+    private fun listMediaInFolder(dir: File, includeHidden: Boolean, videos: Boolean): List<File> {
         val out = ArrayList<File>()
         fun scan(cur: File, depth: Int) {
             if (depth > 2) return
             val list = cur.listFiles() ?: return
             for (f in list) {
                 if (!includeHidden && f.name.startsWith(".")) continue
-                if (f.isFile && isImageFileName(f.name) && f.length() > 1024L) {
-                    out.add(f)
+                if (f.isFile && f.length() > 1024L) {
+                    val match = if (videos) isVideoFileName(f.name) else isImageFileName(f.name)
+                    if (match) out.add(f)
                 } else if (f.isDirectory && depth < 1) {
                     scan(f, depth + 1)
                 }
@@ -90,33 +121,78 @@ object MediaFolderHelper {
         return out
     }
 
-    fun loadRandomMediaBitmap(context: Context, cfg: DemonConfigSnapshot, maxDimPx: Int = 1080): Bitmap? {
-        // 1) Direct filesystem folder (supports hidden `.dotfolders` & `.nomedia`!)
+    /** Picks a random video Uri from the configured folder (including hidden `.dotfolders`!) for #38 Timeout Corner */
+    fun pickRandomVideoUri(context: Context, cfg: DemonConfigSnapshot): Uri? {
         if (cfg.mediaFolderPath.isNotBlank()) {
             val dir = File(cfg.mediaFolderPath)
             if (dir.exists() && dir.isDirectory) {
-                val files = listFilesInFolder(dir, cfg.includeHiddenFiles)
-                if (files.isNotEmpty()) {
-                    val chosen = files[Random.nextInt(files.size)]
-                    return decodeSampledFile(chosen, maxDimPx)
+                val vids = listMediaInFolder(dir, cfg.includeHiddenFiles, videos = true)
+                if (vids.isNotEmpty()) {
+                    return Uri.fromFile(vids[Random.nextInt(vids.size)])
                 }
             }
         }
+        if (cfg.mediaTreeUri.isNotBlank()) {
+            try {
+                val tree = DocumentFile.fromTreeUri(context, Uri.parse(cfg.mediaTreeUri))
+                val vids = tree?.listFiles()?.filter { it.isFile && isVideoFileName(it.name.orEmpty()) }.orEmpty()
+                if (vids.isNotEmpty()) {
+                    return vids[Random.nextInt(vids.size)].uri
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        return null
+    }
 
-        // 2) Android SAF DocumentTree fallback
+    /** Loads up to [count] distinct random photos for #61 Forced Slideshow */
+    fun loadMultipleRandomBitmaps(context: Context, cfg: DemonConfigSnapshot, count: Int = 4, maxDimPx: Int = 1080): List<Bitmap> {
+        val out = ArrayList<Bitmap>()
+        if (cfg.mediaFolderPath.isNotBlank()) {
+            val dir = File(cfg.mediaFolderPath)
+            if (dir.exists() && dir.isDirectory) {
+                val files = listMediaInFolder(dir, cfg.includeHiddenFiles, videos = false).shuffled()
+                for (f in files.take(count)) {
+                    decodeSampledFile(f, maxDimPx)?.let { out.add(it) }
+                }
+                if (out.isNotEmpty()) return out
+            }
+        }
+        if (cfg.mediaTreeUri.isNotBlank()) {
+            try {
+                val tree = DocumentFile.fromTreeUri(context, Uri.parse(cfg.mediaTreeUri))
+                val imgs = tree?.listFiles()?.filter { it.isFile && isImageFileName(it.name.orEmpty()) }.orEmpty().shuffled()
+                for (doc in imgs.take(count)) {
+                    decodeSampledUri(context, doc.uri, maxDimPx)?.let { out.add(it) }
+                }
+                if (out.isNotEmpty()) return out
+            } catch (_: Throwable) {
+            }
+        }
+        loadRandomMediaBitmap(context, cfg, maxDimPx)?.let { out.add(it) }
+        return out
+    }
+
+    fun loadRandomMediaBitmap(context: Context, cfg: DemonConfigSnapshot, maxDimPx: Int = 1080): Bitmap? {
+        if (cfg.mediaFolderPath.isNotBlank()) {
+            val dir = File(cfg.mediaFolderPath)
+            if (dir.exists() && dir.isDirectory) {
+                val files = listMediaInFolder(dir, cfg.includeHiddenFiles, videos = false)
+                if (files.isNotEmpty()) {
+                    return decodeSampledFile(files[Random.nextInt(files.size)], maxDimPx)
+                }
+            }
+        }
         if (cfg.mediaTreeUri.isNotBlank()) {
             try {
                 val tree = DocumentFile.fromTreeUri(context, Uri.parse(cfg.mediaTreeUri))
                 val imgs = tree?.listFiles()?.filter { it.isFile && isImageFileName(it.name.orEmpty()) }.orEmpty()
                 if (imgs.isNotEmpty()) {
-                    val chosen = imgs[Random.nextInt(imgs.size)]
-                    return decodeSampledUri(context, chosen.uri, maxDimPx)
+                    return decodeSampledUri(context, imgs[Random.nextInt(imgs.size)].uri, maxDimPx)
                 }
             } catch (_: Throwable) {
             }
         }
-
-        // 3) Fallback to avatar image itself if user hasn't picked a media folder yet
         if (cfg.avatarPath.isNotBlank()) {
             val f = File(cfg.avatarPath)
             if (f.exists()) return decodeSampledFile(f, maxDimPx)
