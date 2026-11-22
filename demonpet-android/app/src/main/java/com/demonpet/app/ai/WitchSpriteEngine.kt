@@ -37,12 +37,27 @@ import kotlin.random.Random
  */
 object WitchSpriteEngine {
 
+    enum class AttackKind {
+        STRIKE,
+        ENCHANT_CHARM,
+        ENCHANT_HYPNO,
+        BIND_CAPTURE,
+        SEAL_MAGIC,
+        SIPHON_DRAIN,
+        BARRIER_SHIELD,
+        MIRAGE_CLONE,
+        TIME_DOUBLE,
+        ULTIMATE
+    }
+
     data class WitchAttack(
         val name: String,
         val hpDamage: Int,
         val embraceGain: Int,
         val levelDrain: Int,
-        val statusEffect: String = "" // "", "CHARMED", "HYPNOTIZED", "SEALED", "CAPTURE"
+        val statusEffect: String = "", // "", "CHARMED", "HYPNOTIZED", "SEALED", "CAPTURE", "SIPHON"
+        val kind: AttackKind = AttackKind.STRIKE,
+        val telegraphHint: String = "⚔️ Prépare une attaque de ${""}"
     )
 
     data class WitchProfile(
@@ -67,8 +82,9 @@ object WitchSpriteEngine {
         val isPlaceholderSprite: Boolean = false
     ) {
         fun recycle() {
-            try { if (!spriteBitmap.isRecycled) spriteBitmap.recycle() } catch (_: Throwable) {}
-            try { if (!backdropBitmap.isRecycled) backdropBitmap.recycle() } catch (_: Throwable) {}
+            // Intentionally no manual Bitmap.recycle() here: Android 14-16 HWUI RenderThread may still
+            // hold a DisplayList reference for 1-2 frames; letting NativeAllocationRegistry GC collect
+            // prevents all "Canvas: trying to use a recycled bitmap" / SIGABRT crashes during end scenes!
         }
     }
 
@@ -330,60 +346,148 @@ object WitchSpriteEngine {
     }
 
     private fun buildProfileForDef(def: WitchCatalog.WitchDef, cfg: DemonConfigSnapshot): WitchProfile {
-        val chScale = 1.0f + (def.chapter - 1) * 0.14f + (if (def.isBoss) 0.20f else if (def.isMiniBoss) 0.10f else 0f)
+        val chScale = 1.0f + (def.chapter - 1) * 0.14f + (if (def.isBoss) 0.22f else if (def.isMiniBoss) 0.11f else 0f)
         val s0 = def.skillNames.getOrElse(0) { "Sort d'Envoûtement" }
         val s1 = def.skillNames.getOrElse(1) { "Chaînes Magiques" }
         val s2 = def.skillNames.getOrElse(2) { "Drain d'Aura" }
-
-        val primaryStatus = when (def.archetype) {
-            WitchCatalog.Archetype.CHARMER -> "CHARMED"
-            WitchCatalog.Archetype.BINDER -> "CAPTURE"
-            WitchCatalog.Archetype.HYPNOTIST -> "HYPNOTIZED"
-            WitchCatalog.Archetype.DRAINER -> "HYPNOTIZED"
-            WitchCatalog.Archetype.INQUISITOR -> "SEALED"
-            WitchCatalog.Archetype.ILLUSIONIST -> "CHARMED"
-            WitchCatalog.Archetype.CHRONO -> "SEALED"
-            WitchCatalog.Archetype.SOVEREIGN -> "CAPTURE"
-        }
-
-        val secondaryStatus = when (def.archetype) {
-            WitchCatalog.Archetype.BINDER -> "CAPTURE"
-            WitchCatalog.Archetype.INQUISITOR -> "SEALED"
-            else -> "CAPTURE"
-        }
-
         val drainBonus = if (def.archetype == WitchCatalog.Archetype.DRAINER || def.isBoss) 1 else 0
 
-        val attacks = listOf(
-            WitchAttack(
-                name = "$s0 ✨",
-                hpDamage = (15 * chScale).toInt().coerceIn(12, 34),
-                embraceGain = (18 * chScale).toInt().coerceIn(16, 36),
-                levelDrain = 1,
-                statusEffect = primaryStatus
-            ),
-            WitchAttack(
-                name = "$s1 ⛓️",
-                hpDamage = (19 * chScale).toInt().coerceIn(15, 38),
-                embraceGain = (26 * chScale).toInt().coerceIn(22, 44),
-                levelDrain = 1,
-                statusEffect = secondaryStatus
-            ),
-            WitchAttack(
-                name = "$s2 💜",
-                hpDamage = (22 * chScale).toInt().coerceIn(18, 42),
-                embraceGain = (22 * chScale).toInt().coerceIn(20, 40),
-                levelDrain = 1 + drainBonus,
-                statusEffect = if (def.archetype == WitchCatalog.Archetype.INQUISITOR) "SEALED" else "HYPNOTIZED"
+        // 6 Diverse Tactical Spells & Enchantments per Witch (no repetitive spam!)
+        val attacks = ArrayList<WitchAttack>().apply {
+            // 1. Signature Elemental Strike
+            add(
+                WitchAttack(
+                    name = "$s0 ✨",
+                    hpDamage = (15 * chScale).toInt().coerceIn(12, 34),
+                    embraceGain = (14 * chScale).toInt().coerceIn(12, 28),
+                    levelDrain = 0,
+                    statusEffect = "",
+                    kind = AttackKind.STRIKE,
+                    telegraphHint = "⚔️ Prépare « $s0 » (Contre-Sceau ou Garde conseillé)"
+                )
             )
-        )
+            // 2. Enchantment (Charm OR Hypnosis)
+            if (def.archetype == WitchCatalog.Archetype.HYPNOTIST || def.archetype == WitchCatalog.Archetype.CHRONO) {
+                add(
+                    WitchAttack(
+                        name = "🌀 Spirale de $s2",
+                        hpDamage = (13 * chScale).toInt().coerceIn(10, 28),
+                        embraceGain = (20 * chScale).toInt().coerceIn(16, 36),
+                        levelDrain = 1,
+                        statusEffect = "HYPNOTIZED",
+                        kind = AttackKind.ENCHANT_HYPNO,
+                        telegraphHint = "🌀 Tisse une Hypnose ! (🧘 Méditation bloque l'envoûtement !)"
+                    )
+                )
+            } else {
+                add(
+                    WitchAttack(
+                        name = "💖 Envoûtement : $s0",
+                        hpDamage = (12 * chScale).toInt().coerceIn(10, 26),
+                        embraceGain = (21 * chScale).toInt().coerceIn(18, 38),
+                        levelDrain = 0,
+                        statusEffect = "CHARMED",
+                        kind = AttackKind.ENCHANT_CHARM,
+                        telegraphHint = "💖 Prépare un Envoûtement Charme ! (🧘 Méditation ou 🔮 Amulette !)"
+                    )
+                )
+            }
+            // 3. Binding / Capture Attempt
+            add(
+                WitchAttack(
+                    name = "⛓️ Capture : $s1",
+                    hpDamage = (17 * chScale).toInt().coerceIn(14, 34),
+                    embraceGain = (24 * chScale).toInt().coerceIn(20, 40),
+                    levelDrain = 1,
+                    statusEffect = "CAPTURE",
+                    kind = AttackKind.BIND_CAPTURE,
+                    telegraphHint = "⛓️ Va tenter une CAPTURE ! (⚡ Contre-Sceau ou 🛡️ Voile d'Égide !)"
+                )
+            )
+            // 4. Archetype Specialty #1 (Barrier Shield OR Mirage Clone OR Time Double)
+            when (def.archetype) {
+                WitchCatalog.Archetype.ILLUSIONIST, WitchCatalog.Archetype.CHARMER -> add(
+                    WitchAttack(
+                        name = "🪞 Mirage de ${def.name}",
+                        hpDamage = (11 * chScale).toInt().coerceIn(8, 22),
+                        embraceGain = (14 * chScale).toInt().coerceIn(12, 24),
+                        levelDrain = 0,
+                        statusEffect = "",
+                        kind = AttackKind.MIRAGE_CLONE,
+                        telegraphHint = "🪞 Invoque un Double Mirage ! (🌟 Exorcisme ou 🧘 Méditation perce l'illusion)"
+                    )
+                )
+                WitchCatalog.Archetype.CHRONO, WitchCatalog.Archetype.SOVEREIGN -> add(
+                    WitchAttack(
+                        name = "⏳ Double Écho : $s2",
+                        hpDamage = (21 * chScale).toInt().coerceIn(18, 42),
+                        embraceGain = (20 * chScale).toInt().coerceIn(16, 36),
+                        levelDrain = 1,
+                        statusEffect = "",
+                        kind = AttackKind.TIME_DOUBLE,
+                        telegraphHint = "⏳ Distorsion Temporelle (Double Frappe) ! (🛡️ Garde fortement conseillée !)"
+                    )
+                )
+                else -> add(
+                    WitchAttack(
+                        name = "🛡️ Barrière Runique de ${def.element}",
+                        hpDamage = (10 * chScale).toInt().coerceIn(8, 20),
+                        embraceGain = (12 * chScale).toInt().coerceIn(10, 22),
+                        levelDrain = 0,
+                        statusEffect = "",
+                        kind = AttackKind.BARRIER_SHIELD,
+                        telegraphHint = "🛡️ Érige une Barrière Runique ! (🔥 Lame Spirituelle la brise + ÉTOURDI !)"
+                    )
+                )
+            }
+            // 5. Siphon Mark (Drains HP & Heals Witch each turn!)
+            add(
+                WitchAttack(
+                    name = "🩸 Siphon : $s2",
+                    hpDamage = (16 * chScale).toInt().coerceIn(13, 32),
+                    embraceGain = (18 * chScale).toInt().coerceIn(15, 32),
+                    levelDrain = 1 + drainBonus,
+                    statusEffect = "SIPHON",
+                    kind = AttackKind.SIPHON_DRAIN,
+                    telegraphHint = "🩸 Prépare une Marque de Siphon ! (Purifie avec 🔮 Amulette ou 🌟 Exorcisme)"
+                )
+            )
+            // 6. Seal Magic (Inquisitor / Boss / High-chapter) OR Hypnosis
+            if (def.archetype == WitchCatalog.Archetype.INQUISITOR || def.isBoss || def.isMiniBoss) {
+                add(
+                    WitchAttack(
+                        name = "🔒 Sceau d'Interdiction",
+                        hpDamage = (18 * chScale).toInt().coerceIn(14, 34),
+                        embraceGain = (16 * chScale).toInt().coerceIn(14, 30),
+                        levelDrain = 1,
+                        statusEffect = "SEALED",
+                        kind = AttackKind.SEAL_MAGIC,
+                        telegraphHint = "🔒 Va SCELLER tes sorts PM ! (🧘 Méditation te protège 1 tour !)"
+                    )
+                )
+            } else {
+                add(
+                    WitchAttack(
+                        name = "🛡️ Barrière d'Éclipse",
+                        hpDamage = (12 * chScale).toInt().coerceIn(10, 24),
+                        embraceGain = (14 * chScale).toInt().coerceIn(12, 26),
+                        levelDrain = 0,
+                        statusEffect = "",
+                        kind = AttackKind.BARRIER_SHIELD,
+                        telegraphHint = "🛡️ Va activer une Barrière ! (🔥 Lame Spirituelle = Brise-Garde !)"
+                    )
+                )
+            }
+        }
 
         val ultimate = WitchAttack(
             name = "👑 ${def.ultimateName}",
-            hpDamage = (30 * chScale).toInt().coerceIn(26, 56),
-            embraceGain = (34 * chScale).toInt().coerceIn(30, 58),
+            hpDamage = (32 * chScale).toInt().coerceIn(28, 62),
+            embraceGain = (34 * chScale).toInt().coerceIn(28, 56),
             levelDrain = (2 + drainBonus).coerceAtMost(4),
-            statusEffect = if (def.isBoss || def.archetype == WitchCatalog.Archetype.BINDER) "CAPTURE" else "HYPNOTIZED"
+            statusEffect = if (def.isBoss || def.archetype == WitchCatalog.Archetype.BINDER) "CAPTURE" else "HYPNOTIZED",
+            kind = AttackKind.ULTIMATE,
+            telegraphHint = "⚠️ SORT ULTIME « ${def.ultimateName} » ! Utilise 🛡️ GARDE pour une PARADE PARFAITE !"
         )
 
         val advice = "🔮 Évaluation de ${cfg.avatarName} (Grimoire #${def.id}/50) :\n" +

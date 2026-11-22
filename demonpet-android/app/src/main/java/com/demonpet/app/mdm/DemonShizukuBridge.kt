@@ -8,19 +8,28 @@ import android.content.pm.PackageManager
 import android.os.IBinder
 import com.demonpet.app.BuildConfig
 import rikka.shizuku.Shizuku
+import rikka.shizuku.ShizukuProvider
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Clean Shizuku API 13.1.5 Bridge for DemonMom RPG:
- * - Detects Shizuku app & live binder on Android 11–16 (including Xiaomi HyperOS / Android 16!).
- * - Requests permission in 1 tap.
- * - Binds `DemonShizukuUserService` cleanly and executes reversible privileged shell commands synchronously.
+ * Bulletproof Shizuku API 13.1.5 Bridge for DemonMom RPG (Android 11–16 / Xiaomi HyperOS):
+ * - Works with `rikka.shizuku.ShizukuProvider` in AndroidManifest.xml!
+ * - Registers sticky BinderReceived & BinderDead listeners so detection is instant and reactive.
+ * - Auto-grants safe UsageStats/WriteSettings appops to DemonMom via Shizuku so usage-based app greying works out of the box!
  */
 object DemonShizukuBridge {
 
     const val SHIZUKU_PKG = "moe.shizuku.privileged.api"
     const val REQ_CODE_SHIZUKU = 4102
+
+    private val initialized = AtomicBoolean(false)
+    private val listeners = CopyOnWriteArrayList<() -> Unit>()
+
+    @Volatile
+    private var binderAlive = false
 
     @Volatile
     private var shellService: IDemonShellService? = null
@@ -29,6 +38,24 @@ object DemonShizukuBridge {
     private var pendingLatch: CountDownLatch? = null
 
     private val lock = Any()
+
+    private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
+        binderAlive = true
+        notifyListeners()
+        if (hasShizukuPermission()) {
+            Thread {
+                ensureBound()
+                autoGrantSafeAppOps()
+                notifyListeners()
+            }.start()
+        }
+    }
+
+    private val binderDeadListener = Shizuku.OnBinderDeadListener {
+        binderAlive = false
+        synchronized(lock) { shellService = null }
+        notifyListeners()
+    }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -39,12 +66,46 @@ object DemonShizukuBridge {
                 pendingLatch?.countDown()
                 pendingLatch = null
             }
+            notifyListeners()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             synchronized(lock) {
                 shellService = null
             }
+            notifyListeners()
+        }
+    }
+
+    fun init(context: Context) {
+        if (initialized.compareAndSet(false, true)) {
+            try {
+                Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
+                Shizuku.addBinderDeadListener(binderDeadListener)
+            } catch (_: Throwable) {
+            }
+        }
+        try {
+            if (!Shizuku.pingBinder()) {
+                ShizukuProvider.requestBinderForNonProviderProcess(context.applicationContext)
+            } else {
+                binderAlive = true
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun addStateListener(cb: () -> Unit) {
+        if (!listeners.contains(cb)) listeners.add(cb)
+    }
+
+    fun removeStateListener(cb: () -> Unit) {
+        listeners.remove(cb)
+    }
+
+    private fun notifyListeners() {
+        for (l in listeners) {
+            try { l() } catch (_: Throwable) {}
         }
     }
 
@@ -59,7 +120,9 @@ object DemonShizukuBridge {
 
     fun isShizukuRunning(): Boolean {
         return try {
-            Shizuku.pingBinder()
+            val alive = Shizuku.pingBinder()
+            binderAlive = alive
+            alive
         } catch (_: Throwable) {
             false
         }
@@ -99,6 +162,27 @@ object DemonShizukuBridge {
         }
     }
 
+    fun getDiagnostics(context: Context): String {
+        val inst = isShizukuInstalled(context)
+        val running = isShizukuRunning()
+        val perm = hasShizukuPermission()
+        val uid = if (running) try { Shizuku.getUid() } catch (_: Throwable) { -1 } else -1
+        val ver = if (running) try { Shizuku.getVersion() } catch (_: Throwable) { -1 } else -1
+        val bound = synchronized(lock) { shellService?.asBinder()?.pingBinder() == true }
+        val mode = when (uid) {
+            0 -> "ROOT (uid 0)"
+            2000 -> "ADB Shell (uid 2000)"
+            else -> "uid $uid"
+        }
+        return when {
+            !inst -> "Shizuku non installé"
+            !running -> "Shizuku installé mais service non démarré (ouvre Shizuku → Démarrer)"
+            !perm -> "Shizuku détecté (v$ver · $mode) — en attente d'autorisation !"
+            bound -> "⚡ Shizuku CONNECTÉ (v$ver · $mode · Service lié ✅)"
+            else -> "⚡ Shizuku autorisé (v$ver · $mode — liaison auto au premier sort)"
+        }
+    }
+
     private fun buildArgs(): Shizuku.UserServiceArgs {
         return Shizuku.UserServiceArgs(
             ComponentName(BuildConfig.APPLICATION_ID, DemonShizukuUserService::class.java.name)
@@ -111,11 +195,13 @@ object DemonShizukuBridge {
 
     fun ensureBound(): IDemonShellService? {
         if (!hasShizukuPermission()) return null
+        val latchToWait: CountDownLatch?
         synchronized(lock) {
             val existing = shellService
             if (existing != null && existing.asBinder().pingBinder()) return existing
             val latch = CountDownLatch(1)
             pendingLatch = latch
+            latchToWait = latch
             try {
                 Shizuku.bindUserService(buildArgs(), connection)
             } catch (_: Throwable) {
@@ -124,23 +210,32 @@ object DemonShizukuBridge {
             }
         }
         try {
-            pendingLatch?.await(2_800L, TimeUnit.MILLISECONDS)
+            latchToWait?.await(3_500L, TimeUnit.MILLISECONDS)
         } catch (_: Throwable) {
         }
         return synchronized(lock) { shellService }
     }
 
+    /** Automatically grants UsageStats & WriteSettings via Shizuku so real app usage ranking works with 0 manual steps! */
+    fun autoGrantSafeAppOps() {
+        if (!hasShizukuPermission()) return
+        execShellSync("appops set com.demonpet.app GET_USAGE_STATS allow")
+        execShellSync("appops set com.demonpet.app WRITE_SETTINGS allow")
+    }
+
     data class ShellResult(val ok: Boolean, val exitCode: Int, val output: String)
 
-    /** Executes a safe privileged shell command via Shizuku UserService (must be called off-UI or briefly). */
+    /** Executes a safe privileged shell command via Shizuku UserService (verifies exitCode == 0 AND no SecurityException/Failure). */
     fun execShellSync(cmd: String): ShellResult {
-        val svc = ensureBound() ?: return ShellResult(false, -1, "Shizuku service not bound")
+        val svc = ensureBound() ?: return ShellResult(false, -1, "Shizuku UserService non lié")
         return try {
             val raw = svc.runCommand(cmd).orEmpty()
             val firstLine = raw.substringBefore('\n')
             val code = firstLine.removePrefix("EXIT:").trim().toIntOrNull() ?: -1
             val body = raw.substringAfter('\n', "")
-            ShellResult(code == 0, code, body)
+            val low = body.lowercase()
+            val hasErr = low.contains("exception") || low.contains("failure") || low.contains("error:") || low.contains("not allowed") || low.contains("blocked_unsafe")
+            ShellResult(code == 0 && !hasErr, code, body)
         } catch (t: Throwable) {
             synchronized(lock) { shellService = null }
             ShellResult(false, -1, t.message.orEmpty())

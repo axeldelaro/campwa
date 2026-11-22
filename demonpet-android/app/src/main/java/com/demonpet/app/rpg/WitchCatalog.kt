@@ -238,19 +238,19 @@ object WitchCatalog {
         val isBoss = posInChap == 10
         val lv = id
         val resolve = when {
-            isBoss -> 170 + chapter * 22
-            isMiniBoss -> 130 + chapter * 16
-            else -> 95 + chapter * 10
+            isBoss -> 360 + chapter * 48
+            isMiniBoss -> 255 + chapter * 32
+            else -> 165 + chapter * 22
         }
         val gold = when {
-            isBoss -> 120 + chapter * 50
-            isMiniBoss -> 65 + chapter * 25
-            else -> 28 + chapter * 10
+            isBoss -> 170 + chapter * 65
+            isMiniBoss -> 95 + chapter * 35
+            else -> 42 + chapter * 14
         }
         val xp = when {
-            isBoss -> 160 + chapter * 55
-            isMiniBoss -> 90 + chapter * 30
-            else -> 40 + chapter * 14
+            isBoss -> 190 + chapter * 60
+            isMiniBoss -> 110 + chapter * 35
+            else -> 52 + chapter * 16
         }
         WitchDef(
             id = id,

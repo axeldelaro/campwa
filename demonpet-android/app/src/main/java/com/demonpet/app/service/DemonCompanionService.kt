@@ -19,6 +19,7 @@ import androidx.core.content.ContextCompat
 import com.demonpet.app.config.DemonConfigSnapshot
 import com.demonpet.app.config.DemonSettings
 import com.demonpet.app.mdm.DemonMdmManager
+import com.demonpet.app.mdm.DemonShizukuBridge
 import com.demonpet.app.media.MediaFolderHelper
 import com.demonpet.app.overlay.DemonOverlayManager
 import com.demonpet.app.receiver.DemonDeviceAdminReceiver
@@ -79,6 +80,7 @@ class DemonCompanionService : Service() {
     override fun onCreate() {
         super.onCreate()
         settings = DemonSettings(applicationContext)
+        DemonShizukuBridge.init(applicationContext)
         DemonSettings.addListener(cfgListener)
     }
 
