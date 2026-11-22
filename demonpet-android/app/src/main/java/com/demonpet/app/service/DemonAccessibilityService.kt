@@ -30,6 +30,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import com.demonpet.app.ai.DemonVisionEngine
 import com.demonpet.app.config.DemonConfigSnapshot
 import com.demonpet.app.config.DemonSettings
+import com.demonpet.app.mdm.DemonMdmManager
 import com.demonpet.app.media.MediaFolderHelper
 import com.demonpet.app.overlay.DemonOverlayManager
 import com.demonpet.app.receiver.DemonDeviceAdminReceiver
@@ -256,6 +257,11 @@ class DemonAccessibilityService : AccessibilityService() {
 
                 if (total % 9L < dtSec) {
                     settings.adjustMood(+2)
+                }
+                // #121 Passive Level Drain on watched/social apps (-1 NV every ~2 min)
+                if (cfg.rpgSeductionEnabled && total > 0L && total % 120L < dtSec) {
+                    settings.adjustPlayerStats(levelDelta = -1, hpDelta = -6, drainDelta = +5)
+                    overlayMgr?.say("💜 Drain passif : -1 NV (tu restes trop ici !)", 3_000L)
                 }
 
                 val grace = appGraceUntilMs[currentPkg] ?: 0L
@@ -818,8 +824,12 @@ class DemonAccessibilityService : AccessibilityService() {
             return
         }
 
-        // #69 Taxe d'entrée : Duel / Tournoi de X médias (ou #7 Permission classique)
+        // #125 Mana Tax at Level 1 OR #69 Media Tournament OR #7 Permission Gate
         if (isWatched && now > grace) {
+            if (cfg.rpgSeductionEnabled && cfg.playerLevel <= 1) {
+                overlayMgr?.showSeductionBattleOverlay(cfg)
+                return
+            }
             val label = resolveAppLabel(pkg)
             if (cfg.entryTournamentEnabled) {
                 overlayMgr?.showMediaTournamentGate(label, pkg, cfg.entryTournamentSize, cfg)
@@ -1049,11 +1059,13 @@ class DemonAccessibilityService : AccessibilityService() {
     }
 
     fun performSecretExitUnlock() {
+        DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
         DemonDeviceAdminReceiver.removeAdminSafely(applicationContext)
         settings.update {
             putBoolean("challenge_locked", false)
             putBoolean("strict_settings_lock", false)
             putBoolean("enabled", false)
+            putInt("active_drain_pct", 0)
         }
         overlayMgr?.detachAll()
         overlayMgr = null

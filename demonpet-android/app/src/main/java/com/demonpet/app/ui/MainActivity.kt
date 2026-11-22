@@ -3,6 +3,9 @@ package com.demonpet.app.ui
 import android.Manifest
 import android.app.AlertDialog
 import android.app.admin.DevicePolicyManager
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -40,6 +43,7 @@ import com.demonpet.app.config.FaceCensorMode
 import com.demonpet.app.config.GenderFilter
 import com.demonpet.app.config.SeverityPreset
 import com.demonpet.app.config.WallpaperTarget
+import com.demonpet.app.mdm.DemonMdmManager
 import com.demonpet.app.media.MediaFolderHelper
 import com.demonpet.app.overlay.DemonPetView
 import com.demonpet.app.receiver.DemonDeviceAdminReceiver
@@ -307,16 +311,37 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun performFullUnlock() {
+        val msg = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
         DemonDeviceAdminReceiver.removeAdminSafely(applicationContext)
         DemonAccessibilityService.activeInstance?.performSecretExitUnlock()
         settings.update {
             putBoolean("challenge_locked", false)
             putBoolean("strict_settings_lock", false)
             putBoolean("enabled", false)
+            putInt("active_drain_pct", 0)
+            putInt("player_hp", 100)
         }
         DemonCompanionService.stop(applicationContext)
-        Toast.makeText(this, "Déverrouillé, Paramètres libérés et Admin retiré ✅", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "🔓 Code 100205 accepté ! $msg", Toast.LENGTH_LONG).show()
         renderScreen(settings.snapshot())
+    }
+
+    private fun performEndGameRestoreAll() {
+        val msg = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
+        settings.update {
+            putInt("player_level", 20)
+            putInt("player_hp", 100)
+            putInt("active_drain_pct", 0)
+            putInt("mood_score", 30)
+        }
+        Toast.makeText(this, "🕊️ Fin du jeu ! $msg", Toast.LENGTH_LONG).show()
+        renderActiveTab(settings.snapshot())
+    }
+
+    private fun copyTermuxMdmScript() {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("DemonMom Termux MDM", DemonMdmManager.buildTermuxOneLineScript()))
+        Toast.makeText(this, "📋 Script Termux MDM copié ! Colle-le directement dans Termux.", Toast.LENGTH_LONG).show()
     }
 
     // -------------------------------------------------------------------------
@@ -527,6 +552,32 @@ class MainActivity : AppCompatActivity() {
                 topMargin = dp(12)
             }
         })
+
+        // MDM Status & End-Game Full Restore Bar
+        val isDo = DemonMdmManager.isDeviceOwner(this)
+        val susp = DemonMdmManager.getSuspendedPackages(this)
+        val hid = DemonMdmManager.getHiddenPackages(this)
+        val curses = DemonMdmManager.getActiveCurses(this)
+        val mdmInfo = TextView(this).apply {
+            text = if (isDo) {
+                "👑 MDM Device Owner ACTIF • ${susp.size + hid.size} appli(s) gelée(s) • ${curses.size} sceau(x)"
+            } else {
+                "⚙️ MDM Device Owner non activé (optionnel pour geler les applis par usage)"
+            }
+            setTextColor(if (isDo) Color.rgb(167, 243, 208) else Color.rgb(180, 180, 198))
+            textSize = 11.5f
+            setPadding(0, dp(10), 0, dp(4))
+        }
+        hero.addView(mdmInfo)
+
+        val mdmRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        if (!isDo) {
+            mdmRow.addView(makeSecondaryBtn("📋 Script Termux MDM") { copyTermuxMdmScript() }, gridLp(endMargin = dp(5)))
+        }
+        mdmRow.addView(makeAccentButton("🕊️ Fin du jeu : Tout restaurer", Color.rgb(16, 128, 96)) {
+            performEndGameRestoreAll()
+        }, gridLp(startMargin = if (!isDo) dp(5) else 0))
+        hero.addView(mdmRow)
         root.addView(hero)
 
         // 2. Compact Permissions Status Card (1-tap chips!)
@@ -795,6 +846,42 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== TAB 3 : RÉGLAGES (SETTINGS LOCK, APPS, TIMERS) ====================
     private fun populateSettingsTab(root: LinearLayout, snap: DemonConfigSnapshot) {
+        // MDM Device Owner Card (ADB / Termux 1-paste setup + Usage Stats + Safe Release)
+        val mdmCard = makeCard(accentStroke = Color.argb(120, 16, 185, 129))
+        val doActive = DemonMdmManager.isDeviceOwner(this)
+        val usageOk = DemonMdmManager.hasUsageStatsAccess(this)
+        mdmCard.addView(sectionTitle("👑 MDM Device Owner (Dégâts réels par usage)"))
+        mdmCard.addView(sectionSub(
+            if (doActive) "Actif ✅ : les défaites RPG suspendent tes applis par ordre d'usage et posent des sceaux réversibles."
+            else "Active via Termux en 1 copier-coller pour autoriser la suspension d'applis par ordre d'usage et les sceaux MDM."
+        ))
+        mdmCard.addView(makeAccentButton("📋 Copier le script Termux (ADB + MDM + Accessibilité)", Color.rgb(126, 34, 206)) {
+            copyTermuxMdmScript()
+        })
+        if (!usageOk) {
+            mdmCard.addView(makeSecondaryBtn("📊 Autoriser Stats d'utilisation (ordre des applis)") {
+                try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } catch (_: Throwable) {}
+            })
+        }
+        mdmCard.addView(makeSecondaryBtn("🕊️ Fin du jeu : Tout réactiver & lever les sceaux") {
+            performEndGameRestoreAll()
+        })
+        if (doActive) {
+            mdmCard.addView(makeSecondaryBtn("🔓 Retirer le mode Device Owner (pour désinstaller l'app)") {
+                AlertDialog.Builder(this)
+                    .setTitle("Retirer Device Owner ?")
+                    .setMessage("Toutes les applis suspendues et restrictions MDM seront restaurées, puis le statut Device Owner sera retiré.")
+                    .setPositiveButton("Retirer & Restaurer") { _, _ ->
+                        val res = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = true)
+                        Toast.makeText(this, res, Toast.LENGTH_LONG).show()
+                        renderActiveTab(settings.snapshot())
+                    }
+                    .setNegativeButton("Annuler", null)
+                    .show()
+            })
+        }
+        root.addView(mdmCard)
+
         // Security & Settings Lock Card
         val secCard = makeCard(accentStroke = Color.argb(110, 244, 63, 94))
         secCard.addView(sectionTitle("🔐 Verrouillage des Paramètres"))

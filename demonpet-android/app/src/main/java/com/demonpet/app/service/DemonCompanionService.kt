@@ -18,6 +18,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.demonpet.app.config.DemonConfigSnapshot
 import com.demonpet.app.config.DemonSettings
+import com.demonpet.app.mdm.DemonMdmManager
 import com.demonpet.app.media.MediaFolderHelper
 import com.demonpet.app.overlay.DemonOverlayManager
 import com.demonpet.app.receiver.DemonDeviceAdminReceiver
@@ -144,11 +145,13 @@ class DemonCompanionService : Service() {
                     try { startActivity(home) } catch (_: Throwable) {}
                 },
                 onExitUnlocked = {
+                    DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
                     DemonDeviceAdminReceiver.removeAdminSafely(applicationContext)
                     settings.update {
                         putBoolean("challenge_locked", false)
                         putBoolean("strict_settings_lock", false)
                         putBoolean("enabled", false)
+                        putInt("active_drain_pct", 0)
                     }
                     stopSelf()
                 },

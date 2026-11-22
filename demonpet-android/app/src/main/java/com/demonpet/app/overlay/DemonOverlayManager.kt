@@ -107,6 +107,21 @@ class DemonOverlayManager(
     private var timeoutTimerTv: TextView? = null
     private var timeoutTickRunnable: Runnable? = null
 
+    private val witchRpgBattle: WitchRpgBattleOverlay by lazy {
+        WitchRpgBattleOverlay(
+            context = context,
+            settings = settings,
+            onMountFullscreen = { v -> presentFullscreenOverlay(v) },
+            onDismissFullscreen = { dismissModal() },
+            onApplyVisualDrain = { pct, cfg -> applyDrainVisualEffects(pct, cfg) },
+            onClearVisualDrain = { clearDrainVisualOverlay() },
+            onSayPet = { msg -> say(msg, 4_200L) },
+            onSpawnTrappedAltar = { cfg -> showUnremovableAltar(cfg) },
+            onVibrate = { ms -> vibrateShort(ms) },
+            onSecretEmergencyExit = { showSecretExitPinDialog() }
+        )
+    }
+
     private var physicsRunning = false
     private var lastFrameNs = 0L
     private var petX = 120f
@@ -957,6 +972,26 @@ class DemonOverlayManager(
         }
     }
 
+    fun presentFullscreenOverlay(fullView: View) {
+        dismissModal()
+        modalToken++
+        try {
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                windowType,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+            )
+            wm.addView(fullView, params)
+            activeModalView = fullView
+            bringPetToFront()
+        } catch (_: Throwable) {
+        }
+    }
+
     fun dismissModal() {
         modalToken++
         timeoutCornerActive = false
@@ -966,6 +1001,7 @@ class DemonOverlayManager(
         petView?.seductionAuraActive = false
         try { activeTimeoutVideoView?.stopPlayback() } catch (_: Throwable) {}
         activeTimeoutVideoView = null
+        witchRpgBattle.forceCleanup()
         val v = activeModalView ?: return
         activeModalView = null
         try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
@@ -1815,201 +1851,11 @@ class DemonOverlayManager(
     }
 
     fun showSeductionBattleOverlay(cfg: DemonConfigSnapshot) {
-        Thread {
-            val samplePhoto = MediaFolderHelper.loadRandomMediaBitmap(context, cfg, maxDimPx = 640)
-            mainHandler.post {
-                if (activeModalView != null) {
-                    samplePhoto?.let { if (!it.isRecycled) it.recycle() }
-                    return@post
-                }
-                val snap0 = settings.snapshot()
-                var hp = snap0.playerHp.coerceAtLeast(60)
-                var demonResolve = 100
-                var photoQuality = 100
-                var brightPct = 100
-                var currentLevel = snap0.playerLevel
-                var drainedCopy: Bitmap? = null
-
-                val attacks = listOf(
-                    Triple("Regard Hypnotique 👁️✨", 22, 1),
-                    Triple("Drain d'Énergie Vitale 💋", 28, 2),
-                    Triple("Voile d'Obscurité 🌙", 24, 1),
-                    Triple("Charme Possessif 😈💖", 30, 2),
-                    Triple("Baiser Vampirique 🦇💜", 34, 3)
-                )
-
-                val card = LinearLayout(context).apply {
-                    orientation = LinearLayout.VERTICAL
-                    gravity = Gravity.CENTER_HORIZONTAL
-                    setPadding(dp(16), dp(14), dp(16), dp(14))
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(24).toFloat()
-                        setColor(Color.rgb(18, 10, 28))
-                        setStroke(dp(2), Color.rgb(217, 70, 239))
-                    }
-                }
-
-                card.addView(TextView(context).apply {
-                    text = "⚔️ COMBAT DE SÉDUCTION — ${cfg.avatarName}"
-                    setTextColor(Color.rgb(240, 171, 252))
-                    textSize = 14.5f
-                    typeface = Typeface.DEFAULT_BOLD
-                    gravity = Gravity.CENTER
-                })
-
-                val hudTv = TextView(context).apply {
-                    setTextColor(Color.WHITE)
-                    textSize = 12f
-                    typeface = Typeface.MONOSPACE
-                    gravity = Gravity.CENTER
-                    setPadding(dp(8), dp(6), dp(8), dp(6))
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(10).toFloat()
-                        setColor(Color.rgb(32, 18, 48))
-                    }
-                }
-                card.addView(hudTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    topMargin = dp(6)
-                    bottomMargin = dp(8)
-                })
-
-                val photoIv = ImageView(context).apply {
-                    scaleType = ImageView.ScaleType.CENTER_CROP
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(16).toFloat()
-                        setColor(Color.rgb(28, 16, 40))
-                    }
-                    clipToOutline = true
-                }
-                if (samplePhoto != null) photoIv.setImageBitmap(samplePhoto)
-                card.addView(photoIv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(200)).apply {
-                    bottomMargin = dp(8)
-                })
-
-                val logTv = TextView(context).apply {
-                    text = "${cfg.avatarName} t'encercle avec une aura envoûtante…\nRésiste à ses attaques de drainage !"
-                    setTextColor(Color.rgb(245, 208, 254))
-                    textSize = 12.2f
-                    gravity = Gravity.CENTER
-                    setPadding(dp(10), dp(8), dp(10), dp(8))
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(12).toFloat()
-                        setColor(Color.argb(180, 38, 16, 56))
-                    }
-                }
-                card.addView(logTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(10)
-                })
-
-                fun refreshHud() {
-                    hudTv.text = "NV $currentLevel • PV $hp/100 • Emprise ${demonResolve}%\nQualité ${photoQuality}% • Lumière ${brightPct}%"
-                    if (samplePhoto != null && cfg.drainQualityEnabled) {
-                        val nextBmp = createQualityDrainedBitmap(samplePhoto, photoQuality)
-                        photoIv.setImageBitmap(nextBmp)
-                        drainedCopy?.let { if (!it.isRecycled) it.recycle() }
-                        drainedCopy = nextBmp
-                    }
-                }
-
-                fun cleanupAndClose(victory: Boolean) {
-                    dismissModal()
-                    drainedCopy?.let { if (!it.isRecycled) it.recycle() }
-                    samplePhoto?.let { if (!it.isRecycled) it.recycle() }
-                    if (victory) {
-                        settings.adjustPlayerStats(levelDelta = +1, hpDelta = 100 - hp, drainDelta = -100)
-                        clearDrainVisualOverlay()
-                        settings.adjustMood(-15)
-                        petView?.say("Grr… tu as résisté ! (+1 NV, Qualité restaurée) 😤", 4_000L)
-                    } else {
-                        settings.adjustPlayerStats(levelDelta = -2, hpDelta = 60, drainDelta = +35)
-                        applyDrainVisualEffects(75, cfg)
-                        settings.adjustMood(+18)
-                        petView?.say("💋 Capturé ! -2 NV, Lumière & Qualité drainées ! 😈", 4_500L)
-                        if (cfg.unremovableAltarEnabled) showUnremovableAltar(cfg)
-                    }
-                }
-
-                fun demonCounterAttack(multiplier: Float = 1f) {
-                    val (atkName, baseDmg, lvlDrain) = attacks.random()
-                    val dmg = (baseDmg * multiplier).toInt().coerceAtLeast(8)
-                    val realLvlLoss = (lvlDrain * multiplier).toInt().coerceAtLeast(1)
-                    hp = (hp - dmg).coerceAtLeast(0)
-                    currentLevel = (currentLevel - realLvlLoss).coerceAtLeast(1)
-                    if (cfg.drainQualityEnabled) photoQuality = (photoQuality - (24 * multiplier).toInt()).coerceAtLeast(10)
-                    if (cfg.drainBrightnessEnabled) brightPct = (brightPct - (22 * multiplier).toInt()).coerceAtLeast(15)
-
-                    val drainNow = (100 - minOf(photoQuality, brightPct)).coerceIn(15, 90)
-                    settings.adjustPlayerStats(levelDelta = -realLvlLoss, hpDelta = -dmg, drainDelta = +18)
-                    applyDrainVisualEffects(drainNow, cfg)
-                    vibrateShort(75L)
-
-                    logTv.text = "💥 ${cfg.avatarName} lance « $atkName » !\n-$dmg PV • -$realLvlLoss NV • Qualité ${photoQuality}% • Lumière ${brightPct}%"
-                    refreshHud()
-                    if (hp <= 0) {
-                        mainHandler.postDelayed({ cleanupAndClose(victory = false) }, 950L)
-                    }
-                }
-
-                val row1 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-                val resistBtn = makeAccentButton("🛡️ Résister")
-                val counterBtn = makePrimaryButton("⚔️ Repousser")
-                row1.addView(resistBtn, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(6) })
-                row1.addView(counterBtn, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(6) })
-                card.addView(row1, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(8)
-                })
-
-                val row2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-                val yieldBtn = makeSecondaryButton("💖 Céder (Drain)")
-                val begBtn = makeSecondaryButton("🙏 Supplier")
-                row2.addView(yieldBtn, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(6) })
-                row2.addView(begBtn, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(6) })
-                card.addView(row2)
-
-                resistBtn.setOnClickListener {
-                    if (Random.nextFloat() < 0.65f) {
-                        demonResolve = (demonResolve - 36).coerceAtLeast(0)
-                        photoQuality = (photoQuality + 12).coerceAtMost(100)
-                        logTv.text = "🛡️ Tu résistes au charme ! Emprise -36 % !"
-                        vibrateShort(25L)
-                        refreshHud()
-                        if (demonResolve <= 0) mainHandler.postDelayed({ cleanupAndClose(victory = true) }, 700L)
-                    } else {
-                        demonCounterAttack(0.85f)
-                    }
-                }
-                counterBtn.setOnClickListener {
-                    if (Random.nextFloat() < 0.50f) {
-                        demonResolve = (demonResolve - 52).coerceAtLeast(0)
-                        logTv.text = "⚔️ Coup critique de volonté ! Emprise -52 % !"
-                        vibrateShort(30L)
-                        refreshHud()
-                        if (demonResolve <= 0) mainHandler.postDelayed({ cleanupAndClose(victory = true) }, 700L)
-                    } else {
-                        demonCounterAttack(1.25f)
-                    }
-                }
-                yieldBtn.setOnClickListener {
-                    demonCounterAttack(1.6f)
-                }
-                begBtn.setOnClickListener {
-                    if (Random.nextFloat() < 0.45f) {
-                        demonResolve = (demonResolve - 45).coerceAtLeast(0)
-                        logTv.text = "🙏 Elle sourit avec pitié… Emprise -45 % !"
-                        refreshHud()
-                        if (demonResolve <= 0) mainHandler.postDelayed({ cleanupAndClose(victory = true) }, 700L)
-                    } else {
-                        logTv.text = "😈 « Supplier ne marchera pas ! »"
-                        demonCounterAttack(1.1f)
-                    }
-                }
-
-                presentModal(card, focusable = false, keepPetOnTop = true)
-                petView?.seductionAuraActive = true
-                refreshHud()
-                vibrateShort(65L)
-            }
-        }.start()
+        mainHandler.post {
+            if (activeModalView != null) return@post
+            petView?.seductionAuraActive = true
+            witchRpgBattle.launchBattle(cfg)
+        }
     }
 
     // ==================== #53 SURPRISE QUIZ "MAMAN TE TESTE" ====================

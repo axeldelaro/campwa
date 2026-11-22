@@ -113,17 +113,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demonmom-v3.0.${{ github.run_number }}
-          name: "DemonMom AI v3.0.${{ github.run_number }} (Ultra-Réalisme • Chronos Blindés • RPG Séduction & Drain • Tournoi #69 • Pause 3m #68 • Autel Piégé #87)"
+          tag_name: demonmom-v4.0.${{ github.run_number }}
+          name: "DemonMom RPG v4.0.${{ github.run_number }} (Femdom Witch RPG Plein Écran • Détourage Auto Sorcières • Scènes Fin de Drainage • Dégâts MDM par Usage)"
           body: |
-            ### DemonMom AI v3.0 (`demonmom-v3.0.${{ github.run_number }}`)
+            ### DemonMom RPG v4.0 (`demonmom-v4.0.${{ github.run_number }}`)
 
-            Grosse mise à jour **Ultra-Réalisme + Chronos 100 % blindés + Combat RPG Séduction & Drainage + Nouvelles Fonctions (#68, #69, #71, #87)** :
+            Édition majeure **Femdom Witch RPG Plein Écran (style *Monster Girl Quest*) + Vrais Dégâts MDM Device Owner par ordre d'usage** :
 
-            - **Correctif critique de tous les chronos (`SystemClock.elapsedRealtime()`)** : le chrono de `#38 Au Coin Vidéo` descend toujours de façon fluide et fiable (plus jamais figé !), le démon reste toujours au premier plan au-dessus de toutes les modales (**20 taps + `100205`** toujours accessible !), et `#39` normalise accents et apostrophes.
-            - **Diable Ultra-Réaliste v3** : détourage HD `640×800` anti-frange cheveux, **Rim-Light cinéma épousant le contour réel du visage**, queue 3D articulée, cornes 3D striées évolutives avec la colère, ailes veinées ombrées, yeux vivants qui suivent tes gestes (braise rouge ou violet hypnotique) + flammes/orbes.
-            - **Combat RPG Séduction & Drainage (type MGQ)** : attaques nommées interactives avec **drainage de Niveau (`NV`)**, **drainage de luminosité** et **drainage de qualité photo en temps réel** (pixellisation + voile hypnotique auto-réversible).
-            - **#68 Pause écran obligatoire toutes les 3 minutes** (réglable `1–30 min`), **#69 Taxe d'entrée Duel / Tournoi éliminatoire de 2, 4 ou 8 médias**, **#71 Bloqueur Play Store / Acheter / Installer**, **#87 Autel Photo Piégé impossible à retirer** (le toucher déclenche d'autres gages en superposition !).
+            - **Détourage automatique IA des Sorcières (#93, #94, #100)** : chaque image de ton dossier (masqués `.*` inclus) est détourée automatiquement en **sprite Visual Novel plein écran** avec cache rapide, fiche de Boss générée et fond gothique flouté.
+            - **Scène Plein Écran 60 FPS Live2D-lite (#95, #96, #98, #99, #119, #120)** : cercle magique runique rotatif, respiration/zoom d'attaque/rapprochement en capture, orbes d'énergie aspirées, vignettage battement de cœur et dégradation visuelle progressive pendant le drainage.
+            - **Combat RPG complet (#101–#108, #110, #113–#115)** : triple jauge (`PV / PM / Emprise / NV`), **3 phases** (Approche → **Capturé/Entravé** avec **QTE Se débattre 10 taps** → Drainage), altérations (*Charmé*, *Hypnotisé*, *Scellé*), Garde contre Sort Ultime, choix RP, **renfort Duo d'une 2e Sorcière**, **scène cinématique de fin de drainage en 3 étapes** et **écran d'évaluation sarcastique façon MGQ** !
+            - **Vrais Dégâts MDM (Device Owner ADB/Termux) + Restauration 100 % garantie** : chaque défaite suspend tes applis **par ordre réel d'usage** (`UsageStatsManager`) et peut poser des sceaux réversibles (Caméra, Play Store, Captures, Luminosité). Tout est réactivé automatiquement par **🕊️ Fin du jeu : Tout restaurer**, en gagnant un combat (+1 appli libérée) ou via le **code d'urgence `100205`** (20 taps sur le démon ou le badge `NV`).
           files: ./DemonMom.apk
           draft: false
           prerelease: false
