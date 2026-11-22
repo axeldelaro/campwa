@@ -113,17 +113,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demonmom-v4.1.${{ github.run_number }}
-          name: "DemonMom RPG v4.1.${{ github.run_number }} (Shizuku Natif Android 16 • Dégâts Applis par Usage sans Reset • Femdom Witch RPG Plein Écran)"
+          tag_name: demonmom-v5.0.${{ github.run_number }}
+          name: "DemonMom RPG v5.0.${{ github.run_number }} (Jeu Complet 50 Sorcières • 5 Chapitres & 10 Boss • IA Dialogue Instantané • Shizuku Punitions Système)"
           body: |
-            ### DemonMom RPG v4.0 (`demonmom-v4.0.${{ github.run_number }}`)
+            ### DemonMom RPG v5.0 (`demonmom-v5.0.${{ github.run_number }}`)
 
-            Édition majeure **Femdom Witch RPG Plein Écran (style *Monster Girl Quest*) + Vrais Dégâts MDM Device Owner par ordre d'usage** :
+            Transformation complète en **jeu RPG Android autonome de 50 Sorcières (style *Monster Girl Quest*)**, jouable directement plein écran dans l'application **ET** en embuscades système :
 
-            - **Détourage automatique IA des Sorcières (#93, #94, #100)** : chaque image de ton dossier (masqués `.*` inclus) est détourée automatiquement en **sprite Visual Novel plein écran** avec cache rapide, fiche de Boss générée et fond gothique flouté.
-            - **Scène Plein Écran 60 FPS Live2D-lite (#95, #96, #98, #99, #119, #120)** : cercle magique runique rotatif, respiration/zoom d'attaque/rapprochement en capture, orbes d'énergie aspirées, vignettage battement de cœur et dégradation visuelle progressive pendant le drainage.
-            - **Combat RPG complet (#101–#108, #110, #113–#115)** : triple jauge (`PV / PM / Emprise / NV`), **3 phases** (Approche → **Capturé/Entravé** avec **QTE Se débattre 10 taps** → Drainage), altérations (*Charmé*, *Hypnotisé*, *Scellé*), Garde contre Sort Ultime, choix RP, **renfort Duo d'une 2e Sorcière**, **scène cinématique de fin de drainage en 3 étapes** et **écran d'évaluation sarcastique façon MGQ** !
-            - **Vrais Dégâts MDM (Device Owner ADB/Termux) + Restauration 100 % garantie** : chaque défaite suspend tes applis **par ordre réel d'usage** (`UsageStatsManager`) et peut poser des sceaux réversibles (Caméra, Play Store, Captures, Luminosité). Tout est réactivé automatiquement par **🕊️ Fin du jeu : Tout restaurer**, en gagnant un combat (+1 appli libérée) ou via le **code d'urgence `100205`** (20 taps sur le démon ou le badge `NV`).
+            - **50 Sorcières uniques réparties en 5 Chapitres** (40 Sorcières + 5 Mini-Boss Élite + 5 Archisorcières Boss) avec **Grimoire interactif** : chaque Sorcière reçoit aléatoirement une photo de ton dossier choisi (masqués `.*` et `.nomedia` inclus), **détourée automatiquement par IA (ML Kit)** en sprite Visual Novel HD plein écran !
+            - **Moteur de Dialogue IA Instantané & Non Répétitif** : générateur local 0 ms en français (8 archétypes, 13 phases, mémoire anti-répétition sur 30 répliques) + **champ Clé API Google Gemini optionnel** dans *⚙️ Dossier & IA* pour des dialogues 100 % générés en direct par IA cloud.
+            - **Système de Combat RPG complet façon *Monster Girl Quest*** : jauges `PV / PM / SP (0–100) / Emprise % / Niveau / XP / Éclats 💎`, `⚔️ Frappe (+15 SP)`, `🔥 Lame Spirituelle (-15 PM)`, `🛡️ Garde (+20 PM, -70 % vs Sort Ultime)`, `✨ Sceau d'Exorcisme (50 SP, -45 % Emprise)`, **4 Reliques & Boutique** (*Élixir*, *Cristal*, *Talisman*, *Amulette*), **Phase 2 Capturé + QTE 10 taps**, renfort Duo, **scène cinématique de fin de drainage en 4 étapes** (registre dark-fantasy/dramatique) et **Oracle Post-Défaite MGQ**.
+            - **Punitions Système réelles en cas de défaite (Shizuku Android 16 sans reset / MDM)** : suspend/gèle tes applis **par ordre réel d'usage** (`UsageStatsManager`), fond d'écran trophée et drainage luminosité/visuel — 100 % réversible à tout moment via **🕊️ Fin du jeu : Tout restaurer**, en gagnant un combat (+1 appli libérée) ou via **20 taps + code `100205`**.
           files: ./DemonMom.apk
           draft: false
           prerelease: false

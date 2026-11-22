@@ -17,6 +17,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -26,6 +28,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
@@ -47,31 +50,43 @@ import com.demonpet.app.mdm.DemonMdmManager
 import com.demonpet.app.mdm.DemonShizukuBridge
 import com.demonpet.app.media.MediaFolderHelper
 import com.demonpet.app.overlay.DemonPetView
+import com.demonpet.app.overlay.WitchRpgBattleOverlay
 import com.demonpet.app.receiver.DemonDeviceAdminReceiver
+import com.demonpet.app.rpg.WitchCatalog
+import com.demonpet.app.rpg.WitchRpgState
 import com.demonpet.app.service.DemonAccessibilityService
 import com.demonpet.app.service.DemonCompanionService
 import rikka.shizuku.Shizuku
 
 /**
- * Clean 4-Tab Native Material 3 Dashboard for DemonMom AI v2.0:
- * - Tab 0: Démon (Live Realistic Preview, ON/OFF, #65 Severity Presets, Compact Permissions, Quick Tests)
- * - Tab 1: Studio (Photorealistic HD Face/Bust Cutout, Styles, Media Folder with Hidden .* & Videos)
- * - Tab 2: Pouvoirs (Accessibility Sabotage, Punishments, AI Vision & Mischief)
- * - Tab 3: Réglages (Strict Settings Lock, Watched & Blacklist Apps, Fine Timers & Custom Phrases)
+ * DemonMom RPG v5.0 — Complete 50-Witch Dark-Fantasy RPG Game & System Punishment Hub:
+ * - Tab 0: 🗺️ Aventure (RPG Profile, 5 Chapters, Explore Random Witch, Challenge Boss, Shizuku Status)
+ * - Tab 1: 📖 Grimoire (Complete 50-Witch Bestiary with Chapter/Boss filters & 1-Tap Battle Launch)
+ * - Tab 2: 🎒 Sac & Démon (Relics Inventory & Soul Shard Shop + Living Demon Overlay & Punishments)
+ * - Tab 3: ⚙️ Dossier & IA (Hidden Folder .* Media Picker, Instant Local AI + Optional Gemini API Key, Shizuku & Permissions)
+ * - Fullscreen battles run directly inside [battleHostFrame] (works immediately without requiring Overlay permission!)
+ *   while also supporting live system ambushes via Accessibility + real Shizuku/MDM defeat punishments!
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var settings: DemonSettings
+    private lateinit var rpgState: WitchRpgState
     private val mainHandler = Handler(Looper.getMainLooper())
+
     private lateinit var rootFrame: FrameLayout
+    private lateinit var mainContentHost: FrameLayout
+    private lateinit var battleHostFrame: FrameLayout
+    private lateinit var inAppBattle: WitchRpgBattleOverlay
+
     private var lastRenderedLockState: Boolean? = null
     private var activeTab = 0
+    private var grimoireFilter = 1 // 1..5 = Chapter 1..5, 0 = Bosses (10)
 
     // Live UI refs
     private var previewPetView: DemonPetView? = null
     private var lockedPetAnimView: DemonPetView? = null
     private var lockedTapHintTv: TextView? = null
-    private var moodPillTv: TextView? = null
+    private var headerPillTv: TextView? = null
     private var masterSwitch: Switch? = null
     private var mediaSummaryTv: TextView? = null
     private var restoreWallBtn: Button? = null
@@ -95,7 +110,7 @@ class MainActivity : AppCompatActivity() {
                 renderScreen(snap)
             } else {
                 previewPetView?.updateConfig(snap)
-                moodPillTv?.text = "NV ${snap.playerLevel} • ${snap.mood.emoji} ${snap.moodScore}%"
+                updateHeaderPill(snap)
                 if (masterSwitch?.isChecked != snap.enabled) masterSwitch?.isChecked = snap.enabled
                 refreshMediaSummaryAsync(snap)
             }
@@ -104,7 +119,7 @@ class MainActivity : AppCompatActivity() {
 
     private val accessListener: () -> Unit = {
         mainHandler.post {
-            if (!settings.challengeLocked && activeTab == 0) {
+            if (!settings.challengeLocked && !inAppBattle.isBattleActive()) {
                 renderActiveTab(settings.snapshot())
             }
         }
@@ -119,7 +134,7 @@ class MainActivity : AppCompatActivity() {
             mainHandler.post {
                 if (outPath != null) {
                     settings.avatarPath = outPath
-                    Toast.makeText(this, "Portrait réaliste prêt ! 😈", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Portrait du compagnon prêt ! 😈", Toast.LENGTH_SHORT).show()
                     renderActiveTab(settings.snapshot())
                 } else {
                     Toast.makeText(this, "Impossible de lire cette photo.", Toast.LENGTH_LONG).show()
@@ -138,17 +153,8 @@ class MainActivity : AppCompatActivity() {
             putString("media_folder", "")
             putString("media_tree_uri", uri.toString())
         }
-        Toast.makeText(this, "Dossier médias SAF sélectionné ✅", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Dossier photos SAF sélectionné ✅", Toast.LENGTH_SHORT).show()
         refreshMediaSummaryAsync(settings.snapshot())
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        settings = DemonSettings(applicationContext)
-        rootFrame = FrameLayout(this).apply { setBackgroundColor(BG_DARK) }
-        setContentView(rootFrame)
-        requestBasicRuntimePermissionsIfNeeded()
-        renderScreen(settings.snapshot())
     }
 
     private val shizukuPermListener = Shizuku.OnRequestPermissionResultListener { reqCode, grantResult ->
@@ -156,13 +162,82 @@ class MainActivity : AppCompatActivity() {
             mainHandler.post {
                 if (grantResult == PackageManager.PERMISSION_GRANTED) {
                     Thread { DemonShizukuBridge.ensureBound() }.start()
-                    Toast.makeText(this, "⚡ Shizuku autorisé ! Dégâts système par ordre d'usage ACTIFS !", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "⚡ Shizuku autorisé ! Punitions système par ordre d'usage ACTIVES !", Toast.LENGTH_LONG).show()
                 } else {
                     Toast.makeText(this, "Autorisation Shizuku refusée.", Toast.LENGTH_SHORT).show()
                 }
-                if (!settings.challengeLocked) renderActiveTab(settings.snapshot())
+                if (!settings.challengeLocked && !inAppBattle.isBattleActive()) {
+                    renderActiveTab(settings.snapshot())
+                }
             }
         }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        settings = DemonSettings(applicationContext)
+        rpgState = WitchRpgState(applicationContext)
+
+        rootFrame = FrameLayout(this).apply { setBackgroundColor(BG_DARK) }
+        mainContentHost = FrameLayout(this)
+        battleHostFrame = FrameLayout(this).apply {
+            visibility = View.GONE
+            setBackgroundColor(Color.rgb(10, 6, 16))
+            isClickable = true
+            isFocusable = true
+        }
+        rootFrame.addView(mainContentHost, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rootFrame.addView(battleHostFrame, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        setContentView(rootFrame)
+
+        inAppBattle = WitchRpgBattleOverlay(
+            context = this,
+            settings = settings,
+            onMountFullscreen = { battleView ->
+                battleHostFrame.removeAllViews()
+                battleHostFrame.addView(
+                    battleView,
+                    FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                )
+                battleHostFrame.visibility = View.VISIBLE
+            },
+            onDismissFullscreen = {
+                battleHostFrame.removeAllViews()
+                battleHostFrame.visibility = View.GONE
+                clearWindowBrightnessDrain()
+            },
+            onApplyVisualDrain = { pct, cfg ->
+                applyWindowBrightnessDrain(pct, cfg)
+            },
+            onClearVisualDrain = {
+                clearWindowBrightnessDrain()
+            },
+            onSayPet = { msg ->
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            },
+            onSpawnTrappedAltar = { _ ->
+                DemonAccessibilityService.activeInstance?.triggerManualTest("altar")
+            },
+            onVibrate = { ms -> vibrateShort(ms) },
+            onSecretEmergencyExit = { showExitPinDialog() },
+            onBattleFinished = {
+                if (!settings.challengeLocked) {
+                    renderActiveTab(settings.snapshot())
+                }
+            }
+        )
+
+        requestBasicRuntimePermissionsIfNeeded()
+        renderScreen(settings.snapshot())
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (inAppBattle.isBattleActive()) {
+            Toast.makeText(this, "Duel en cours ! Termine le combat (ou 20 taps sur la barre NV + 100205).", Toast.LENGTH_SHORT).show()
+            return
+        }
+        super.onBackPressed()
     }
 
     override fun onStart() {
@@ -180,7 +255,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (lastRenderedLockState != snap.challengeLocked) {
             renderScreen(snap)
-        } else if (!snap.challengeLocked) {
+        } else if (!snap.challengeLocked && !inAppBattle.isBattleActive()) {
             renderActiveTab(snap)
         }
         if (snap.enabled && !DemonCompanionService.isRunning) {
@@ -196,7 +271,48 @@ class MainActivity : AppCompatActivity() {
         mainHandler.removeCallbacks(animTick)
     }
 
+    override fun onDestroy() {
+        inAppBattle.forceCleanup()
+        super.onDestroy()
+    }
+
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun applyWindowBrightnessDrain(pct: Int, cfg: DemonConfigSnapshot) {
+        if (!cfg.drainBrightnessEnabled) return
+        try {
+            val lp = window.attributes
+            lp.screenBrightness = (1f - (pct / 100f) * 0.85f).coerceIn(0.08f, 1f)
+            window.attributes = lp
+        } catch (_: Throwable) {}
+    }
+
+    private fun clearWindowBrightnessDrain() {
+        try {
+            val lp = window.attributes
+            lp.screenBrightness = -1f
+            window.attributes = lp
+        } catch (_: Throwable) {}
+    }
+
+    @Suppress("DEPRECATION")
+    private fun vibrateShort(ms: Long) {
+        if (!settings.vibrateOnPrank) return
+        try {
+            val vib = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vib.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                vib.vibrate(ms)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    private fun startInAppDuel(witchDef: WitchCatalog.WitchDef) {
+        if (inAppBattle.isBattleActive()) return
+        Toast.makeText(this, "⚔️ Invocation de ${witchDef.name} (NV ${witchDef.level})…", Toast.LENGTH_SHORT).show()
+        inAppBattle.launchBattleForWitch(settings.snapshot(), witchDef)
+    }
 
     private fun renderScreen(snap: DemonConfigSnapshot) {
         lastRenderedLockState = snap.challengeLocked
@@ -204,15 +320,20 @@ class MainActivity : AppCompatActivity() {
         previewPetView = null
         lockedPetAnimView = null
         lockedTapHintTv = null
-        rootFrame.removeAllViews()
+        mainContentHost.removeAllViews()
 
         if (snap.challengeLocked) {
-            rootFrame.addView(buildLockedChallengeGate(snap))
+            mainContentHost.addView(buildLockedChallengeGate(snap))
             mainHandler.post(animTick)
         } else {
-            rootFrame.addView(buildTabbedShell(snap))
+            mainContentHost.addView(buildTabbedShell(snap))
             renderActiveTab(snap)
         }
+    }
+
+    private fun updateHeaderPill(snap: DemonConfigSnapshot) {
+        val rSnap = rpgState.snapshot()
+        headerPillTv?.text = "NV ${snap.playerLevel} • 💎 ${rSnap.gold}"
     }
 
     // -------------------------------------------------------------------------
@@ -227,18 +348,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         wrap.addView(TextView(this).apply {
-            text = "🔒 ${snap.avatarName} verrouille tout"
+            text = "🔒 ${snap.avatarName} verrouille les réglages"
             setTextColor(Color.WHITE)
-            textSize = 21f
+            textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
         })
         wrap.addView(TextView(this).apply {
-            text = "Paramètres Android, Administrateur et réglages protégés.\nTapote le démon 20 fois de suite puis saisis le code pour sortir."
+            text = "Paramètres Android, Administrateur et réglages protégés.\nTu peux continuer à combattre les Sorcières, ou tapoter le démon 20× + code 100205 pour déverrouiller."
             setTextColor(Color.rgb(185, 185, 200))
-            textSize = 13f
+            textSize = 12.8f
             gravity = Gravity.CENTER
-            setPadding(0, dp(8), 0, dp(20))
+            setPadding(0, dp(8), 0, dp(18))
         })
 
         var tapCounter = 0
@@ -264,15 +385,24 @@ class MainActivity : AppCompatActivity() {
         ).apply {
             updateConfig(snap)
             pose = DemonPetView.PetPose.WALKING
-            say("Tu ne peux pas me désactiver ! 😈", 4_000L)
+            say("Tu ne peux pas fuir le Coven ! 😈", 4_000L)
         }
         lockedPetAnimView = petView
 
         val petCard = FrameLayout(this).apply {
-            background = roundedBg(CARD_DARK, 28, strokeColor = Color.argb(135, 244, 63, 94), strokeDp = 2)
-            addView(petView, FrameLayout.LayoutParams(dp(210), dp(240), Gravity.CENTER))
+            background = roundedBg(CARD_DARK, 28, strokeColor = Color.argb(145, 217, 70, 239), strokeDp = 2)
+            addView(petView, FrameLayout.LayoutParams(dp(200), dp(228), Gravity.CENTER))
         }
-        wrap.addView(petCard, LinearLayout.LayoutParams(dp(240), dp(264)))
+        wrap.addView(petCard, LinearLayout.LayoutParams(dp(230), dp(250)))
+
+        wrap.addView(makeAccentButton("⚔️ Lancer un Duel Sorcière (Mode Verrouillé)", Color.rgb(162, 28, 175)) {
+            val w = WitchCatalog.randomWitchForChapter(rpgState.selectedChapter, includeBoss = true)
+            startInAppDuel(w)
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(18)
+            }
+        })
 
         val hintTv = TextView(this).apply {
             text = "Tapote le démon 20× de suite pour débloquer"
@@ -280,13 +410,13 @@ class MainActivity : AppCompatActivity() {
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            setPadding(0, dp(18), 0, dp(8))
+            setPadding(0, dp(16), 0, dp(6))
         }
         lockedTapHintTv = hintTv
         wrap.addView(hintTv)
 
         wrap.addView(TextView(this).apply {
-            text = "${snap.mood.emoji} ${snap.mood.label} (${snap.moodScore}%) • Marche aussi sur le démon flottant"
+            text = "NV ${snap.playerLevel} • ${snap.mood.emoji} ${snap.mood.label} • Marche aussi sur le démon flottant"
             setTextColor(Color.rgb(145, 145, 162))
             textSize = 11.5f
             gravity = Gravity.CENTER
@@ -309,7 +439,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(20), dp(14), dp(20), dp(8))
             setBackgroundColor(Color.rgb(20, 18, 28))
             addView(TextView(this@MainActivity).apply {
-                text = "Saisis le code pour déverrouiller les Paramètres, retirer l'Administrateur et mettre le démon en pause :"
+                text = "Saisis le code pour déverrouiller les Paramètres, réactiver 100 % des applis suspendues et mettre le démon en pause :"
                 setTextColor(Color.rgb(225, 225, 234))
                 textSize = 13f
                 setPadding(0, 0, 0, dp(12))
@@ -317,7 +447,7 @@ class MainActivity : AppCompatActivity() {
             addView(input)
         }
         AlertDialog.Builder(this)
-            .setTitle("🔓 Déverrouillage DemonMom AI")
+            .setTitle("🔓 Déverrouillage DemonMom RPG")
             .setView(box)
             .setPositiveButton("Déverrouiller") { _, _ ->
                 if (settings.verifyExitPin(input.text?.toString().orEmpty())) {
@@ -352,7 +482,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun performEndGameRestoreAll() {
-        Toast.makeText(this, "Restauration complète en cours…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Restauration complète du téléphone en cours…", Toast.LENGTH_SHORT).show()
         Thread {
             val msg = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
             mainHandler.post {
@@ -362,6 +492,7 @@ class MainActivity : AppCompatActivity() {
                     putInt("active_drain_pct", 0)
                     putInt("mood_score", 30)
                 }
+                clearWindowBrightnessDrain()
                 Toast.makeText(this, "🕊️ Fin du jeu ! $msg", Toast.LENGTH_LONG).show()
                 renderActiveTab(settings.snapshot())
             }
@@ -382,7 +513,7 @@ class MainActivity : AppCompatActivity() {
                 DemonShizukuBridge.openShizukuApp(this)
             }
             else -> {
-                Toast.makeText(this, "Installe d'abord l'app gratuite Shizuku (Play Store ou GitHub) !", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Installe l'app gratuite Shizuku (Play Store ou GitHub) !", Toast.LENGTH_LONG).show()
                 try {
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/RikkaApps/Shizuku/releases/latest")))
                 } catch (_: Throwable) {}
@@ -393,11 +524,11 @@ class MainActivity : AppCompatActivity() {
     private fun copyTermuxMdmScript() {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("DemonMom Termux MDM", DemonMdmManager.buildTermuxOneLineScript()))
-        Toast.makeText(this, "📋 Script Termux MDM copié ! Colle-le directement dans Termux.", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "📋 Script Termux copié ! Colle-le dans Termux.", Toast.LENGTH_LONG).show()
     }
 
     // -------------------------------------------------------------------------
-    // CLEAN 4-TAB SHELL
+    // 4-TAB FULL RPG GAME SHELL
     // -------------------------------------------------------------------------
     private fun buildTabbedShell(snap: DemonConfigSnapshot): View {
         val shell = LinearLayout(this).apply {
@@ -405,50 +536,52 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(BG_DARK)
         }
 
-        // Compact sleek top header
+        // Sleek RPG Top Bar
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(18), dp(18), dp(10))
+            setPadding(dp(16), dp(16), dp(16), dp(8))
         }
         header.addView(TextView(this).apply {
-            text = "😈 DemonMom"
+            text = "🔮 DemonMom RPG"
             setTextColor(Color.WHITE)
-            textSize = 20f
+            textSize = 19.5f
             typeface = Typeface.DEFAULT_BOLD
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
+        val rSnap = rpgState.snapshot()
         val pill = TextView(this).apply {
-            text = "NV ${snap.playerLevel} • ${snap.mood.emoji} ${snap.moodScore}%"
+            text = "NV ${snap.playerLevel} • 💎 ${rSnap.gold}"
             setTextColor(Color.WHITE)
-            textSize = 11.5f
+            textSize = 11.8f
             typeface = Typeface.DEFAULT_BOLD
-            background = roundedBg(Color.rgb(38, 22, 38), 14, strokeColor = Color.argb(140, 244, 63, 94), strokeDp = 1)
-            setPadding(dp(10), dp(5), dp(10), dp(5))
+            background = roundedBg(Color.rgb(42, 20, 54), 14, strokeColor = Color.argb(165, 217, 70, 239), strokeDp = 1)
+            setPadding(dp(11), dp(5), dp(11), dp(5))
             setOnClickListener {
-                settings.update { putInt("mood_score", 20); putInt("active_drain_pct", 0) }
-                Toast.makeText(this@MainActivity, "Humeur calmée & drain purifié 😇", Toast.LENGTH_SHORT).show()
+                activeTab = 2
+                updateTabBarStyles()
+                renderActiveTab(settings.snapshot())
             }
         }
-        moodPillTv = pill
+        headerPillTv = pill
         header.addView(pill)
         shell.addView(header)
 
-        // 4 Clean Pill Tabs
+        // 4 RPG Tabs
         val tabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(14), dp(2), dp(14), dp(10))
+            setPadding(dp(12), dp(2), dp(12), dp(10))
         }
         tabButtons.clear()
-        val titles = listOf("😈 Démon", "🎭 Studio", "⚡ Pouvoirs", "⚙️ Réglages")
+        val titles = listOf("🗺️ Aventure", "📖 Grimoire", "🎒 Sac & Démon", "⚙️ Dossier & IA")
         titles.forEachIndexed { idx, label ->
             val b = Button(this).apply {
                 text = label
                 isAllCaps = false
-                textSize = 11.5f
+                textSize = 11f
                 typeface = Typeface.DEFAULT_BOLD
                 minHeight = 0; minimumHeight = 0
-                setPadding(dp(4), dp(8), dp(4), dp(8))
+                setPadding(dp(3), dp(8), dp(3), dp(8))
                 setOnClickListener {
                     activeTab = idx
                     updateTabBarStyles()
@@ -457,7 +590,7 @@ class MainActivity : AppCompatActivity() {
             }
             tabButtons.add(b)
             tabBar.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                if (idx > 0) marginStart = dp(6)
+                if (idx > 0) marginStart = dp(5)
             })
         }
         shell.addView(tabBar)
@@ -474,17 +607,18 @@ class MainActivity : AppCompatActivity() {
         tabButtons.forEachIndexed { idx, b ->
             val sel = idx == activeTab
             b.background = roundedBg(
-                if (sel) Color.rgb(225, 29, 72) else Color.rgb(25, 22, 36),
+                if (sel) Color.rgb(162, 28, 175) else Color.rgb(25, 21, 38),
                 12,
-                strokeColor = if (sel) Color.rgb(253, 164, 175) else Color.argb(35, 255, 255, 255),
+                strokeColor = if (sel) Color.rgb(240, 171, 252) else Color.argb(35, 255, 255, 255),
                 strokeDp = 1
             )
-            b.setTextColor(if (sel) Color.WHITE else Color.rgb(175, 175, 192))
+            b.setTextColor(if (sel) Color.WHITE else Color.rgb(175, 175, 195))
         }
     }
 
     private fun renderActiveTab(snap: DemonConfigSnapshot) {
         val box = tabContentContainer ?: return
+        updateHeaderPill(snap)
         mainHandler.removeCallbacks(animTick)
         previewPetView = null
         box.removeAllViews()
@@ -492,25 +626,35 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
         val inner = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(4), dp(16), dp(28))
+            setPadding(dp(14), dp(4), dp(14), dp(28))
         }
         scroll.addView(inner)
 
         when (activeTab) {
-            0 -> populateHomeTab(inner, snap)
-            1 -> populateStudioTab(inner, snap)
-            2 -> populatePowersTab(inner, snap)
-            3 -> populateSettingsTab(inner, snap)
+            0 -> populateAdventureTab(inner, snap)
+            1 -> populateGrimoireTab(inner, snap)
+            2 -> populateBagAndDemonTab(inner, snap)
+            3 -> populateFolderAndAiTab(inner, snap)
         }
         box.addView(scroll)
         if (previewPetView != null) mainHandler.post(animTick)
         refreshMediaSummaryAsync(snap)
     }
 
-    // ==================== TAB 0 : DÉMON (ULTRA-CLEAN HOME) ====================
-    private fun populateHomeTab(root: LinearLayout, snap: DemonConfigSnapshot) {
-        // 1. Live Realistic Avatar Hero + Master Toggle
-        val hero = makeCard(accentStroke = Color.argb(120, 244, 63, 94))
+    private fun obedienceRankFor(level: Int): String = when {
+        level >= 25 -> "Rebelle"
+        level >= 15 -> "Apprenti"
+        level >= 8 -> "Captif"
+        level >= 3 -> "Serviteur"
+        else -> "Soumis Absolu"
+    }
+
+    // ==================== TAB 0 : 🗺️ AVENTURE (COMPLETE WITCH RPG HUB) ====================
+    private fun populateAdventureTab(root: LinearLayout, snap: DemonConfigSnapshot) {
+        val rSnap = rpgState.snapshot()
+
+        // 1. Player RPG Hero Card
+        val hero = makeCard(accentStroke = Color.argb(145, 217, 70, 239))
         val heroRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -527,47 +671,411 @@ class MainActivity : AppCompatActivity() {
             pose = DemonPetView.PetPose.WALKING
         }
         previewPetView = pv
-        heroRow.addView(pv, LinearLayout.LayoutParams(dp(106), dp(126)))
+        heroRow.addView(pv, LinearLayout.LayoutParams(dp(96), dp(116)))
 
-        val rightCol = LinearLayout(this).apply {
+        val statsCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), 0, 0, 0)
         }
-        rightCol.addView(TextView(this).apply {
-            text = snap.avatarName
+        statsCol.addView(TextView(this).apply {
+            text = "NV ${snap.playerLevel} · ${obedienceRankFor(snap.playerLevel)}"
             setTextColor(Color.WHITE)
-            textSize = 18f
+            textSize = 17.5f
             typeface = Typeface.DEFAULT_BOLD
         })
-        rightCol.addView(TextView(this).apply {
-            text = "${snap.avatarStyle.label}\nProfil : ${snap.severityPreset.emoji} ${snap.severityPreset.label} • NV ${snap.playerLevel} (PV ${snap.playerHp})"
-            setTextColor(Color.rgb(175, 175, 192))
-            textSize = 11.8f
-            setPadding(0, dp(2), 0, dp(10))
+        statsCol.addView(TextView(this).apply {
+            text = "PV ${snap.playerHp}/100  •  XP ${rSnap.xp}/100  •  💎 ${rSnap.gold} Éclats"
+            setTextColor(Color.rgb(240, 171, 252))
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setPadding(0, dp(3), 0, dp(4))
         })
+
+        val xpBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = rSnap.xp.coerceIn(0, 100)
+            progressTintList = ColorStateList.valueOf(Color.rgb(217, 70, 239))
+            progressBackgroundTintList = ColorStateList.valueOf(Color.rgb(42, 34, 58))
+        }
+        statsCol.addView(xpBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8)).apply {
+            bottomMargin = dp(6)
+        })
+
+        val aiBadge = if (rSnap.geminiApiKey.isNotBlank()) "✨ IA Gemini + Locale" else "⚡ IA Locale 0 ms"
+        statsCol.addView(TextView(this).apply {
+            text = "📖 Grimoire : ${rSnap.defeatedIds.size}/50 vaincues • ${rSnap.totalWins}V / ${rSnap.totalDefeats}D\n🧠 Dialogues : $aiBadge"
+            setTextColor(Color.rgb(180, 180, 200))
+            textSize = 11.4f
+        })
+        heroRow.addView(statsCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        hero.addView(heroRow)
+
+        // Prompt to pick photo folder if not yet set
+        if (snap.mediaFolderPath.isBlank() && snap.mediaTreeUri.isBlank()) {
+            hero.addView(makeAccentButton("📂 Choisir ton dossier photos pour les 50 Sorcières →", Color.rgb(126, 34, 206)) {
+                activeTab = 3
+                updateTabBarStyles()
+                renderActiveTab(settings.snapshot())
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(10)
+                }
+            })
+        }
+        root.addView(hero)
+
+        // 2. 5-Chapter World Map & Battle Launch Card
+        val chCard = makeCard(accentStroke = Color.argb(135, 244, 63, 94))
+        chCard.addView(sectionTitle("🗺️ Monde du Coven (5 Chapitres · 50 Sorcières)"))
+
+        val curCh = rSnap.selectedChapter.coerceIn(1, 5)
+        val chRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(8), 0, dp(10))
+        }
+        WitchCatalog.CHAPTERS.forEachIndexed { idx, ch ->
+            val unlocked = ch.id <= rSnap.unlockedChapter
+            val selected = ch.id == curCh
+            val btn = Button(this).apply {
+                text = if (unlocked) "Ch.${ch.id}" else "🔒${ch.id}"
+                isAllCaps = false
+                textSize = 11.5f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(when {
+                    selected -> Color.WHITE
+                    unlocked -> Color.rgb(225, 210, 245)
+                    else -> Color.rgb(125, 125, 145)
+                })
+                background = roundedBg(
+                    when {
+                        selected -> Color.rgb(225, 29, 72)
+                        unlocked -> Color.rgb(36, 26, 52)
+                        else -> Color.rgb(22, 19, 32)
+                    },
+                    10,
+                    strokeColor = if (selected) Color.rgb(253, 164, 175) else Color.argb(40, 255, 255, 255),
+                    strokeDp = 1
+                )
+                minHeight = 0; minimumHeight = 0
+                setPadding(dp(2), dp(8), dp(2), dp(8))
+                setOnClickListener {
+                    if (!unlocked) {
+                        val prevBoss = WitchCatalog.bossOfChapter(ch.id - 1)
+                        Toast.makeText(this@MainActivity, "Bats d'abord ${prevBoss.name} (Boss Ch.${ch.id - 1}) pour débloquer le Chapitre ${ch.id} !", Toast.LENGTH_LONG).show()
+                    } else {
+                        rpgState.selectedChapter = ch.id
+                        grimoireFilter = ch.id
+                        renderActiveTab(settings.snapshot())
+                    }
+                }
+            }
+            chRow.addView(btn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                if (idx > 0) marginStart = dp(5)
+            })
+        }
+        chCard.addView(chRow)
+
+        val chInfo = WitchCatalog.CHAPTERS[curCh - 1]
+        val chWitches = WitchCatalog.witchesInChapter(curCh)
+        val chDefeated = chWitches.count { rSnap.defeatedIds.contains(it.id) }
+        val chBoss = WitchCatalog.bossOfChapter(curCh)
+        val bossBeat = rSnap.defeatedIds.contains(chBoss.id)
+
+        val chDetail = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(Color.rgb(28, 18, 42), 14, strokeColor = Color.argb(75, 217, 70, 239), strokeDp = 1)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        chDetail.addView(TextView(this).apply {
+            text = "Chapitre $curCh : ${chInfo.name} (NV ${chInfo.minLevel}–${chInfo.maxLevel})"
+            setTextColor(Color.WHITE)
+            textSize = 14.5f
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        chDetail.addView(TextView(this).apply {
+            text = "${chInfo.subtitle}\nProgression : $chDefeated/10 Sorcières vaincues • Boss : ${chBoss.name} ${if (bossBeat) "✅" else "👑"}"
+            setTextColor(Color.rgb(208, 196, 228))
+            textSize = 11.8f
+            setPadding(0, dp(3), 0, 0)
+        })
+        chCard.addView(chDetail)
+
+        // GIANT EXPLORE BUTTON
+        chCard.addView(makeAccentButton("⚔️ EXPLORER — SORCIÈRE ALÉATOIRE (Ch.$curCh)", Color.rgb(225, 29, 72)) {
+            val w = WitchCatalog.randomWitchForChapter(curCh, includeBoss = false)
+            startInAppDuel(w)
+        }.apply {
+            textSize = 13.8f
+            setPadding(dp(12), dp(13), dp(12), dp(13))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(10)
+            }
+        })
+
+        // BOSS CHALLENGE BUTTON
+        chCard.addView(makeAccentButton("👑 DÉFIER LE BOSS : ${chBoss.name} (NV ${chBoss.level})", Color.rgb(162, 28, 175)) {
+            startInAppDuel(chBoss)
+        }.apply {
+            textSize = 13f
+            setPadding(dp(12), dp(11), dp(12), dp(11))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(8)
+            }
+        })
+
+        // Secondary Row: Random 1..50 + Grimoire
+        val subRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        subRow.addView(makeGridTestBtn("🎲 Aléatoire (1–50)") {
+            startInAppDuel(WitchCatalog.ALL_WITCHES.random())
+        }, gridLp(endMargin = dp(5)))
+        subRow.addView(makeGridTestBtn("📖 Voir les 50 Sorcières") {
+            activeTab = 1
+            updateTabBarStyles()
+            renderActiveTab(settings.snapshot())
+        }, gridLp(startMargin = dp(5)))
+        chCard.addView(subRow)
+        root.addView(chCard)
+
+        // 3. System Punishments (Shizuku / MDM) & Guaranteed Full Restore Card
+        val sysCard = makeCard(accentStroke = Color.argb(115, 16, 185, 129))
+        val privOk = DemonMdmManager.hasPrivilegedControl(this)
+        val susp = DemonMdmManager.getSuspendedPackages(this)
+        val hid = DemonMdmManager.getHiddenPackages(this)
+        val curses = DemonMdmManager.getActiveCurses(this)
+
+        sysCard.addView(sectionTitle("⚡ Punitions Système en cas de Défaite"))
+        sysCard.addView(TextView(this).apply {
+            text = "${DemonMdmManager.getControlStatusLabel(this@MainActivity)}\n" +
+                "• ${susp.size + hid.size} appli(s) gelée(s) par ordre d'usage • ${curses.size} sceau(x) actif(s)\n" +
+                "• Gagner un combat libère +1 appli • Tout est 100 % réversible !"
+            setTextColor(if (privOk) Color.rgb(167, 243, 208) else Color.rgb(253, 186, 116))
+            textSize = 11.6f
+            setPadding(0, dp(4), 0, dp(8))
+        })
+
+        val sysRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        if (!privOk) {
+            sysRow.addView(makeAccentButton("⚡ Autoriser Shizuku", Color.rgb(126, 34, 206)) {
+                handleShizukuAction()
+            }, gridLp(endMargin = dp(5)))
+        }
+        sysRow.addView(makeAccentButton("🕊️ Fin du jeu : Tout restaurer", Color.rgb(16, 128, 96)) {
+            performEndGameRestoreAll()
+        }, gridLp(startMargin = if (!privOk) dp(5) else 0))
+        sysCard.addView(sysRow)
+        root.addView(sysCard)
+    }
+
+    // ==================== TAB 1 : 📖 GRIMOIRE (ALL 50 WITCHES BESTIARY) ====================
+    private fun populateGrimoireTab(root: LinearLayout, snap: DemonConfigSnapshot) {
+        val rSnap = rpgState.snapshot()
+
+        val headCard = makeCard(accentStroke = Color.argb(120, 217, 70, 239))
+        headCard.addView(sectionTitle("📖 Grimoire des 50 Sorcières"))
+        headCard.addView(sectionSub(
+            "${rSnap.defeatedIds.size}/50 vaincues  •  ${rSnap.encounteredIds.size}/50 rencontrées  •  ${rSnap.lostToIds.size} défaite(s)\n" +
+                "Chaque Sorcière reçoit aléatoirement un portrait HD détouré depuis ton dossier photos !"
+        ))
+
+        // Filter Chips: Ch.1..Ch.5 + Boss(10)
+        val filterRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, dp(5)) }
+        listOf(1 to "Ch.1", 2 to "Ch.2", 3 to "Ch.3").forEachIndexed { idx, (code, label) ->
+            filterRow1.addView(makeFilterChip(label, grimoireFilter == code) {
+                grimoireFilter = code
+                renderActiveTab(settings.snapshot())
+            }, gridLp(startMargin = if (idx > 0) dp(4) else 0, endMargin = if (idx < 2) dp(4) else 0))
+        }
+        headCard.addView(filterRow1)
+
+        val filterRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf(4 to "Ch.4", 5 to "Ch.5", 0 to "👑 Boss (10)").forEachIndexed { idx, (code, label) ->
+            filterRow2.addView(makeFilterChip(label, grimoireFilter == code) {
+                grimoireFilter = code
+                renderActiveTab(settings.snapshot())
+            }, gridLp(startMargin = if (idx > 0) dp(4) else 0, endMargin = if (idx < 2) dp(4) else 0))
+        }
+        headCard.addView(filterRow2)
+        root.addView(headCard)
+
+        val list = if (grimoireFilter == 0) {
+            WitchCatalog.ALL_WITCHES.filter { it.isBoss || it.isMiniBoss }
+        } else {
+            WitchCatalog.witchesInChapter(grimoireFilter)
+        }
+
+        for (w in list) {
+            val defeated = rSnap.defeatedIds.contains(w.id)
+            val lostTo = rSnap.lostToIds.contains(w.id)
+            val seen = rSnap.encounteredIds.contains(w.id)
+
+            val stroke = when {
+                w.isBoss -> Color.argb(190, 245, 158, 11)
+                w.isMiniBoss -> Color.argb(165, 244, 63, 94)
+                defeated -> Color.argb(120, 16, 185, 129)
+                else -> Color.argb(65, 217, 70, 239)
+            }
+            val card = makeCard(accentStroke = stroke)
+
+            val topRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val statusIcon = when {
+                defeated -> "✅ Vaincue"
+                lostTo -> "💋 Défaite"
+                seen -> "👁️ Vue"
+                else -> "❓ Nouvelle"
+            }
+            topRow.addView(TextView(this).apply {
+                text = "#${w.id} ${w.displayTitle}"
+                setTextColor(if (w.isBoss) Color.rgb(253, 224, 71) else Color.WHITE)
+                textSize = 13.8f
+                typeface = Typeface.DEFAULT_BOLD
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+            topRow.addView(TextView(this).apply {
+                text = statusIcon
+                setTextColor(when {
+                    defeated -> Color.rgb(167, 243, 208)
+                    lostTo -> Color.rgb(244, 114, 182)
+                    else -> Color.rgb(185, 185, 205)
+                })
+                textSize = 11.2f
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            card.addView(topRow)
+
+            card.addView(TextView(this).apply {
+                text = "NV ${w.level} • ${w.archetype.label} • ${w.element} • Résol. ${w.maxResolve} • +${w.rewardXp} XP • +${w.rewardGold} 💎"
+                setTextColor(Color.rgb(208, 198, 232))
+                textSize = 11.3f
+                setPadding(0, dp(3), 0, dp(4))
+            })
+
+            card.addView(TextView(this).apply {
+                text = "Ultime : « ${w.ultimateName} »\n💡 ${w.weaknessTip}"
+                setTextColor(Color.rgb(156, 156, 178))
+                textSize = 11.2f
+                setPadding(0, 0, 0, dp(8))
+            })
+
+            card.addView(makeAccentButton(
+                if (w.isBoss) "👑 Combattre le Boss ${w.name}" else "⚔️ Affronter ${w.name}",
+                if (w.isBoss) Color.rgb(180, 83, 9) else if (w.isMiniBoss) Color.rgb(190, 24, 93) else Color.rgb(126, 34, 206)
+            ) {
+                startInAppDuel(w)
+            })
+            root.addView(card)
+        }
+    }
+
+    private fun makeFilterChip(label: String, active: Boolean, onClick: () -> Unit): Button = Button(this).apply {
+        text = label
+        isAllCaps = false
+        textSize = 11.5f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(if (active) Color.WHITE else Color.rgb(190, 190, 210))
+        background = roundedBg(
+            if (active) Color.rgb(225, 29, 72) else Color.rgb(30, 26, 44),
+            10,
+            strokeColor = if (active) Color.rgb(253, 164, 175) else Color.argb(35, 255, 255, 255),
+            strokeDp = 1
+        )
+        minHeight = 0; minimumHeight = 0
+        setPadding(dp(4), dp(7), dp(4), dp(7))
+        setOnClickListener { onClick() }
+    }
+
+    // ==================== TAB 2 : 🎒 SAC, BOUTIQUE & COMPAGNON DÉMON ====================
+    private fun populateBagAndDemonTab(root: LinearLayout, snap: DemonConfigSnapshot) {
+        val rSnap = rpgState.snapshot()
+
+        // 1. Relics Inventory & Soul Shard Shop
+        val shopCard = makeCard(accentStroke = Color.argb(135, 245, 158, 11))
+        shopCard.addView(sectionTitle("🎒 Sac & Boutique d'Éclats (💎 ${rSnap.gold})"))
+        shopCard.addView(sectionSub("Achète des Reliques avec les Éclats gagnés en combat pour survivre aux Archisorcières Boss !"))
+
+        data class ShopItem(val key: String, val title: String, val desc: String, val count: Int, val cost: Int, val color: Int)
+        val items = listOf(
+            ShopItem("elixir", "🧪 Élixir de Volonté", "+60 PV en combat", rSnap.elixirs, 35, Color.rgb(16, 128, 96)),
+            ShopItem("crystal", "💎 Cristal de Mana", "+40 PM et +20 SP", rSnap.crystals, 30, Color.rgb(37, 99, 235)),
+            ShopItem("talisman", "📜 Talisman de Rupture", "Brise instantanément une Capture", rSnap.talismans, 55, Color.rgb(180, 83, 9)),
+            ShopItem("amulet", "🔮 Amulette de Clarté", "Purifie Statuts + Drainage visuel", rSnap.amulets, 45, Color.rgb(126, 34, 206))
+        )
+
+        for (shopItem in items) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = roundedBg(Color.rgb(28, 22, 42), 12)
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(6)
+                }
+            }
+            val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            info.addView(TextView(this).apply {
+                text = "${shopItem.title}  (x${shopItem.count})"
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            info.addView(TextView(this).apply {
+                text = shopItem.desc
+                setTextColor(Color.rgb(175, 175, 196))
+                textSize = 11.2f
+            })
+            row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+            val canBuy = rSnap.gold >= shopItem.cost
+            row.addView(Button(this).apply {
+                text = "Acheter ${shopItem.cost} 💎"
+                isAllCaps = false
+                textSize = 11.2f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE)
+                background = roundedBg(if (canBuy) shopItem.color else Color.rgb(52, 48, 64), 10)
+                minHeight = 0; minimumHeight = 0
+                setPadding(dp(10), dp(7), dp(10), dp(7))
+                setOnClickListener {
+                    if (rpgState.buyItem(shopItem.key, shopItem.cost)) {
+                        Toast.makeText(this@MainActivity, "${shopItem.title} acheté !", Toast.LENGTH_SHORT).show()
+                        renderActiveTab(settings.snapshot())
+                    } else {
+                        Toast.makeText(this@MainActivity, "Pas assez d'Éclats 💎 ! Gagne des combats.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            })
+            shopCard.addView(row)
+        }
+        root.addView(shopCard)
+
+        // 2. Living Demon Companion & System Ambushes Card
+        val demonCard = makeCard(accentStroke = Color.argb(120, 244, 63, 94))
+        demonCard.addView(sectionTitle("😈 Compagnon Démon & Embuscades Système"))
+        demonCard.addView(sectionSub("Active le compagnon vivant par-dessus toutes tes applis pour déclencher des embuscades Sorcières surprises !"))
 
         val sw = Switch(this).apply {
             isChecked = snap.enabled
-            text = if (snap.enabled) "Démon ACTIF" else "Activer le Démon"
+            text = if (snap.enabled) "Compagnon Démon & Embuscades ACTIFS" else "Activer le Compagnon flottant"
             setTextColor(Color.WHITE)
-            textSize = 14f
+            textSize = 13.5f
             typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, dp(4), 0, dp(8))
             setOnCheckedChangeListener { _, checked ->
-                text = if (checked) "Démon ACTIF" else "Activer le Démon"
+                text = if (checked) "Compagnon Démon & Embuscades ACTIFS" else "Activer le Compagnon flottant"
                 settings.enabled = checked
                 if (checked) DemonCompanionService.start(applicationContext)
                 else DemonCompanionService.stop(applicationContext)
             }
         }
         masterSwitch = sw
-        rightCol.addView(sw)
-        heroRow.addView(rightCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        hero.addView(heroRow)
+        demonCard.addView(sw)
 
-        hero.addView(divider())
-
-        // #65 — 4 Severity Presets in 1 tap
-        hero.addView(smallLabel("Niveau de sévérité (#65) :"))
+        demonCard.addView(smallLabel("Sévérité des embuscades & punitions :"))
         val presetRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         SeverityPreset.values().forEachIndexed { idx, preset ->
             val active = snap.severityPreset == preset
@@ -579,12 +1087,12 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(if (active) Color.WHITE else Color.rgb(195, 195, 210))
                 background = roundedBg(
                     if (active) Color.rgb(225, 29, 72) else Color.rgb(32, 28, 46),
-                    12,
+                    11,
                     strokeColor = if (active) Color.rgb(253, 164, 175) else Color.argb(35, 255, 255, 255),
                     strokeDp = 1
                 )
                 minHeight = 0; minimumHeight = 0
-                setPadding(dp(4), dp(8), dp(4), dp(8))
+                setPadding(dp(4), dp(7), dp(4), dp(7))
                 setOnClickListener {
                     settings.applySeverityPreset(preset)
                     Toast.makeText(this@MainActivity, "Profil ${preset.label} appliqué ${preset.emoji}", Toast.LENGTH_SHORT).show()
@@ -592,186 +1100,73 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             presetRow.addView(btn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                if (idx > 0) marginStart = dp(6)
+                if (idx > 0) marginStart = dp(5)
             })
         }
-        hero.addView(presetRow)
+        demonCard.addView(presetRow)
 
-        hero.addView(makeAccentButton("🔒 Verrouiller (Paramètres + Admin • Sortie 20× + 100205)", Color.rgb(159, 18, 57)) {
-            confirmAndEnableChallengeLock()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(12)
+        demonCard.addView(makeSwitchRow("Embuscades Sorcières surprise hors de l'app", snap.rpgSeductionEnabled) { settings.rpgSeductionEnabled = it })
+        demonCard.addView(makeSwitchRow("Drainage de luminosité en combat / défaite", snap.drainBrightnessEnabled) { settings.drainBrightnessEnabled = it })
+        demonCard.addView(makeSwitchRow("Drainage qualité visuelle / transe hypnotique", snap.drainQualityEnabled) { settings.drainQualityEnabled = it })
+        demonCard.addView(makeSwitchRow("Autel Photo Piégé (#87) après défaite", snap.unremovableAltarEnabled) { settings.unremovableAltarEnabled = it })
+        demonCard.addView(makeSwitchRow("Fond d'écran trophée de la Sorcière gagnante", snap.wallpaperPrankEnabled) { settings.wallpaperPrankEnabled = it })
+        demonCard.addView(makeSwitchRow("Au Coin Vidéo (#38) & Lignes de punition (#39)", snap.timeoutCornerEnabled) {
+            settings.timeoutCornerEnabled = it
+            settings.punishmentLinesEnabled = it
+        })
+        demonCard.addView(makeSwitchRow("Pause écran (#68) & Tournoi médias (#69)", snap.screenBreakEnabled) {
+            settings.screenBreakEnabled = it
+            settings.entryTournamentEnabled = it
+        })
+        demonCard.addView(makeSwitchRow("Sabotage Accessibilité (#26/#27/#29/#31/#71)", snap.counterScrollEnabled) {
+            settings.update {
+                putBoolean("counter_scroll", it)
+                putBoolean("compulsive_back", it)
+                putBoolean("force_pause_video", it)
+                putBoolean("click_steal_shield", it)
+                putBoolean("block_store_buy", it)
             }
         })
 
-        // Shizuku / MDM Status & End-Game Full Restore Bar
-        val privOk = DemonMdmManager.hasPrivilegedControl(this)
-        val susp = DemonMdmManager.getSuspendedPackages(this)
-        val hid = DemonMdmManager.getHiddenPackages(this)
-        val curses = DemonMdmManager.getActiveCurses(this)
-        val mdmInfo = TextView(this).apply {
-            text = "${DemonMdmManager.getControlStatusLabel(this@MainActivity)} • ${susp.size + hid.size} appli(s) gelée(s) • ${curses.size} sceau(x)"
-            setTextColor(if (privOk) Color.rgb(167, 243, 208) else Color.rgb(253, 186, 116))
-            textSize = 11.5f
-            setPadding(0, dp(10), 0, dp(6))
-        }
-        hero.addView(mdmInfo)
+        demonCard.addView(makeAccentButton("🔒 Verrouiller (Paramètres + Admin • Sortie 20× + 100205)", Color.rgb(159, 18, 57)) {
+            confirmAndEnableChallengeLock()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(10)
+            }
+        })
 
-        val mdmRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        if (!privOk) {
-            mdmRow.addView(makeAccentButton("⚡ Autoriser Shizuku", Color.rgb(126, 34, 206)) {
-                handleShizukuAction()
-            }, gridLp(endMargin = dp(5)))
-        }
-        mdmRow.addView(makeAccentButton("🕊️ Fin du jeu : Tout restaurer", Color.rgb(16, 128, 96)) {
-            performEndGameRestoreAll()
-        }, gridLp(startMargin = if (!privOk) dp(5) else 0))
-        hero.addView(mdmRow)
-        root.addView(hero)
+        // Quick overlay tests
+        val tRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
+        tRow.addView(makeGridTestBtn("⚔️ Embuscade") { runLiveTest("rpg") }, gridLp(endMargin = dp(4)))
+        tRow.addView(makeGridTestBtn("🔒 Autel #87") { runLiveTest("altar") }, gridLp(startMargin = dp(4), endMargin = dp(4)))
+        tRow.addView(makeGridTestBtn("🎬 Au Coin") { runLiveTest("corner") }, gridLp(startMargin = dp(4)))
+        demonCard.addView(tRow)
+        root.addView(demonCard)
 
-        // 2. Compact Permissions Status Card (1-tap chips!)
-        val permCard = makeCard()
-        permCard.addView(sectionTitle("🛡️ Autorisations"))
-        val accessRunning = DemonAccessibilityService.isServiceActive()
-        val accessOk = accessRunning || DemonAccessibilityService.isEnabledInSettings(this)
-        val adminOk = DemonDeviceAdminReceiver.isAdminActive(this)
-        val filesOk = MediaFolderHelper.hasAllFilesAccess()
-        val ovOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
-        val wsOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.System.canWrite(this)
-
-        if (!accessRunning) {
-            permCard.addView(TextView(this).apply {
-                text = "⚠️ Service d'Accessibilité non connecté : les pouvoirs #26–#44 et le verrouillage Paramètres nécessitent de l'activer (ou le relancer après mise à jour)."
-                setTextColor(Color.rgb(253, 186, 116))
-                textSize = 11.5f
-                setPadding(0, dp(4), 0, dp(4))
-            })
-        }
-
-        val pRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(6)) }
-        pRow1.addView(makePermChip(if (accessRunning) "Accessibilité" else "Activer Access.", accessRunning) { openAccessibility() }, gridLp(endMargin = dp(5)))
-        pRow1.addView(makePermChip("Admin", adminOk) { requestDeviceAdmin() }, gridLp(startMargin = dp(5), endMargin = dp(5)))
-        pRow1.addView(makePermChip("Fichiers .*", filesOk) { requestAllFilesAccess() }, gridLp(startMargin = dp(5)))
-        permCard.addView(pRow1)
-
-        val pRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        pRow2.addView(makePermChip("Superposition", ovOk) { openOverlayPerm() }, gridLp(endMargin = dp(5)))
-        pRow2.addView(makePermChip("Luminosité", wsOk) { openWriteSettingsPerm() }, gridLp(startMargin = dp(5)))
-        permCard.addView(pRow2)
-
-        if (!accessOk && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permCard.addView(makeSecondaryBtn("ℹ️ Android 13+ grisé ? Ouvrir Infos Appli (⋮ → Paramètres restreints)") {
-                openAppDetails()
-            })
-        }
-        root.addView(permCard)
-
-        // 3. Quick Live Tests
-        val testCard = makeCard()
-        testCard.addView(sectionTitle("🧪 Tester en direct"))
-        val t1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(6)) }
-        t1.addView(makeGridTestBtn("⚔️ Combat RPG") { runLiveTest("rpg") }, gridLp(endMargin = dp(5)))
-        t1.addView(makeGridTestBtn("🏆 Tournoi (#69)") { runLiveTest("tournament") }, gridLp(startMargin = dp(5)))
-        testCard.addView(t1)
-
-        val t2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(6)) }
-        t2.addView(makeGridTestBtn("🔒 Autel (#87)") { runLiveTest("altar") }, gridLp(endMargin = dp(5)))
-        t2.addView(makeGridTestBtn("🎬 Au coin Vidéo") { runLiveTest("corner") }, gridLp(startMargin = dp(5)))
-        testCard.addView(t2)
-
-        val t3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(6)) }
-        t3.addView(makeGridTestBtn("⏱️ Pause 3 min") { runLiveTest("break3m") }, gridLp(endMargin = dp(5)))
-        t3.addView(makeGridTestBtn("✍️ Lignes (#39)") { runLiveTest("lines") }, gridLp(startMargin = dp(5)))
-        testCard.addView(t3)
-
-        val t4 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        t4.addView(makeGridTestBtn("📸 Diaporama") { runLiveTest("slideshow") }, gridLp(endMargin = dp(5)))
-        t4.addView(makeGridTestBtn("🔥 Crise Furieuse") { runLiveTest("fury") }, gridLp(startMargin = dp(5)))
-        testCard.addView(t4)
-        root.addView(testCard)
+        // 3. AI Vision Censor Options
+        val aiVisCard = makeCard()
+        aiVisCard.addView(sectionTitle("👀 Censure IA & Bêtises Overlay"))
+        aiVisCard.addView(smallLabel("Censure des visages :"))
+        aiVisCard.addView(makeChipGroup(FaceCensorMode.values().toList(), snap.faceCensorMode, { it.label }) { settings.faceCensorMode = it })
+        aiVisCard.addView(smallLabel("Filtre :"))
+        aiVisCard.addView(makeChipGroup(GenderFilter.values().toList(), snap.faceGenderFilter, { it.label }) { settings.faceGenderFilter = it })
+        aiVisCard.addView(makeSwitchRow("Bouclier NSFW dramatique", snap.nsfwShieldEnabled) { settings.nsfwShieldEnabled = it })
+        aiVisCard.addView(makeSwitchRow("Pop-ups photo (#15) & Flash (#16)", snap.draggedPopupEnabled) {
+            settings.draggedPopupEnabled = it
+            settings.fullscreenFlashEnabled = it
+        })
+        root.addView(aiVisCard)
     }
 
-    // ==================== TAB 1 : STUDIO (REALISTIC AVATAR + HIDDEN MEDIA FOLDER) ====================
-    private fun populateStudioTab(root: LinearLayout, snap: DemonConfigSnapshot) {
-        val avCard = makeCard(accentStroke = Color.argb(100, 244, 63, 94))
-        avCard.addView(sectionTitle("🎭 Avatar Photo-Réaliste HD"))
-        avCard.addView(sectionSub("Détourage IA haute définition (visage + cheveux + buste + cornes 3D posées sur le vrai front)."))
+    // ==================== TAB 3 : ⚙️ DOSSIER PHOTOS, IA & SHIZUKU ====================
+    private fun populateFolderAndAiTab(root: LinearLayout, snap: DemonConfigSnapshot) {
+        val rSnap = rpgState.snapshot()
 
-        val pvWrap = FrameLayout(this).apply {
-            background = roundedBg(Color.rgb(18, 15, 28), 18)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-        }
-        val pv = DemonPetView(
-            context = this,
-            onDragMove = { _, _ -> },
-            onDragRelease = { _, _, _ -> },
-            onGentlePet = {},
-            onSecretTwentyTaps = {}
-        ).apply { updateConfig(snap) }
-        previewPetView = pv
-        pvWrap.addView(pv, FrameLayout.LayoutParams(dp(150), dp(180), Gravity.CENTER))
-        avCard.addView(pvWrap, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(196)).apply {
-            topMargin = dp(8)
-            bottomMargin = dp(10)
-        })
-
-        avCard.addView(makeAccentButton("📸 Choisir une photo (Détourage réaliste HD)") {
-            pickAvatarLauncher.launch(arrayOf("image/*"))
-        })
-
-        avCard.addView(makeSwitchRow("Inclure cheveux & buste réel (Silhouette HD)", snap.cutoutIncludeHair) { checked ->
-            settings.cutoutIncludeHair = checked
-            Thread {
-                val rebuilt = AvatarCutoutEngine.rebuildFromSavedSource(applicationContext, checked)
-                if (rebuilt != null) {
-                    mainHandler.post {
-                        settings.avatarPath = rebuilt
-                        previewPetView?.updateConfig(settings.snapshot())
-                        Toast.makeText(this, "Détourage mis à jour ✨", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }.start()
-        })
-
-        avCard.addView(smallLabel("Style réaliste :"))
-        avCard.addView(makeChipGroup(AvatarStyle.values().toList(), snap.avatarStyle, { it.label }) {
-            settings.avatarStyle = it
-            previewPetView?.updateConfig(settings.snapshot())
-        })
-
-        avCard.addView(makeSliderRow("Taille de l'avatar", 72, 156, snap.avatarSizeDp, " dp") {
-            settings.avatarSizeDp = it
-        })
-
-        val nameRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(6), 0, 0)
-        }
-        val nameEt = EditText(this).apply {
-            setText(snap.avatarName)
-            hint = "Prénom du démon"
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.rgb(130, 130, 148))
-            textSize = 13.5f
-            background = roundedBg(Color.rgb(28, 25, 40), 10)
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-        }
-        nameRow.addView(nameEt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        nameRow.addView(makeSmallActionButton("OK") {
-            settings.avatarName = nameEt.text?.toString().orEmpty()
-            Toast.makeText(this, "Nom enregistré ✅", Toast.LENGTH_SHORT).show()
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            marginStart = dp(8)
-        })
-        avCard.addView(nameRow)
-        root.addView(avCard)
-
-        // Media Folder Card (Photos + Videos + Hidden .* folders)
-        val medCard = makeCard(accentStroke = Color.argb(95, 168, 85, 247))
-        medCard.addView(sectionTitle("📂 Dossier Photos & Vidéos (Masqués .* inclus)"))
-        medCard.addView(sectionSub("Utilisé pour fonds d'écran (#14), pop-ups (#15), diaporamas (#61) et vidéos de punition Au Coin (#38)."))
+        // 1. Witch Media Folder (Hidden .* & .nomedia Supported!)
+        val medCard = makeCard(accentStroke = Color.argb(145, 168, 85, 247))
+        medCard.addView(sectionTitle("📂 Dossier Photos des 50 Sorcières (.* inclus)"))
+        medCard.addView(sectionSub("Chaque photo est détourée automatiquement par IA (ML Kit) pour incarner les 50 Sorcières en plein écran !"))
 
         val sumTv = TextView(this).apply {
             setTextColor(Color.rgb(216, 180, 254))
@@ -782,8 +1177,7 @@ class MainActivity : AppCompatActivity() {
         }
         mediaSummaryTv = sumTv
         medCard.addView(sumTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(6)
-            bottomMargin = dp(8)
+            topMargin = dp(4); bottomMargin = dp(8)
         })
 
         medCard.addView(makeAccentButton("🔍 Parcourir dossiers (masqués .* & .nomedia inclus)", Color.rgb(147, 51, 234)) {
@@ -793,12 +1187,11 @@ class MainActivity : AppCompatActivity() {
             } else {
                 FolderPickerDialog.show(this, settings.mediaFolderPath) { chosenPath ->
                     settings.mediaFolderPath = chosenPath
-                    Toast.makeText(this, "Dossier sélectionné ✅", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Dossier des Sorcières enregistré ✅", Toast.LENGTH_SHORT).show()
                     refreshMediaSummaryAsync(settings.snapshot())
                 }
             }
         })
-
         medCard.addView(makeSecondaryBtn("📁 Ou sélecteur Android standard (SAF)") {
             pickSafTreeLauncher.launch(null)
         })
@@ -815,231 +1208,144 @@ class MainActivity : AppCompatActivity() {
         restoreWallBtn = resBtn
         medCard.addView(resBtn)
         root.addView(medCard)
-    }
 
-    // ==================== TAB 2 : POUVOIRS (CLEAN 3-SECTION SEVERITY CONTROLS) ====================
-    private fun populatePowersTab(root: LinearLayout, snap: DemonConfigSnapshot) {
-        // Section 0: MGQ-Style Seduction RPG & Drain System
-        val cRpg = makeCard(accentStroke = Color.argb(120, 217, 70, 239))
-        cRpg.addView(sectionTitle("💜 RPG Séduction & Drainage (NV ${snap.playerLevel} • PV ${snap.playerHp})"))
-        cRpg.addView(sectionSub("Attaques de séduction interactives : draine ton Niveau RPG, ta luminosité et la qualité visuelle en direct !"))
-        cRpg.addView(makeSwitchRow("Combats de séduction surprise du Diable", snap.rpgSeductionEnabled) { settings.rpgSeductionEnabled = it })
-        cRpg.addView(makeSwitchRow("Drainage de luminosité (écran assombri)", snap.drainBrightnessEnabled) { settings.drainBrightnessEnabled = it })
-        cRpg.addView(makeSwitchRow("Drainage de qualité photo / filtre hypnotique", snap.drainQualityEnabled) { settings.drainQualityEnabled = it })
-        cRpg.addView(makeSecondaryBtn("♻️ Restaurer NV 20 / 100 PV / Qualité 100 %") {
-            settings.update {
-                putInt("player_level", 20)
-                putInt("player_hp", 100)
-                putInt("active_drain_pct", 0)
-            }
-            Toast.makeText(this, "Stats RPG restaurées ✅", Toast.LENGTH_SHORT).show()
+        // 2. Instant AI Dialogue Engine (+ Optional Gemini Cloud AI Key)
+        val aiCard = makeCard(accentStroke = Color.argb(135, 14, 165, 233))
+        aiCard.addView(sectionTitle("🧠 Dialogue IA Instantané (Non Répétitif)"))
+        aiCard.addView(sectionSub(
+            "• Moteur Local IA (0 ms, hors-ligne) : ACTIF ✅ — génère des dialogues variés selon l'archétype, la phase, ton Niveau et l'appli scellée (mémoire anti-répétition 30 répliques).\n" +
+                "• Optionnel : ajoute ta clé gratuite Google Gemini (aistudio.google.com) pour des répliques 100 % générées par IA en direct !"
+        ))
+
+        val keyEt = EditText(this).apply {
+            setText(rSnap.geminiApiKey)
+            hint = "Clé API Gemini optionnelle (AIza…)"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.rgb(130, 130, 152))
+            textSize = 12.5f
+            background = roundedBg(Color.rgb(26, 24, 42), 10)
+            setPadding(dp(10), dp(9), dp(10), dp(9))
+        }
+        aiCard.addView(keyEt)
+
+        val aiRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
+        aiRow.addView(makeAccentButton("💾 Enregistrer Clé IA", Color.rgb(2, 132, 199)) {
+            rpgState.geminiApiKey = keyEt.text?.toString().orEmpty()
+            val has = rpgState.geminiApiKey.isNotBlank()
+            Toast.makeText(this, if (has) "✨ IA Gemini Cloud activée !" else "⚡ Mode Local IA 0 ms uniquement.", Toast.LENGTH_SHORT).show()
             renderActiveTab(settings.snapshot())
-        })
-        root.addView(cRpg)
+        }, gridLp(endMargin = dp(5)))
+        aiRow.addView(makeGridTestBtn("🗑️ Effacer") {
+            rpgState.geminiApiKey = ""
+            keyEt.setText("")
+            Toast.makeText(this, "Clé IA effacée (Mode Local actif).", Toast.LENGTH_SHORT).show()
+        }, gridLp(startMargin = dp(5)))
+        aiCard.addView(aiRow)
+        root.addView(aiCard)
 
-        // Section 1: Severe Accessibility Sabotage
-        val c1 = makeCard(accentStroke = Color.argb(95, 244, 63, 94))
-        c1.addView(sectionTitle("⚡ Sabotage Accessibilité (Actif partout)"))
-        c1.addView(makeSwitchRow("#26 Contre-scroll (remonte tes fils)", snap.counterScrollEnabled) { settings.counterScrollEnabled = it })
-        c1.addView(makeSwitchRow("#27 Touche Retour compulsive", snap.compulsiveBackEnabled) { settings.compulsiveBackEnabled = it })
-        c1.addView(makeSwitchRow("#29 Mise en pause forcée des vidéos", snap.forcePauseVideoEnabled) { settings.forcePauseVideoEnabled = it })
-        c1.addView(makeSwitchRow("#31 Vol de clics (bouclier sur boutons)", snap.clickStealShieldEnabled) { settings.clickStealShieldEnabled = it })
-        c1.addView(makeSwitchRow("#37 Anti-Like / Anti-Follow ciblé", snap.antiLikeFollowEnabled) { settings.antiLikeFollowEnabled = it })
-        c1.addView(makeSwitchRow("#71 Bloqueur Play Store / Acheter / Installer", snap.blockStoreBuyEnabled) { settings.blockStoreBuyEnabled = it })
-        c1.addView(makeSwitchRow("#32 Sabotage de saisie clavier", snap.keyboardSabotageEnabled) { settings.keyboardSabotageEnabled = it })
-        c1.addView(makeSwitchRow("#34 Fermer le panneau de notifications", snap.closeNotifShadeEnabled) { settings.closeNotifShadeEnabled = it })
-        c1.addView(makeSwitchRow("#35 Bloquer les Réglages Rapides (Wi-Fi/Avion)", snap.blockQuickSettingsEnabled) { settings.blockQuickSettingsEnabled = it })
-        root.addView(c1)
-
-        // Section 2: Severe Punishments & Parental Discipline
-        val c2 = makeCard()
-        c2.addView(sectionTitle("🔒 Punitions & Discipline"))
-        c2.addView(makeSwitchRow("#68 Pause écran obligatoire toutes les ${snap.screenBreakMinutes} min", snap.screenBreakEnabled) { settings.screenBreakEnabled = it })
-        c2.addView(makeSwitchRow("#69 Taxe d'entrée : Tournoi de ${snap.entryTournamentSize} médias", snap.entryTournamentEnabled) { settings.entryTournamentEnabled = it })
-        c2.addView(makeSwitchRow("#87 Autel Photo Piégé (impossible à retirer → gages empilés !)", snap.unremovableAltarEnabled) { settings.unremovableAltarEnabled = it })
-        c2.addView(makeSwitchRow("#38 « Au coin ! » avec vidéo du dossier", snap.timeoutCornerEnabled) { settings.timeoutCornerEnabled = it })
-        c2.addView(makeSwitchRow("#39 Lignes de punition à recopier (anti-collage)", snap.punishmentLinesEnabled) { settings.punishmentLinesEnabled = it })
-        c2.addView(makeSwitchRow("#42 Zone Morte sur le clavier", snap.deadZoneKeyboardEnabled) { settings.deadZoneKeyboardEnabled = it })
-        c2.addView(makeSwitchRow("#44 Liste Noire Totale (confiscation)", snap.blacklistEnabled) { settings.blacklistEnabled = it })
-        c2.addView(makeSwitchRow("#7 Demander la permission (si #69 désactivé)", snap.askPermissionGate) { settings.askPermissionGate = it })
-        c2.addView(makeSwitchRow("#8 Quota temps limite + #9 Négociation", snap.appQuotaLockEnabled) { settings.appQuotaLockEnabled = it })
-        c2.addView(makeSwitchRow("#10 Couvre-feu « Au lit ! »", snap.curfewEnabled) { settings.curfewEnabled = it })
-        c2.addView(makeSwitchRow("#11 Mode « Fais tes devoirs ! »", snap.homeworkModeEnabled) { settings.homeworkModeEnabled = it })
-        c2.addView(makeSwitchRow("#12 Anti-doomscroll (s'assoit au centre)", snap.antiDoomscrollEnabled) { settings.antiDoomscrollEnabled = it })
-        root.addView(c2)
-
-        // Section 3: AI Vision Censor & Interactive Mischief
-        val c3 = makeCard()
-        c3.addView(sectionTitle("👀 Censure IA & Bêtises"))
-        c3.addView(smallLabel("Censure des visages (#1, #2, #5, #6) :"))
-        c3.addView(makeChipGroup(FaceCensorMode.values().toList(), snap.faceCensorMode, { it.label }) { settings.faceCensorMode = it })
-        c3.addView(smallLabel("Filtre jalousie (#3) :"))
-        c3.addView(makeChipGroup(GenderFilter.values().toList(), snap.faceGenderFilter, { it.label }) { settings.faceGenderFilter = it })
-        c3.addView(makeSwitchRow("#4 Bouclier NSFW dramatique", snap.nsfwShieldEnabled) { settings.nsfwShieldEnabled = it })
-        c3.addView(divider())
-        c3.addView(makeSwitchRow("#50 Le démon esquive ton doigt", snap.dodgeFingerEnabled) { settings.dodgeFingerEnabled = it })
-        c3.addView(makeSwitchRow("#53 Quiz surprise « Maman te teste »", snap.surpriseQuizEnabled) { settings.surpriseQuizEnabled = it })
-        c3.addView(makeSwitchRow("#61 Diaporama forcé (4 photos)", snap.forcedSlideshowEnabled) { settings.forcedSlideshowEnabled = it })
-        c3.addView(makeSwitchRow("#14 Fond d'écran aléatoire", snap.wallpaperPrankEnabled) { settings.wallpaperPrankEnabled = it })
-        c3.addView(makeSwitchRow("#15 Pop-ups photo tirées", snap.draggedPopupEnabled) { settings.draggedPopupEnabled = it })
-        c3.addView(makeSwitchRow("#16 Flash photo plein écran", snap.fullscreenFlashEnabled) { settings.fullscreenFlashEnabled = it })
-        c3.addView(makeSwitchRow("#19 Luminosité nuit / #20 Batterie / #22 Commentaires / #23 Vitesse", snap.appCommentsEnabled) {
-            settings.update {
-                putBoolean("app_comments", it)
-                putBoolean("night_brightness", it)
-                putBoolean("low_battery_panic", it)
-                putBoolean("speed_warning", it)
-            }
-        })
-        root.addView(c3)
-    }
-
-    // ==================== TAB 3 : RÉGLAGES (SETTINGS LOCK, APPS, TIMERS) ====================
-    private fun populateSettingsTab(root: LinearLayout, snap: DemonConfigSnapshot) {
-        // Shizuku & MDM Privileged System Damage Card (Works on Android 16 without reset!)
-        val mdmCard = makeCard(accentStroke = Color.argb(120, 16, 185, 129))
-        val doActive = DemonMdmManager.isDeviceOwner(this)
+        // 3. Shizuku / MDM & Android Permissions
+        val permCard = makeCard(accentStroke = Color.argb(120, 16, 185, 129))
         val shizukuOk = DemonMdmManager.isShizukuActive()
+        val doActive = DemonMdmManager.isDeviceOwner(this)
         val usageOk = DemonMdmManager.hasUsageStatsAccess(this)
-        mdmCard.addView(sectionTitle("⚡ Shizuku / MDM — Dégâts réels par ordre d'usage"))
-        mdmCard.addView(sectionSub(
+        val accessRunning = DemonAccessibilityService.isServiceActive()
+        val adminOk = DemonDeviceAdminReceiver.isAdminActive(this)
+        val filesOk = MediaFolderHelper.hasAllFilesAccess()
+        val ovOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
+        val wsOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.System.canWrite(this)
+
+        permCard.addView(sectionTitle("🛡️ Shizuku & Autorisations Système"))
+        permCard.addView(sectionSub(
             when {
-                shizukuOk -> "⚡ Shizuku ACTIF ✅ : les défaites RPG suspendent/désactivent tes applis par ordre d'usage sans reset usine !"
-                doActive -> "👑 MDM Device Owner ACTIF ✅ : suspension d'applis et sceaux système actifs."
-                else -> "Idéal Android 15/16 (Xiaomi HyperOS) : lance Shizuku via Débogage sans fil puis clique Autoriser ci-dessous !"
+                shizukuOk -> "⚡ Shizuku ACTIF ✅ : suspension d'applis par ordre d'usage sur Android 11–16 sans reset usine !"
+                doActive -> "👑 MDM Device Owner ACTIF ✅"
+                else -> "Pour les punitions système sur Xiaomi HyperOS / Android 16 : lance Shizuku (Débogage sans fil) puis touche Autoriser !"
             }
         ))
-        mdmCard.addView(makeAccentButton(
-            if (shizukuOk) "✅ Shizuku connecté (Android 11–16)" else "⚡ Autoriser / Ouvrir Shizuku (Sans reset !)",
+
+        permCard.addView(makeAccentButton(
+            if (shizukuOk) "✅ Shizuku connecté" else "⚡ Autoriser / Ouvrir Shizuku (Sans reset)",
             if (shizukuOk) Color.rgb(16, 128, 96) else Color.rgb(126, 34, 206)
         ) {
             handleShizukuAction()
         })
-        mdmCard.addView(makeSecondaryBtn("📋 Copier script Termux (Permissions appops + UsageStats)") {
+
+        val pRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(6)) }
+        pRow1.addView(makePermChip("Accessibilité", accessRunning) { openAccessibility() }, gridLp(endMargin = dp(4)))
+        pRow1.addView(makePermChip("Fichiers .*", filesOk) { requestAllFilesAccess() }, gridLp(startMargin = dp(4), endMargin = dp(4)))
+        pRow1.addView(makePermChip("UsageStats", usageOk) {
+            try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } catch (_: Throwable) {}
+        }, gridLp(startMargin = dp(4)))
+        permCard.addView(pRow1)
+
+        val pRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        pRow2.addView(makePermChip("Superposition", ovOk) { openOverlayPerm() }, gridLp(endMargin = dp(4)))
+        pRow2.addView(makePermChip("Luminosité", wsOk) { openWriteSettingsPerm() }, gridLp(startMargin = dp(4), endMargin = dp(4)))
+        pRow2.addView(makePermChip("Admin", adminOk) { requestDeviceAdmin() }, gridLp(startMargin = dp(4)))
+        permCard.addView(pRow2)
+
+        permCard.addView(makeSecondaryBtn("📋 Copier script Termux (Permissions appops)") {
             copyTermuxMdmScript()
         })
-        if (!usageOk) {
-            mdmCard.addView(makeSecondaryBtn("📊 Autoriser Stats d'utilisation (ordre des applis)") {
-                try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } catch (_: Throwable) {}
-            })
-        }
-        mdmCard.addView(makeSecondaryBtn("🕊️ Fin du jeu : Tout réactiver & lever les sceaux") {
-            performEndGameRestoreAll()
-        })
-        if (doActive) {
-            mdmCard.addView(makeSecondaryBtn("🔓 Retirer le mode Device Owner (pour désinstaller l'app)") {
-                AlertDialog.Builder(this)
-                    .setTitle("Retirer Device Owner ?")
-                    .setMessage("Toutes les applis suspendues et restrictions MDM seront restaurées, puis le statut Device Owner sera retiré.")
-                    .setPositiveButton("Retirer & Restaurer") { _, _ ->
-                        Thread {
-                            val res = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = true)
-                            mainHandler.post {
-                                Toast.makeText(this, res, Toast.LENGTH_LONG).show()
-                                renderActiveTab(settings.snapshot())
-                            }
-                        }.start()
-                    }
-                    .setNegativeButton("Annuler", null)
-                    .show()
-            })
-        }
-        root.addView(mdmCard)
-
-        // Security & Settings Lock Card
-        val secCard = makeCard(accentStroke = Color.argb(110, 244, 63, 94))
-        secCard.addView(sectionTitle("🔐 Verrouillage des Paramètres"))
-        secCard.addView(sectionSub("Bloque l'accès aux Paramètres Android et à la désinstallation. Sortie : tapoter le démon 20× + code 100205."))
-        secCard.addView(makeSwitchRow("Verrouiller strictement les Paramètres Android", snap.strictSettingsLock) {
-            settings.strictSettingsLock = it
-        })
-        secCard.addView(makeAccentButton("🔒 Activer le Verrouillage Défi complet maintenant") {
-            confirmAndEnableChallengeLock()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(8)
-            }
-        })
-        root.addView(secCard)
-
-        // Apps Picker Card
-        val appCard = makeCard()
-        appCard.addView(sectionTitle("📱 Applications ciblées"))
-        appCard.addView(makeSecondaryBtn("👀 Applis surveillées (${snap.watchedPackages.size})") {
+        permCard.addView(makeSecondaryBtn("👀 Applis surveillées (${snap.watchedPackages.size})") {
             AppPickerDialog.show(this, "Applis surveillées", settings.watchedPackages) {
                 settings.watchedPackages = it
                 renderActiveTab(settings.snapshot())
             }
         })
-        appCard.addView(makeSecondaryBtn("🚫 Liste Noire Totale #44 (${snap.blacklistPackages.size})") {
-            AppPickerDialog.show(this, "Liste Noire Totale (Confisquées)", settings.blacklistPackages) {
+        permCard.addView(makeSecondaryBtn("🚫 Liste Noire Totale (${snap.blacklistPackages.size})") {
+            AppPickerDialog.show(this, "Liste Noire Totale", settings.blacklistPackages) {
                 settings.blacklistPackages = it
                 renderActiveTab(settings.snapshot())
             }
         })
-        root.addView(appCard)
+        if (!accessRunning && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permCard.addView(makeSecondaryBtn("ℹ️ Android 13+ grisé ? Ouvrir Infos Appli (⋮ → Paramètres restreints)") {
+                openAppDetails()
+            })
+        }
+        root.addView(permCard)
 
-        // Timers & Texts Card
-        val tuneCard = makeCard()
-        tuneCard.addView(sectionTitle("🎛️ Intensité & Punitions"))
-        tuneCard.addView(makeSliderRow("Niveau de chaos", 1, 10, snap.chaosLevel, "/10") { settings.chaosLevel = it })
-        tuneCard.addView(makeSliderRow("Intervalle min entre bêtises", 8, 300, snap.minIntervalSec, " s") { settings.minIntervalSec = it })
-        tuneCard.addView(makeSliderRow("Cycle Pause Écran (#68)", 1, 30, snap.screenBreakMinutes, " min") { settings.screenBreakMinutes = it })
-        tuneCard.addView(makeSliderRow("Durée Pause Écran (#68)", 10, 120, snap.screenBreakDurationSec, " s") { settings.screenBreakDurationSec = it })
-        tuneCard.addView(smallLabel("Taille du Tournoi Médias (#69) :"))
-        tuneCard.addView(makeChipGroup(listOf(2, 4, 8), snap.entryTournamentSize, {
-            when (it) {
-                2 -> "Duel (2 médias)"
-                4 -> "Tournoi (4 médias)"
-                else -> "Grand Tournoi (8)"
+        // 4. Demon Companion Portrait & Difficulty Sliders
+        val avCard = makeCard()
+        avCard.addView(sectionTitle("🎭 Compagnon Démon & Difficulté"))
+        avCard.addView(makeAccentButton("📸 Choisir portrait du Compagnon Démon") {
+            pickAvatarLauncher.launch(arrayOf("image/*"))
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(6)
             }
-        }) { settings.entryTournamentSize = it })
-        tuneCard.addView(makeSliderRow("Durée Autel Piégé (#87)", 20, 180, snap.altarDurationSec, " s") { settings.altarDurationSec = it })
-        tuneCard.addView(makeSliderRow("Durée Au Coin Vidéo (#38)", 10, 300, snap.timeoutCornerSec, " s") { settings.timeoutCornerSec = it })
-        tuneCard.addView(makeSliderRow("Nombre de lignes à recopier (#39)", 2, 10, snap.punishmentLinesCount, " lignes") { settings.punishmentLinesCount = it })
-        tuneCard.addView(makeSliderRow("Quota par appli (#8)", 2, 60, snap.appQuotaMinutes, " min") { settings.appQuotaMinutes = it })
-        tuneCard.addView(makeSliderRow("Couvre-feu début (#10)", 0, 23, snap.curfewStartHour, "h") { settings.curfewStartHour = it })
-        tuneCard.addView(makeSliderRow("Couvre-feu fin (#10)", 0, 23, snap.curfewEndHour, "h") { settings.curfewEndHour = it })
-        tuneCard.addView(makeSliderRow("Seuil vitesse route (#23)", 10, 90, snap.speedThresholdKmh, " km/h") { settings.speedThresholdKmh = it })
-
-        tuneCard.addView(smallLabel("Cible du fond d'écran (#14) :"))
-        tuneCard.addView(makeChipGroup(WallpaperTarget.values().toList(), snap.wallpaperTarget, { it.label }) { settings.wallpaperTarget = it })
-
-        tuneCard.addView(smallLabel("Phrase de punition à recopier (#39) :"))
-        val punEt = EditText(this).apply {
-            setText(snap.punishmentPhrase)
-            setTextColor(Color.WHITE)
-            textSize = 12.5f
-            background = roundedBg(Color.rgb(26, 24, 38), 10)
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-        }
-        tuneCard.addView(punEt)
-
-        tuneCard.addView(smallLabel("Phrases personnalisées (1 par ligne) :"))
-        val phrEt = EditText(this).apply {
-            setText(snap.customPhrases)
-            hint = "Range ta chambre !\nJe te surveille 👀"
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.rgb(120, 120, 140))
-            textSize = 12.5f
-            minLines = 2
-            background = roundedBg(Color.rgb(26, 24, 38), 10)
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-        }
-        tuneCard.addView(phrEt)
-
-        tuneCard.addView(makeSecondaryBtn("💾 Enregistrer les phrases") {
-            settings.punishmentPhrase = punEt.text?.toString().orEmpty()
-            settings.customPhrases = phrEt.text?.toString().orEmpty()
-            Toast.makeText(this, "Phrases enregistrées ✅", Toast.LENGTH_SHORT).show()
         })
-        root.addView(tuneCard)
+        avCard.addView(makeSwitchRow("Inclure cheveux & buste HD", snap.cutoutIncludeHair) { checked ->
+            settings.cutoutIncludeHair = checked
+            Thread {
+                val rebuilt = AvatarCutoutEngine.rebuildFromSavedSource(applicationContext, checked)
+                if (rebuilt != null) {
+                    mainHandler.post {
+                        settings.avatarPath = rebuilt
+                        Toast.makeText(this, "Portrait mis à jour ✨", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }.start()
+        })
+        avCard.addView(smallLabel("Style du compagnon :"))
+        avCard.addView(makeChipGroup(AvatarStyle.values().toList(), snap.avatarStyle, { it.label }) { settings.avatarStyle = it })
+        avCard.addView(makeSliderRow("Intensité / Chaos (≥ 8 = Duo Sorcières)", 1, 10, snap.chaosLevel, "/10") { settings.chaosLevel = it })
+        avCard.addView(makeSliderRow("Intervalle min entre embuscades", 10, 300, snap.minIntervalSec, " s") { settings.minIntervalSec = it })
+        avCard.addView(smallLabel("Cible du fond d'écran trophée :"))
+        avCard.addView(makeChipGroup(WallpaperTarget.values().toList(), snap.wallpaperTarget, { it.label }) { settings.wallpaperTarget = it })
+        root.addView(avCard)
     }
 
     // -------------------------------------------------------------------------
     // ACTIONS & HELPERS
     // -------------------------------------------------------------------------
     private fun runLiveTest(kind: String) {
+        if (kind == "rpg") {
+            startInAppDuel(WitchCatalog.randomWitchForChapter(rpgState.selectedChapter))
+            return
+        }
         if (!settings.enabled) {
             settings.enabled = true
             DemonCompanionService.start(applicationContext)
@@ -1059,9 +1365,9 @@ class MainActivity : AppCompatActivity() {
         Thread {
             val (imgs, vids) = MediaFolderHelper.countConfiguredMedia(applicationContext, snap)
             val txt = when {
-                snap.mediaFolderPath.isNotBlank() -> "${snap.mediaFolderPath}\n→ $imgs photo(s) • $vids vidéo(s)"
-                snap.mediaTreeUri.isNotBlank() -> "Dossier SAF\n→ $imgs photo(s) • $vids vidéo(s)"
-                else -> "Aucun dossier choisi (utilise ton portrait par défaut)"
+                snap.mediaFolderPath.isNotBlank() -> "${snap.mediaFolderPath}\n→ $imgs photo(s) • $vids vidéo(s) prêtes pour les 50 Sorcières"
+                snap.mediaTreeUri.isNotBlank() -> "Dossier SAF\n→ $imgs photo(s) • $vids vidéo(s) prêtes pour les 50 Sorcières"
+                else -> "Aucun dossier choisi (silhouettes gothiques par défaut — sélectionne un dossier photos ci-dessous !)"
             }
             mainHandler.post {
                 tv.text = txt
@@ -1076,8 +1382,8 @@ class MainActivity : AppCompatActivity() {
             .setTitle("🔒 Verrouiller Paramètres & Appli ?")
             .setMessage(
                 "Une fois activé :\n" +
-                    "• Les Paramètres Android, la désinstallation et cette appli sont verrouillés.\n" +
-                    "• Pour sortir : tapote le démon 20 fois de suite puis saisis le code 100205."
+                    "• Les Paramètres Android, la désinstallation et les réglages sont verrouillés.\n" +
+                    "• Pour sortir : tapote le démon 20 fois de suite (ou la barre NV en combat) puis saisis 100205."
             )
             .setPositiveButton("Verrouiller") { _, _ ->
                 settings.update {
@@ -1095,7 +1401,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openAccessibility() {
         try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-        catch (_: Throwable) { Toast.makeText(this, "Paramètres → Accessibilité → DemonMom AI", Toast.LENGTH_LONG).show() }
+        catch (_: Throwable) { Toast.makeText(this, "Paramètres → Accessibilité → DemonMom RPG", Toast.LENGTH_LONG).show() }
     }
 
     private fun openOverlayPerm() {
@@ -1116,11 +1422,10 @@ class MainActivity : AppCompatActivity() {
         try {
             val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
                 putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, DemonDeviceAdminReceiver.getComponentName(this@MainActivity))
-                putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Verrouillage Défi DemonMom AI (sortie : 20 taps + 100205).")
+                putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Verrouillage Défi DemonMom RPG (sortie : 20 taps + 100205).")
             }
             startActivity(intent)
-        } catch (_: Throwable) {
-        }
+        } catch (_: Throwable) {}
     }
 
     private fun requestAllFilesAccess() {
@@ -1149,21 +1454,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     // -------------------------------------------------------------------------
-    // SLEEK UI WIDGET HELPERS
+    // SLEEK DARK-FANTASY UI HELPERS
     // -------------------------------------------------------------------------
     private fun makeCard(accentStroke: Int = Color.argb(38, 255, 255, 255)): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         background = roundedBg(CARD_DARK, 18, strokeColor = accentStroke, strokeDp = 1)
-        setPadding(dp(15), dp(14), dp(15), dp(14))
+        setPadding(dp(14), dp(13), dp(14), dp(13))
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            bottomMargin = dp(12)
+            bottomMargin = dp(11)
         }
     }
 
     private fun makePermChip(label: String, ok: Boolean, onClick: () -> Unit): Button = Button(this).apply {
         text = if (ok) "✅ $label" else "⚠️ $label"
         isAllCaps = false
-        textSize = 11f
+        textSize = 10.6f
         typeface = Typeface.DEFAULT_BOLD
         setTextColor(if (ok) Color.rgb(167, 243, 208) else Color.rgb(254, 240, 138))
         background = roundedBg(
@@ -1173,43 +1478,36 @@ class MainActivity : AppCompatActivity() {
             strokeDp = 1
         )
         minHeight = 0; minimumHeight = 0
-        setPadding(dp(6), dp(8), dp(6), dp(8))
+        setPadding(dp(4), dp(8), dp(4), dp(8))
         setOnClickListener { onClick() }
     }
 
     private fun sectionTitle(text: String): TextView = TextView(this).apply {
-        this.text = text; setTextColor(Color.WHITE); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
+        this.text = text; setTextColor(Color.WHITE); textSize = 14.8f; typeface = Typeface.DEFAULT_BOLD
     }
 
     private fun sectionSub(text: String): TextView = TextView(this).apply {
-        this.text = text; setTextColor(Color.rgb(156, 156, 174)); textSize = 12f; setPadding(0, dp(2), 0, dp(6))
+        this.text = text; setTextColor(Color.rgb(162, 162, 182)); textSize = 11.8f; setPadding(0, dp(2), 0, dp(6))
     }
 
     private fun smallLabel(text: String): TextView = TextView(this).apply {
-        this.text = text; setTextColor(Color.rgb(208, 208, 222)); textSize = 12f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(8), 0, dp(4))
-    }
-
-    private fun divider(): View = View(this).apply {
-        setBackgroundColor(Color.argb(26, 255, 255, 255))
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-            topMargin = dp(10); bottomMargin = dp(10)
-        }
+        this.text = text; setTextColor(Color.rgb(208, 208, 224)); textSize = 12f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(8), 0, dp(4))
     }
 
     private fun makeSwitchRow(label: String, initial: Boolean, onChange: (Boolean) -> Unit): Switch = Switch(this).apply {
-        text = label; isChecked = initial; setTextColor(Color.rgb(232, 232, 242)); textSize = 12.8f
-        setPadding(0, dp(6), 0, dp(6))
+        text = label; isChecked = initial; setTextColor(Color.rgb(232, 232, 242)); textSize = 12.5f
+        setPadding(0, dp(5), 0, dp(5))
         setOnCheckedChangeListener { _, checked -> onChange(checked) }
     }
 
     private fun makeSliderRow(title: String, min: Int, max: Int, initial: Int, unit: String, onChange: (Int) -> Unit): View {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(6), 0, dp(4)) }
-        val tv = TextView(this).apply { text = "$title : $initial$unit"; setTextColor(Color.rgb(212, 212, 224)); textSize = 12.2f }
+        val tv = TextView(this).apply { text = "$title : $initial$unit"; setTextColor(Color.rgb(212, 212, 224)); textSize = 12f }
         val sb = SeekBar(this).apply {
             this.max = (max - min).coerceAtLeast(1)
             progress = (initial - min).coerceIn(0, this.max)
-            thumbTintList = ColorStateList.valueOf(Color.rgb(244, 63, 94))
-            progressTintList = ColorStateList.valueOf(Color.rgb(244, 63, 94))
+            thumbTintList = ColorStateList.valueOf(Color.rgb(217, 70, 239))
+            progressTintList = ColorStateList.valueOf(Color.rgb(217, 70, 239))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     val v = min + progress
@@ -1232,8 +1530,8 @@ class MainActivity : AppCompatActivity() {
             for ((item, b) in btns) {
                 val active = item == current
                 b.background = roundedBg(
-                    if (active) Color.rgb(225, 29, 72) else Color.rgb(32, 28, 46), 11,
-                    strokeColor = if (active) Color.rgb(253, 164, 175) else Color.argb(35, 255, 255, 255), strokeDp = 1
+                    if (active) Color.rgb(162, 28, 175) else Color.rgb(32, 28, 46), 11,
+                    strokeColor = if (active) Color.rgb(240, 171, 252) else Color.argb(35, 255, 255, 255), strokeDp = 1
                 )
                 b.setTextColor(if (active) Color.WHITE else Color.rgb(208, 208, 220))
             }
@@ -1242,8 +1540,8 @@ class MainActivity : AppCompatActivity() {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             rowItems.forEachIndexed { idx, item ->
                 val b = Button(this).apply {
-                    text = labelOf(item); isAllCaps = false; textSize = 11.8f; minHeight = 0; minimumHeight = 0
-                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                    text = labelOf(item); isAllCaps = false; textSize = 11.6f; minHeight = 0; minimumHeight = 0
+                    setPadding(dp(8), dp(7), dp(8), dp(7))
                     setOnClickListener { current = item; styleAll(); onSelect(item) }
                 }
                 btns.add(Pair(item, b))
@@ -1253,7 +1551,7 @@ class MainActivity : AppCompatActivity() {
                 })
             }
             wrap.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(6)
+                bottomMargin = dp(5)
             })
         }
         styleAll()
@@ -1261,19 +1559,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun makeAccentButton(label: String, bgColor: Int = Color.rgb(225, 29, 72), onClick: () -> Unit): Button = Button(this).apply {
-        text = label; isAllCaps = false; textSize = 12.8f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+        text = label; isAllCaps = false; textSize = 12.6f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
         background = roundedBg(bgColor, 12); setPadding(dp(12), dp(10), dp(12), dp(10)); minHeight = 0; minimumHeight = 0
         setOnClickListener { onClick() }
     }
 
-    private fun makeSmallActionButton(label: String, onClick: () -> Unit): Button = Button(this).apply {
-        text = label; isAllCaps = false; textSize = 12f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
-        background = roundedBg(Color.rgb(225, 29, 72), 10); setPadding(dp(12), dp(7), dp(12), dp(7)); minHeight = 0; minimumHeight = 0
-        setOnClickListener { onClick() }
-    }
-
     private fun makeSecondaryBtn(label: String, onClick: () -> Unit): Button = Button(this).apply {
-        text = label; isAllCaps = false; textSize = 12f; setTextColor(Color.rgb(224, 224, 236))
+        text = label; isAllCaps = false; textSize = 11.8f; setTextColor(Color.rgb(224, 224, 236))
         background = roundedBg(Color.rgb(32, 28, 46), 11, strokeColor = Color.argb(45, 255, 255, 255), strokeDp = 1)
         setPadding(dp(10), dp(8), dp(10), dp(8)); minHeight = 0; minimumHeight = 0
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -1283,8 +1575,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun makeGridTestBtn(label: String, onClick: () -> Unit): Button = Button(this).apply {
-        text = label; isAllCaps = false; textSize = 11.8f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
-        background = roundedBg(Color.rgb(38, 24, 44), 11, strokeColor = Color.argb(85, 244, 63, 94), strokeDp = 1)
+        text = label; isAllCaps = false; textSize = 11.4f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+        background = roundedBg(Color.rgb(38, 24, 50), 11, strokeColor = Color.argb(90, 217, 70, 239), strokeDp = 1)
         setPadding(dp(6), dp(9), dp(6), dp(9)); minHeight = 0; minimumHeight = 0
         setOnClickListener { onClick() }
     }
@@ -1302,7 +1594,7 @@ class MainActivity : AppCompatActivity() {
         }
 
     companion object {
-        private val BG_DARK = Color.rgb(11, 10, 17)
-        private val CARD_DARK = Color.rgb(21, 18, 30)
+        private val BG_DARK = Color.rgb(11, 9, 18)
+        private val CARD_DARK = Color.rgb(21, 17, 32)
     }
 }

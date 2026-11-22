@@ -5,13 +5,19 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.RadialGradient
+import android.graphics.Shader
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.demonpet.app.config.DemonConfigSnapshot
 import com.demonpet.app.media.MediaFolderHelper
+import com.demonpet.app.rpg.WitchCatalog
+import com.demonpet.app.rpg.WitchRpgState
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.segmentation.Segmentation
@@ -23,17 +29,16 @@ import kotlin.math.abs
 import kotlin.random.Random
 
 /**
- * Automatic Witch Sprite Cutout & RPG Profile Engine (#93, #94, #100):
- * - Automatically segments ANY character/girl ("Witch") from images in the configured folder (including hidden `.*`!)
- *   into a clean full-screen transparent Visual Novel sprite using ML Kit Selfie Segmentation + hair edge defringing!
+ * Automatic Witch Sprite Cutout & 50-Witch RPG Profile Engine (v5.0):
+ * - Automatically segments ANY photo from the user's chosen folder (including hidden `.*` & `.nomedia`!)
+ *   into a clean fullscreen transparent Visual Novel sprite using ML Kit Selfie Segmentation!
+ * - Binds any of the 50 unique Witches from [WitchCatalog] to a randomly picked HD sprite + gothic backdrop.
  * - Caches segmented PNGs on disk (`filesDir/witch_sprites/`) for instant 0-lag fullscreen battles.
- * - Generates a rich gothic blurred backdrop & deterministic Femdom RPG Boss Profile per image!
  */
 object WitchSpriteEngine {
 
     data class WitchAttack(
         val name: String,
-        val dialogue: String,
         val hpDamage: Int,
         val embraceGain: Int,
         val levelDrain: Int,
@@ -41,23 +46,25 @@ object WitchSpriteEngine {
     )
 
     data class WitchProfile(
+        val def: WitchCatalog.WitchDef,
         val name: String,
         val title: String,
         val element: String,
         val bossLevel: Int,
-        val introLine: String,
-        val captureLine: String,
-        val defeatMonologue: List<String>,
+        val maxResolve: Int,
         val mgqAdviceLine: String,
-        val attacks: List<WitchAttack>
+        val attacks: List<WitchAttack>,
+        val ultimateAttack: WitchAttack
     )
 
     data class LoadedWitch(
+        val def: WitchCatalog.WitchDef,
         val profile: WitchProfile,
         val spriteBitmap: Bitmap,
         val backdropBitmap: Bitmap,
         val sourceFilePath: String? = null,
-        val sourceUri: Uri? = null
+        val sourceUri: Uri? = null,
+        val isPlaceholderSprite: Boolean = false
     ) {
         fun recycle() {
             try { if (!spriteBitmap.isRecycled) spriteBitmap.recycle() } catch (_: Throwable) {}
@@ -65,32 +72,47 @@ object WitchSpriteEngine {
         }
     }
 
-    private val WITCH_NAMES = listOf(
-        "Séraphina" to "Archisorcière du Charme",
-        "Lilith" to "Reine des Ombres",
-        "Morgane" to "Maîtresse d'Illusion",
-        "Carmilla" to "Souveraine Écarlate",
-        "Vespera" to "Sorcière du Crépuscule",
-        "Nyxia" to "Impératrice du Drainage",
-        "Bellatrix" to "Domina des Runes",
-        "Élara" to "Enchanteresse Suprême"
-    )
+    fun loadRandomWitch(context: Context, cfg: DemonConfigSnapshot, excludePath: String? = null): LoadedWitch {
+        val rpg = WitchRpgState(context)
+        val def = WitchCatalog.randomWitchForChapter(rpg.selectedChapter, includeBoss = false)
+        return loadWitchForDef(context, cfg, def, excludePath)
+    }
 
-    private val ELEMENTS = listOf("Charme 💜", "Ombre 🌙", "Drainage 💋", "Illusion ✨")
+    fun loadWitchForDef(
+        context: Context,
+        cfg: DemonConfigSnapshot,
+        def: WitchCatalog.WitchDef,
+        excludePath: String? = null
+    ): LoadedWitch {
+        val picked = pickSourcePhoto(context, cfg, excludePath)
+        val profile = buildProfileForDef(def, cfg)
 
-    fun loadRandomWitch(context: Context, cfg: DemonConfigSnapshot, excludePath: String? = null): LoadedWitch? {
-        val picked = pickSourcePhoto(context, cfg, excludePath) ?: return null
+        if (picked == null) {
+            // Graceful dark-fantasy procedural Witch silhouette if the user hasn't picked a folder yet
+            val (sprite, backdrop) = buildFallbackWitchArtwork(def)
+            return LoadedWitch(
+                def = def,
+                profile = profile,
+                spriteBitmap = sprite,
+                backdropBitmap = backdrop,
+                sourceFilePath = null,
+                sourceUri = null,
+                isPlaceholderSprite = true
+            )
+        }
+
         val (idKey, rawBmp, filePath, contentUri) = picked
-        val profile = buildProfileForKey(idKey, cfg)
         val sprite = getOrCreateSegmentedSprite(context, idKey, rawBmp)
-        val backdrop = buildGothicBackdrop(rawBmp)
+        val backdrop = buildGothicBackdrop(rawBmp, def.archetype.accentHex)
         if (rawBmp !== sprite && !rawBmp.isRecycled) rawBmp.recycle()
         return LoadedWitch(
+            def = def,
             profile = profile,
             spriteBitmap = sprite,
             backdropBitmap = backdrop,
             sourceFilePath = filePath,
-            sourceUri = contentUri
+            sourceUri = contentUri,
+            isPlaceholderSprite = false
         )
     }
 
@@ -101,8 +123,9 @@ object WitchSpriteEngine {
         if (cfg.mediaFolderPath.isNotBlank()) {
             val dir = File(cfg.mediaFolderPath)
             if (dir.exists() && dir.isDirectory) {
-                val files = collectImageFiles(dir, cfg.includeHiddenFiles).filter { it.absolutePath != excludePath }
-                val pool = if (files.isNotEmpty()) files else collectImageFiles(dir, cfg.includeHiddenFiles)
+                val all = collectImageFiles(dir, cfg.includeHiddenFiles)
+                val filtered = all.filter { it.absolutePath != excludePath }
+                val pool = if (filtered.isNotEmpty()) filtered else all
                 if (pool.isNotEmpty()) {
                     val f = pool[Random.nextInt(pool.size)]
                     val bmp = MediaFolderHelper.decodeSampledFile(f, 960)
@@ -163,10 +186,10 @@ object WitchSpriteEngine {
             if (bmp != null) return bmp
         }
 
-        // Keep max 28 cached sprites to stay ultra-lightweight on storage
+        // Keep max 40 cached sprites for instant reuse across the 50 Witches
         try {
             val old = cacheDir.listFiles()?.sortedBy { it.lastModified() }.orEmpty()
-            if (old.size > 28) old.take(old.size - 24).forEach { it.delete() }
+            if (old.size > 40) old.take(old.size - 34).forEach { it.delete() }
         } catch (_: Throwable) {}
 
         val maxSide = 760
@@ -189,7 +212,6 @@ object WitchSpriteEngine {
         c.restoreToCount(save)
         if (scaled !== source) scaled.recycle()
 
-        // Save to disk cache asynchronously
         try {
             FileOutputStream(cached).use { out.compress(Bitmap.CompressFormat.PNG, 92, it) }
         } catch (_: Throwable) {}
@@ -233,7 +255,7 @@ object WitchSpriteEngine {
         }
     }
 
-    private fun buildGothicBackdrop(source: Bitmap): Bitmap {
+    private fun buildGothicBackdrop(source: Bitmap, accentColor: Int): Bitmap {
         val bw = 180
         val bh = 320
         val small = Bitmap.createScaledBitmap(source, bw, bh, true)
@@ -241,40 +263,142 @@ object WitchSpriteEngine {
         if (small !== source) small.recycle()
         FastStackBlur.blurInPlace(blurred, 14)
         val c = Canvas(blurred)
-        // Rich dark crimson-violet atmospheric VN backdrop
-        c.drawColor(Color.argb(170, 18, 6, 28))
+        val r = (Color.red(accentColor) * 0.25f).toInt()
+        val g = (Color.green(accentColor) * 0.12f).toInt()
+        val b = (Color.blue(accentColor) * 0.28f).toInt()
+        c.drawColor(Color.argb(175, r.coerceAtLeast(14), g.coerceAtLeast(5), b.coerceAtLeast(22)))
         return blurred
     }
 
-    private fun buildProfileForKey(idKey: String, cfg: DemonConfigSnapshot): WitchProfile {
-        val h = abs(idKey.hashCode())
-        val (baseName, title) = WITCH_NAMES[h % WITCH_NAMES.size]
-        val displayName = if (idKey == "avatar_main") cfg.avatarName else "$baseName ($title)"
-        val elem = ELEMENTS[(h / 7) % ELEMENTS.size]
-        val bossLv = (cfg.playerLevel + 2 + (h % 6)).coerceIn(5, 99)
+    /** Stylized dark-fantasy Witch silhouette fallback used ONLY when no photo folder / avatar is configured yet. */
+    private fun buildFallbackWitchArtwork(def: WitchCatalog.WitchDef): Pair<Bitmap, Bitmap> {
+        val accent = def.archetype.accentHex
+        val bg = Bitmap.createBitmap(180, 320, Bitmap.Config.ARGB_8888)
+        Canvas(bg).apply {
+            drawRect(0f, 0f, 180f, 320f, Paint().apply {
+                shader = LinearGradient(
+                    0f, 0f, 0f, 320f,
+                    Color.rgb(24, 10, 38), Color.rgb(10, 5, 18), Shader.TileMode.CLAMP
+                )
+            })
+        }
+
+        val sp = Bitmap.createBitmap(440, 620, Bitmap.Config.ARGB_8888)
+        val c = Canvas(sp)
+        val auraPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(220f, 260f, 210f, Color.argb(120, Color.red(accent), Color.green(accent), Color.blue(accent)), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        }
+        c.drawCircle(220f, 260f, 210f, auraPaint)
+
+        val silPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(22, 14, 34) }
+        val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 4f
+            color = accent
+        }
+
+        // Witch Hat
+        val hat = Path().apply {
+            moveTo(220f, 45f)
+            lineTo(325f, 175f)
+            lineTo(390f, 195f)
+            lineTo(50f, 195f)
+            lineTo(115f, 175f)
+            close()
+        }
+        c.drawPath(hat, silPaint)
+        c.drawPath(hat, rimPaint)
+
+        // Head & Flowing Cloak
+        c.drawCircle(220f, 240f, 56f, silPaint)
+        val cloak = Path().apply {
+            moveTo(164f, 290f)
+            quadTo(220f, 275f, 276f, 290f)
+            lineTo(350f, 590f)
+            lineTo(90f, 590f)
+            close()
+        }
+        c.drawPath(cloak, silPaint)
+        c.drawPath(cloak, rimPaint)
+
+        // Glowing Arcane Eyes
+        val eyePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent }
+        c.drawCircle(200f, 236f, 7f, eyePaint)
+        c.drawCircle(240f, 236f, 7f, eyePaint)
+
+        return sp to bg
+    }
+
+    private fun buildProfileForDef(def: WitchCatalog.WitchDef, cfg: DemonConfigSnapshot): WitchProfile {
+        val chScale = 1.0f + (def.chapter - 1) * 0.14f + (if (def.isBoss) 0.20f else if (def.isMiniBoss) 0.10f else 0f)
+        val s0 = def.skillNames.getOrElse(0) { "Sort d'Envoûtement" }
+        val s1 = def.skillNames.getOrElse(1) { "Chaînes Magiques" }
+        val s2 = def.skillNames.getOrElse(2) { "Drain d'Aura" }
+
+        val primaryStatus = when (def.archetype) {
+            WitchCatalog.Archetype.CHARMER -> "CHARMED"
+            WitchCatalog.Archetype.BINDER -> "CAPTURE"
+            WitchCatalog.Archetype.HYPNOTIST -> "HYPNOTIZED"
+            WitchCatalog.Archetype.DRAINER -> "HYPNOTIZED"
+            WitchCatalog.Archetype.INQUISITOR -> "SEALED"
+            WitchCatalog.Archetype.ILLUSIONIST -> "CHARMED"
+            WitchCatalog.Archetype.CHRONO -> "SEALED"
+            WitchCatalog.Archetype.SOVEREIGN -> "CAPTURE"
+        }
+
+        val secondaryStatus = when (def.archetype) {
+            WitchCatalog.Archetype.BINDER -> "CAPTURE"
+            WitchCatalog.Archetype.INQUISITOR -> "SEALED"
+            else -> "CAPTURE"
+        }
+
+        val drainBonus = if (def.archetype == WitchCatalog.Archetype.DRAINER || def.isBoss) 1 else 0
 
         val attacks = listOf(
-            WitchAttack("Regard Impérieux 👁️", "$baseName plonge son regard dans le tien… ta volonté vacille !", 18, 22, 1, "CHARMED"),
-            WitchAttack("Chaînes de Soie Magique ⛓️", "$baseName t'encercle d'un sortilège d'entrave !", 22, 34, 1, "CAPTURE"),
-            WitchAttack("Drain d'Énergie Vitale 💋", "$baseName aspire directement ton aura et ta lumière !", 26, 28, 2, "HYPNOTIZED"),
-            WitchAttack("Sceau de Soumission 🔮", "$baseName scelle ta volonté et paralyse tes défenses !", 20, 24, 1, "SEALED"),
-            WitchAttack("Voile d'Éclipse Totale 🌙", "$baseName déclenche son sort de drainage absolu !", 32, 38, 3, "HYPNOTIZED")
+            WitchAttack(
+                name = "$s0 ✨",
+                hpDamage = (15 * chScale).toInt().coerceIn(12, 34),
+                embraceGain = (18 * chScale).toInt().coerceIn(16, 36),
+                levelDrain = 1,
+                statusEffect = primaryStatus
+            ),
+            WitchAttack(
+                name = "$s1 ⛓️",
+                hpDamage = (19 * chScale).toInt().coerceIn(15, 38),
+                embraceGain = (26 * chScale).toInt().coerceIn(22, 44),
+                levelDrain = 1,
+                statusEffect = secondaryStatus
+            ),
+            WitchAttack(
+                name = "$s2 💜",
+                hpDamage = (22 * chScale).toInt().coerceIn(18, 42),
+                embraceGain = (22 * chScale).toInt().coerceIn(20, 40),
+                levelDrain = 1 + drainBonus,
+                statusEffect = if (def.archetype == WitchCatalog.Archetype.INQUISITOR) "SEALED" else "HYPNOTIZED"
+            )
         )
 
+        val ultimate = WitchAttack(
+            name = "👑 ${def.ultimateName}",
+            hpDamage = (30 * chScale).toInt().coerceIn(26, 56),
+            embraceGain = (34 * chScale).toInt().coerceIn(30, 58),
+            levelDrain = (2 + drainBonus).coerceAtMost(4),
+            statusEffect = if (def.isBoss || def.archetype == WitchCatalog.Archetype.BINDER) "CAPTURE" else "HYPNOTIZED"
+        )
+
+        val advice = "🔮 Évaluation de ${cfg.avatarName} (Grimoire #${def.id}/50) :\n" +
+            "« Battu par ${def.name} (${def.archetype.label}) ? ${def.weaknessTip} »"
+
         return WitchProfile(
-            name = displayName,
-            title = title,
-            element = elem,
-            bossLevel = bossLv,
-            introLine = "« Te voilà enfin… $displayName barre ta route. Prêt à offrir ton énergie ? 😈 »",
-            captureLine = "« Capturé ! Ne bouge plus… laisse-moi drainer tes niveaux un par un… 💜 »",
-            defeatMonologue = listOf(
-                "« Tu n'as plus aucune force… sens ton Niveau fondre pendant que je prends le contrôle… 😈 »",
-                "« Ta lumière s'éteint, ta volonté m'appartient. Je confisque ton application favorite en tribut ! 🔒💜 »",
-                "« Défaite totale. Souviens-toi qui règne sur ce téléphone ! 👑 »"
-            ),
-            mgqAdviceLine = "Évaluation de ${cfg.avatarName} : « Encore vaincu par $baseName ? Utilise GARDE quand son sort ultime charge, et réussis le QTE pour briser son emprise ! »",
-            attacks = attacks
+            def = def,
+            name = def.displayTitle,
+            title = def.title,
+            element = def.element,
+            bossLevel = def.level,
+            maxResolve = def.maxResolve,
+            mgqAdviceLine = advice,
+            attacks = attacks,
+            ultimateAttack = ultimate
         )
     }
 }
