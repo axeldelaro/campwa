@@ -89,7 +89,7 @@ class MainActivity : AppCompatActivity() {
                 renderScreen(snap)
             } else {
                 previewPetView?.updateConfig(snap)
-                moodPillTv?.text = "${snap.mood.emoji} ${snap.mood.label} • ${snap.moodScore}%"
+                moodPillTv?.text = "NV ${snap.playerLevel} • ${snap.mood.emoji} ${snap.moodScore}%"
                 if (masterSwitch?.isChecked != snap.enabled) masterSwitch?.isChecked = snap.enabled
                 refreshMediaSummaryAsync(snap)
             }
@@ -342,15 +342,15 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
         val pill = TextView(this).apply {
-            text = "${snap.mood.emoji} ${snap.mood.label} • ${snap.moodScore}%"
+            text = "NV ${snap.playerLevel} • ${snap.mood.emoji} ${snap.moodScore}%"
             setTextColor(Color.WHITE)
             textSize = 11.5f
             typeface = Typeface.DEFAULT_BOLD
             background = roundedBg(Color.rgb(38, 22, 38), 14, strokeColor = Color.argb(140, 244, 63, 94), strokeDp = 1)
             setPadding(dp(10), dp(5), dp(10), dp(5))
             setOnClickListener {
-                settings.update { putInt("mood_score", 20) }
-                Toast.makeText(this@MainActivity, "Humeur calmée 😇", Toast.LENGTH_SHORT).show()
+                settings.update { putInt("mood_score", 20); putInt("active_drain_pct", 0) }
+                Toast.makeText(this@MainActivity, "Humeur calmée & drain purifié 😇", Toast.LENGTH_SHORT).show()
             }
         }
         moodPillTv = pill
@@ -463,9 +463,9 @@ class MainActivity : AppCompatActivity() {
             typeface = Typeface.DEFAULT_BOLD
         })
         rightCol.addView(TextView(this).apply {
-            text = "${snap.avatarStyle.label}\nProfil : ${snap.severityPreset.emoji} ${snap.severityPreset.label}"
+            text = "${snap.avatarStyle.label}\nProfil : ${snap.severityPreset.emoji} ${snap.severityPreset.label} • NV ${snap.playerLevel} (PV ${snap.playerHp})"
             setTextColor(Color.rgb(175, 175, 192))
-            textSize = 12f
+            textSize = 11.8f
             setPadding(0, dp(2), 0, dp(10))
         })
 
@@ -570,19 +570,24 @@ class MainActivity : AppCompatActivity() {
         val testCard = makeCard()
         testCard.addView(sectionTitle("🧪 Tester en direct"))
         val t1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(6)) }
-        t1.addView(makeGridTestBtn("🎬 Au coin Vidéo") { runLiveTest("corner") }, gridLp(endMargin = dp(5)))
-        t1.addView(makeGridTestBtn("✍️ Lignes (#39)") { runLiveTest("lines") }, gridLp(startMargin = dp(5)))
+        t1.addView(makeGridTestBtn("⚔️ Combat RPG") { runLiveTest("rpg") }, gridLp(endMargin = dp(5)))
+        t1.addView(makeGridTestBtn("🏆 Tournoi (#69)") { runLiveTest("tournament") }, gridLp(startMargin = dp(5)))
         testCard.addView(t1)
 
         val t2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(6)) }
-        t2.addView(makeGridTestBtn("📝 Quiz (#53)") { runLiveTest("quiz") }, gridLp(endMargin = dp(5)))
-        t2.addView(makeGridTestBtn("📸 Diaporama") { runLiveTest("slideshow") }, gridLp(startMargin = dp(5)))
+        t2.addView(makeGridTestBtn("🔒 Autel (#87)") { runLiveTest("altar") }, gridLp(endMargin = dp(5)))
+        t2.addView(makeGridTestBtn("🎬 Au coin Vidéo") { runLiveTest("corner") }, gridLp(startMargin = dp(5)))
         testCard.addView(t2)
 
         val t3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(6)) }
-        t3.addView(makeGridTestBtn("🚫 Zone Morte") { runLiveTest("deadzone") }, gridLp(endMargin = dp(5)))
-        t3.addView(makeGridTestBtn("🔥 Crise Furieuse") { runLiveTest("fury") }, gridLp(startMargin = dp(5)))
+        t3.addView(makeGridTestBtn("⏱️ Pause 3 min") { runLiveTest("break3m") }, gridLp(endMargin = dp(5)))
+        t3.addView(makeGridTestBtn("✍️ Lignes (#39)") { runLiveTest("lines") }, gridLp(startMargin = dp(5)))
         testCard.addView(t3)
+
+        val t4 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        t4.addView(makeGridTestBtn("📸 Diaporama") { runLiveTest("slideshow") }, gridLp(endMargin = dp(5)))
+        t4.addView(makeGridTestBtn("🔥 Crise Furieuse") { runLiveTest("fury") }, gridLp(startMargin = dp(5)))
+        testCard.addView(t4)
         root.addView(testCard)
     }
 
@@ -713,6 +718,24 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== TAB 2 : POUVOIRS (CLEAN 3-SECTION SEVERITY CONTROLS) ====================
     private fun populatePowersTab(root: LinearLayout, snap: DemonConfigSnapshot) {
+        // Section 0: MGQ-Style Seduction RPG & Drain System
+        val cRpg = makeCard(accentStroke = Color.argb(120, 217, 70, 239))
+        cRpg.addView(sectionTitle("💜 RPG Séduction & Drainage (NV ${snap.playerLevel} • PV ${snap.playerHp})"))
+        cRpg.addView(sectionSub("Attaques de séduction interactives : draine ton Niveau RPG, ta luminosité et la qualité visuelle en direct !"))
+        cRpg.addView(makeSwitchRow("Combats de séduction surprise du Diable", snap.rpgSeductionEnabled) { settings.rpgSeductionEnabled = it })
+        cRpg.addView(makeSwitchRow("Drainage de luminosité (écran assombri)", snap.drainBrightnessEnabled) { settings.drainBrightnessEnabled = it })
+        cRpg.addView(makeSwitchRow("Drainage de qualité photo / filtre hypnotique", snap.drainQualityEnabled) { settings.drainQualityEnabled = it })
+        cRpg.addView(makeSecondaryBtn("♻️ Restaurer NV 20 / 100 PV / Qualité 100 %") {
+            settings.update {
+                putInt("player_level", 20)
+                putInt("player_hp", 100)
+                putInt("active_drain_pct", 0)
+            }
+            Toast.makeText(this, "Stats RPG restaurées ✅", Toast.LENGTH_SHORT).show()
+            renderActiveTab(settings.snapshot())
+        })
+        root.addView(cRpg)
+
         // Section 1: Severe Accessibility Sabotage
         val c1 = makeCard(accentStroke = Color.argb(95, 244, 63, 94))
         c1.addView(sectionTitle("⚡ Sabotage Accessibilité (Actif partout)"))
@@ -721,6 +744,7 @@ class MainActivity : AppCompatActivity() {
         c1.addView(makeSwitchRow("#29 Mise en pause forcée des vidéos", snap.forcePauseVideoEnabled) { settings.forcePauseVideoEnabled = it })
         c1.addView(makeSwitchRow("#31 Vol de clics (bouclier sur boutons)", snap.clickStealShieldEnabled) { settings.clickStealShieldEnabled = it })
         c1.addView(makeSwitchRow("#37 Anti-Like / Anti-Follow ciblé", snap.antiLikeFollowEnabled) { settings.antiLikeFollowEnabled = it })
+        c1.addView(makeSwitchRow("#71 Bloqueur Play Store / Acheter / Installer", snap.blockStoreBuyEnabled) { settings.blockStoreBuyEnabled = it })
         c1.addView(makeSwitchRow("#32 Sabotage de saisie clavier", snap.keyboardSabotageEnabled) { settings.keyboardSabotageEnabled = it })
         c1.addView(makeSwitchRow("#34 Fermer le panneau de notifications", snap.closeNotifShadeEnabled) { settings.closeNotifShadeEnabled = it })
         c1.addView(makeSwitchRow("#35 Bloquer les Réglages Rapides (Wi-Fi/Avion)", snap.blockQuickSettingsEnabled) { settings.blockQuickSettingsEnabled = it })
@@ -729,11 +753,14 @@ class MainActivity : AppCompatActivity() {
         // Section 2: Severe Punishments & Parental Discipline
         val c2 = makeCard()
         c2.addView(sectionTitle("🔒 Punitions & Discipline"))
+        c2.addView(makeSwitchRow("#68 Pause écran obligatoire toutes les ${snap.screenBreakMinutes} min", snap.screenBreakEnabled) { settings.screenBreakEnabled = it })
+        c2.addView(makeSwitchRow("#69 Taxe d'entrée : Tournoi de ${snap.entryTournamentSize} médias", snap.entryTournamentEnabled) { settings.entryTournamentEnabled = it })
+        c2.addView(makeSwitchRow("#87 Autel Photo Piégé (impossible à retirer → gages empilés !)", snap.unremovableAltarEnabled) { settings.unremovableAltarEnabled = it })
         c2.addView(makeSwitchRow("#38 « Au coin ! » avec vidéo du dossier", snap.timeoutCornerEnabled) { settings.timeoutCornerEnabled = it })
         c2.addView(makeSwitchRow("#39 Lignes de punition à recopier (anti-collage)", snap.punishmentLinesEnabled) { settings.punishmentLinesEnabled = it })
         c2.addView(makeSwitchRow("#42 Zone Morte sur le clavier", snap.deadZoneKeyboardEnabled) { settings.deadZoneKeyboardEnabled = it })
         c2.addView(makeSwitchRow("#44 Liste Noire Totale (confiscation)", snap.blacklistEnabled) { settings.blacklistEnabled = it })
-        c2.addView(makeSwitchRow("#7 Demander la permission avant d'ouvrir", snap.askPermissionGate) { settings.askPermissionGate = it })
+        c2.addView(makeSwitchRow("#7 Demander la permission (si #69 désactivé)", snap.askPermissionGate) { settings.askPermissionGate = it })
         c2.addView(makeSwitchRow("#8 Quota temps limite + #9 Négociation", snap.appQuotaLockEnabled) { settings.appQuotaLockEnabled = it })
         c2.addView(makeSwitchRow("#10 Couvre-feu « Au lit ! »", snap.curfewEnabled) { settings.curfewEnabled = it })
         c2.addView(makeSwitchRow("#11 Mode « Fais tes devoirs ! »", snap.homeworkModeEnabled) { settings.homeworkModeEnabled = it })
@@ -806,7 +833,18 @@ class MainActivity : AppCompatActivity() {
         tuneCard.addView(sectionTitle("🎛️ Intensité & Punitions"))
         tuneCard.addView(makeSliderRow("Niveau de chaos", 1, 10, snap.chaosLevel, "/10") { settings.chaosLevel = it })
         tuneCard.addView(makeSliderRow("Intervalle min entre bêtises", 8, 300, snap.minIntervalSec, " s") { settings.minIntervalSec = it })
-        tuneCard.addView(makeSliderRow("Durée Au Coin Vidéo (#38)", 15, 300, snap.timeoutCornerSec, " s") { settings.timeoutCornerSec = it })
+        tuneCard.addView(makeSliderRow("Cycle Pause Écran (#68)", 1, 30, snap.screenBreakMinutes, " min") { settings.screenBreakMinutes = it })
+        tuneCard.addView(makeSliderRow("Durée Pause Écran (#68)", 10, 120, snap.screenBreakDurationSec, " s") { settings.screenBreakDurationSec = it })
+        tuneCard.addView(smallLabel("Taille du Tournoi Médias (#69) :"))
+        tuneCard.addView(makeChipGroup(listOf(2, 4, 8), snap.entryTournamentSize, {
+            when (it) {
+                2 -> "Duel (2 médias)"
+                4 -> "Tournoi (4 médias)"
+                else -> "Grand Tournoi (8)"
+            }
+        }) { settings.entryTournamentSize = it })
+        tuneCard.addView(makeSliderRow("Durée Autel Piégé (#87)", 20, 180, snap.altarDurationSec, " s") { settings.altarDurationSec = it })
+        tuneCard.addView(makeSliderRow("Durée Au Coin Vidéo (#38)", 10, 300, snap.timeoutCornerSec, " s") { settings.timeoutCornerSec = it })
         tuneCard.addView(makeSliderRow("Nombre de lignes à recopier (#39)", 2, 10, snap.punishmentLinesCount, " lignes") { settings.punishmentLinesCount = it })
         tuneCard.addView(makeSliderRow("Quota par appli (#8)", 2, 60, snap.appQuotaMinutes, " min") { settings.appQuotaMinutes = it })
         tuneCard.addView(makeSliderRow("Couvre-feu début (#10)", 0, 23, snap.curfewStartHour, "h") { settings.curfewStartHour = it })

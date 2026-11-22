@@ -113,17 +113,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demonmom-v2.1.${{ github.run_number }}
-          name: "DemonMom AI v2.1.${{ github.run_number }} (Sévérité Réelle & Correctifs Accessibilité + Vidéo Au Coin)"
+          tag_name: demonmom-v3.0.${{ github.run_number }}
+          name: "DemonMom AI v3.0.${{ github.run_number }} (Ultra-Réalisme • Chronos Blindés • RPG Séduction & Drain • Tournoi #69 • Pause 3m #68 • Autel Piégé #87)"
           body: |
-            ### DemonMom AI v2.0 (`demonmom-v2.0.${{ github.run_number }}`)
+            ### DemonMom AI v3.0 (`demonmom-v3.0.${{ github.run_number }}`)
 
-            Mise à jour majeure **Design Photo-Réaliste + 16 pouvoirs d'Accessibilité sévères & interactifs + Interface épurée 4 onglets** :
+            Grosse mise à jour **Ultra-Réalisme + Chronos 100 % blindés + Combat RPG Séduction & Drainage + Nouvelles Fonctions (#68, #69, #71, #87)** :
 
-            - **Avatar Photo-Réaliste HD (512×640)** : détourage studio du vrai portrait/buste (tête + cheveux + épaules), ombre portée douce, ailes sombres texturées, **cornes 3D posées aux coordonnées exactes du front**, **yeux braise sur les vraies pupilles** en mode Furieux et 4 styles réalistes.
-            - **16 nouveaux pouvoirs Accessibilité & Discipline** : #26 contre-scroll gestuel, #27 Retour compulsif, #29 mise en pause forcée des vidéos, #31 vol de clics & #37 anti-Like/Follow, #32 sabotage de saisie clavier, #34 fermeture du panneau de notifications, #35 blocage Réglages Rapides, **#38 Punition « Au coin ! » avec vidéo en boucle du dossier (masqués `.*` inclus)**, #39 lignes à recopier anti-copier-coller, #42 Zone Morte clavier, #44 Liste Noire Totale, #50 esquive du doigt, #53 Quiz surprise, #61 diaporama forcé 4 photos, #65 4 profils de sévérité en 1 clic.
-            - **Verrouillage strict des Paramètres Android + Administrateur** : sortie propre garantie en tapotant le démon **20 fois de suite** + code **`100205`**.
-            - **Interface épurée 4 onglets** : *Démon*, *Studio*, *Pouvoirs*, *Réglages*.
+            - **Correctif critique de tous les chronos (`SystemClock.elapsedRealtime()`)** : le chrono de `#38 Au Coin Vidéo` descend toujours de façon fluide et fiable (plus jamais figé !), le démon reste toujours au premier plan au-dessus de toutes les modales (**20 taps + `100205`** toujours accessible !), et `#39` normalise accents et apostrophes.
+            - **Diable Ultra-Réaliste v3** : détourage HD `640×800` anti-frange cheveux, **Rim-Light cinéma épousant le contour réel du visage**, queue 3D articulée, cornes 3D striées évolutives avec la colère, ailes veinées ombrées, yeux vivants qui suivent tes gestes (braise rouge ou violet hypnotique) + flammes/orbes.
+            - **Combat RPG Séduction & Drainage (type MGQ)** : attaques nommées interactives avec **drainage de Niveau (`NV`)**, **drainage de luminosité** et **drainage de qualité photo en temps réel** (pixellisation + voile hypnotique auto-réversible).
+            - **#68 Pause écran obligatoire toutes les 3 minutes** (réglable `1–30 min`), **#69 Taxe d'entrée Duel / Tournoi éliminatoire de 2, 4 ou 8 médias**, **#71 Bloqueur Play Store / Acheter / Installer**, **#87 Autel Photo Piégé impossible à retirer** (le toucher déclenche d'autres gages en superposition !).
           files: ./DemonMom.apk
           draft: false
           prerelease: false

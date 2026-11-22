@@ -5,9 +5,9 @@ import android.content.SharedPreferences
 import java.util.concurrent.CopyOnWriteArraySet
 
 enum class AvatarStyle(val id: String, val label: String) {
-    REALISTIC_DEMON("realistic_demon", "Démon Réaliste 😈"),
+    REALISTIC_DEMON("realistic_demon", "Diable Ultra-Réaliste 😈"),
     REALISTIC_PORTRAIT("realistic_portrait", "Portrait Studio 📸"),
-    REALISTIC_MOM_CROWN("realistic_crown", "Reine Possessive 👑"),
+    REALISTIC_MOM_CROWN("realistic_crown", "Reine Démoniaque 👑"),
     REALISTIC_MINI_BODY("realistic_body", "Silhouette Complète ✨");
 
     companion object {
@@ -96,7 +96,7 @@ data class DemonConfigSnapshot(
     val includeHiddenFiles: Boolean,
     val chaosLevel: Int,           // 1..10
     val moodScore: Int,            // 0..100
-    val minIntervalSec: Int,       // 15..300
+    val minIntervalSec: Int,       // 8..300
     val vibrateOnPrank: Boolean,
     // Vision AI (#1-#6)
     val faceCensorMode: FaceCensorMode,
@@ -126,7 +126,7 @@ data class DemonConfigSnapshot(
     val speedThresholdKmh: Int,    // 10..90
     val customPhrases: String,
     val watchedPackages: Set<String>,
-    // NEW v2.0 Severe & Interactive Accessibility Powers (#26,27,29,31,32,34,35,37,38,39,42,44,50,53,61,65)
+    // v2.0 Severe & Interactive Accessibility Powers
     val counterScrollEnabled: Boolean,       // #26
     val compulsiveBackEnabled: Boolean,      // #27
     val forcePauseVideoEnabled: Boolean,     // #29
@@ -145,7 +145,23 @@ data class DemonConfigSnapshot(
     val blacklistPackages: Set<String>,      // #44
     val dodgeFingerEnabled: Boolean,         // #50
     val surpriseQuizEnabled: Boolean,        // #53
-    val forcedSlideshowEnabled: Boolean      // #61
+    val forcedSlideshowEnabled: Boolean,     // #61
+    // v3.0 NEW: #68 Screen Break (3 min), #69 Media Duel/Tournament, #71 Store/Buy Blocker,
+    // #87 Unremovable Trapped Altar, RPG Seduction & Drain System (MGQ-inspired)
+    val screenBreakEnabled: Boolean,         // #68
+    val screenBreakMinutes: Int,             // #68 default 3 min (1..30)
+    val screenBreakDurationSec: Int,         // #68 default 25 s (10..120)
+    val entryTournamentEnabled: Boolean,     // #69
+    val entryTournamentSize: Int,            // #69: 2, 4, or 8 media
+    val blockStoreBuyEnabled: Boolean,       // #71
+    val unremovableAltarEnabled: Boolean,    // #87
+    val altarDurationSec: Int,               // #87 default 60 s (20..180)
+    val rpgSeductionEnabled: Boolean,        // MGQ-style Seduction RPG
+    val drainBrightnessEnabled: Boolean,     // MGQ Brightness Drain
+    val drainQualityEnabled: Boolean,        // MGQ Photo/Visual Quality Drain
+    val playerLevel: Int,                    // 1..99 (starts 20)
+    val playerHp: Int,                       // 0..100
+    val activeDrainPct: Int                  // 0..100 current visual/brightness drain
 ) {
     val mood: DemonMood
         get() = DemonMood.fromScore(moodScore)
@@ -174,7 +190,7 @@ class DemonSettings(context: Context) {
             avatarPath = prefs.getString(KEY_AVATAR_PATH, "").orEmpty(),
             avatarName = prefs.getString(KEY_AVATAR_NAME, "Maman Démon") ?: "Maman Démon",
             avatarStyle = AvatarStyle.fromId(prefs.getString(KEY_AVATAR_STYLE, AvatarStyle.REALISTIC_DEMON.id)),
-            avatarSizeDp = prefs.getInt(KEY_AVATAR_SIZE, 108).coerceIn(72, 156),
+            avatarSizeDp = prefs.getInt(KEY_AVATAR_SIZE, 114).coerceIn(72, 164),
             cutoutIncludeHair = prefs.getBoolean(KEY_CUTOUT_HAIR, true),
             mediaFolderPath = prefs.getString(KEY_MEDIA_FOLDER, "").orEmpty(),
             mediaTreeUri = prefs.getString(KEY_MEDIA_TREE_URI, "").orEmpty(),
@@ -218,7 +234,7 @@ class DemonSettings(context: Context) {
             blockQuickSettingsEnabled = prefs.getBoolean(KEY_BLOCK_QS, true),
             antiLikeFollowEnabled = prefs.getBoolean(KEY_ANTI_LIKE_FOLLOW, true),
             timeoutCornerEnabled = prefs.getBoolean(KEY_TIMEOUT_CORNER, true),
-            timeoutCornerSec = prefs.getInt(KEY_TIMEOUT_CORNER_SEC, 45).coerceIn(15, 300),
+            timeoutCornerSec = prefs.getInt(KEY_TIMEOUT_CORNER_SEC, 40).coerceIn(10, 300),
             punishmentLinesEnabled = prefs.getBoolean(KEY_PUNISHMENT_LINES, true),
             punishmentLinesCount = prefs.getInt(KEY_PUNISHMENT_LINES_COUNT, 3).coerceIn(2, 10),
             punishmentPhrase = prefs.getString(KEY_PUNISHMENT_PHRASE, DEFAULT_PUNISHMENT_PHRASE) ?: DEFAULT_PUNISHMENT_PHRASE,
@@ -227,7 +243,22 @@ class DemonSettings(context: Context) {
             blacklistPackages = HashSet(rawBlack),
             dodgeFingerEnabled = prefs.getBoolean(KEY_DODGE_FINGER, true),
             surpriseQuizEnabled = prefs.getBoolean(KEY_SURPRISE_QUIZ, true),
-            forcedSlideshowEnabled = prefs.getBoolean(KEY_FORCED_SLIDESHOW, true)
+            forcedSlideshowEnabled = prefs.getBoolean(KEY_FORCED_SLIDESHOW, true),
+            // v3.0
+            screenBreakEnabled = prefs.getBoolean(KEY_SCREEN_BREAK_ENABLED, true),
+            screenBreakMinutes = prefs.getInt(KEY_SCREEN_BREAK_MIN, 3).coerceIn(1, 30),
+            screenBreakDurationSec = prefs.getInt(KEY_SCREEN_BREAK_DUR, 25).coerceIn(10, 120),
+            entryTournamentEnabled = prefs.getBoolean(KEY_ENTRY_TOURNAMENT, true),
+            entryTournamentSize = prefs.getInt(KEY_ENTRY_TOURNAMENT_SIZE, 4).let { if (it in listOf(2, 4, 8)) it else 4 },
+            blockStoreBuyEnabled = prefs.getBoolean(KEY_BLOCK_STORE_BUY, true),
+            unremovableAltarEnabled = prefs.getBoolean(KEY_UNREMOVABLE_ALTAR, true),
+            altarDurationSec = prefs.getInt(KEY_ALTAR_DURATION_SEC, 60).coerceIn(20, 180),
+            rpgSeductionEnabled = prefs.getBoolean(KEY_RPG_SEDUCTION, true),
+            drainBrightnessEnabled = prefs.getBoolean(KEY_DRAIN_BRIGHTNESS, true),
+            drainQualityEnabled = prefs.getBoolean(KEY_DRAIN_QUALITY, true),
+            playerLevel = prefs.getInt(KEY_PLAYER_LEVEL, 20).coerceIn(1, 99),
+            playerHp = prefs.getInt(KEY_PLAYER_HP, 100).coerceIn(0, 100),
+            activeDrainPct = prefs.getInt(KEY_ACTIVE_DRAIN_PCT, 0).coerceIn(0, 100)
         )
     }
 
@@ -237,102 +268,68 @@ class DemonSettings(context: Context) {
             putString(KEY_SEVERITY_PRESET, preset.id)
             when (preset) {
                 SeverityPreset.GENTLE -> {
-                    putInt(KEY_CHAOS_LEVEL, 3)
-                    putInt(KEY_MIN_INTERVAL, 90)
-                    putInt(KEY_MOOD_SCORE, 20)
-                    putInt(KEY_APP_QUOTA_MIN, 20)
-                    putInt(KEY_TIMEOUT_CORNER_SEC, 20)
-                    putInt(KEY_PUNISHMENT_LINES_COUNT, 2)
-                    putBoolean(KEY_COUNTER_SCROLL, false)
-                    putBoolean(KEY_COMPULSIVE_BACK, false)
-                    putBoolean(KEY_FORCE_PAUSE_VIDEO, false)
-                    putBoolean(KEY_CLICK_STEAL_SHIELD, false)
-                    putBoolean(KEY_KEYBOARD_SABOTAGE, false)
-                    putBoolean(KEY_CLOSE_NOTIF_SHADE, false)
-                    putBoolean(KEY_BLOCK_QS, false)
-                    putBoolean(KEY_ANTI_LIKE_FOLLOW, false)
-                    putBoolean(KEY_TIMEOUT_CORNER, false)
-                    putBoolean(KEY_PUNISHMENT_LINES, false)
-                    putBoolean(KEY_DEAD_ZONE_KB, false)
-                    putBoolean(KEY_DODGE_FINGER, true)
-                    putBoolean(KEY_SURPRISE_QUIZ, true)
-                    putBoolean(KEY_FORCED_SLIDESHOW, false)
+                    putInt(KEY_CHAOS_LEVEL, 3); putInt(KEY_MIN_INTERVAL, 90); putInt(KEY_MOOD_SCORE, 20)
+                    putInt(KEY_APP_QUOTA_MIN, 20); putInt(KEY_TIMEOUT_CORNER_SEC, 18); putInt(KEY_PUNISHMENT_LINES_COUNT, 2)
+                    putBoolean(KEY_COUNTER_SCROLL, false); putBoolean(KEY_COMPULSIVE_BACK, false)
+                    putBoolean(KEY_FORCE_PAUSE_VIDEO, false); putBoolean(KEY_CLICK_STEAL_SHIELD, false)
+                    putBoolean(KEY_KEYBOARD_SABOTAGE, false); putBoolean(KEY_CLOSE_NOTIF_SHADE, false)
+                    putBoolean(KEY_BLOCK_QS, false); putBoolean(KEY_ANTI_LIKE_FOLLOW, false)
+                    putBoolean(KEY_TIMEOUT_CORNER, false); putBoolean(KEY_PUNISHMENT_LINES, false)
+                    putBoolean(KEY_DEAD_ZONE_KB, false); putBoolean(KEY_DODGE_FINGER, true)
+                    putBoolean(KEY_SURPRISE_QUIZ, true); putBoolean(KEY_FORCED_SLIDESHOW, false)
+                    putBoolean(KEY_SCREEN_BREAK_ENABLED, false); putBoolean(KEY_ENTRY_TOURNAMENT, false)
+                    putBoolean(KEY_BLOCK_STORE_BUY, true); putBoolean(KEY_UNREMOVABLE_ALTAR, false)
+                    putBoolean(KEY_RPG_SEDUCTION, true)
                 }
                 SeverityPreset.MOM -> {
-                    putInt(KEY_CHAOS_LEVEL, 5)
-                    putInt(KEY_MIN_INTERVAL, 55)
-                    putInt(KEY_MOOD_SCORE, 45)
-                    putInt(KEY_APP_QUOTA_MIN, 12)
-                    putInt(KEY_TIMEOUT_CORNER_SEC, 30)
-                    putInt(KEY_PUNISHMENT_LINES_COUNT, 3)
-                    putBoolean(KEY_COUNTER_SCROLL, true)
-                    putBoolean(KEY_COMPULSIVE_BACK, false)
-                    putBoolean(KEY_FORCE_PAUSE_VIDEO, true)
-                    putBoolean(KEY_CLICK_STEAL_SHIELD, false)
-                    putBoolean(KEY_KEYBOARD_SABOTAGE, false)
-                    putBoolean(KEY_CLOSE_NOTIF_SHADE, false)
-                    putBoolean(KEY_BLOCK_QS, true)
-                    putBoolean(KEY_ANTI_LIKE_FOLLOW, true)
-                    putBoolean(KEY_TIMEOUT_CORNER, true)
-                    putBoolean(KEY_PUNISHMENT_LINES, false)
-                    putBoolean(KEY_DEAD_ZONE_KB, false)
-                    putBoolean(KEY_DODGE_FINGER, true)
-                    putBoolean(KEY_SURPRISE_QUIZ, true)
-                    putBoolean(KEY_FORCED_SLIDESHOW, true)
+                    putInt(KEY_CHAOS_LEVEL, 5); putInt(KEY_MIN_INTERVAL, 50); putInt(KEY_MOOD_SCORE, 45)
+                    putInt(KEY_APP_QUOTA_MIN, 12); putInt(KEY_TIMEOUT_CORNER_SEC, 25); putInt(KEY_PUNISHMENT_LINES_COUNT, 3)
+                    putBoolean(KEY_COUNTER_SCROLL, true); putBoolean(KEY_COMPULSIVE_BACK, false)
+                    putBoolean(KEY_FORCE_PAUSE_VIDEO, true); putBoolean(KEY_CLICK_STEAL_SHIELD, false)
+                    putBoolean(KEY_KEYBOARD_SABOTAGE, false); putBoolean(KEY_CLOSE_NOTIF_SHADE, false)
+                    putBoolean(KEY_BLOCK_QS, true); putBoolean(KEY_ANTI_LIKE_FOLLOW, true)
+                    putBoolean(KEY_TIMEOUT_CORNER, true); putBoolean(KEY_PUNISHMENT_LINES, false)
+                    putBoolean(KEY_DEAD_ZONE_KB, false); putBoolean(KEY_DODGE_FINGER, true)
+                    putBoolean(KEY_SURPRISE_QUIZ, true); putBoolean(KEY_FORCED_SLIDESHOW, true)
+                    putBoolean(KEY_SCREEN_BREAK_ENABLED, true); putInt(KEY_SCREEN_BREAK_MIN, 5)
+                    putBoolean(KEY_ENTRY_TOURNAMENT, true); putInt(KEY_ENTRY_TOURNAMENT_SIZE, 2)
+                    putBoolean(KEY_BLOCK_STORE_BUY, true); putBoolean(KEY_UNREMOVABLE_ALTAR, true)
+                    putBoolean(KEY_RPG_SEDUCTION, true)
                 }
                 SeverityPreset.STRICT -> {
-                    putInt(KEY_CHAOS_LEVEL, 9)
-                    putInt(KEY_MIN_INTERVAL, 18)
-                    putInt(KEY_MOOD_SCORE, 78)
-                    putInt(KEY_APP_QUOTA_MIN, 5)
-                    putInt(KEY_TIMEOUT_CORNER_SEC, 45)
-                    putInt(KEY_PUNISHMENT_LINES_COUNT, 4)
-                    putBoolean(KEY_COUNTER_SCROLL, true)
-                    putBoolean(KEY_COMPULSIVE_BACK, true)
-                    putBoolean(KEY_FORCE_PAUSE_VIDEO, true)
-                    putBoolean(KEY_CLICK_STEAL_SHIELD, true)
-                    putBoolean(KEY_KEYBOARD_SABOTAGE, true)
-                    putBoolean(KEY_CLOSE_NOTIF_SHADE, true)
-                    putBoolean(KEY_BLOCK_QS, true)
-                    putBoolean(KEY_ANTI_LIKE_FOLLOW, true)
-                    putBoolean(KEY_TIMEOUT_CORNER, true)
-                    putBoolean(KEY_PUNISHMENT_LINES, true)
-                    putBoolean(KEY_DEAD_ZONE_KB, true)
-                    putBoolean(KEY_BLACKLIST_ENABLED, true)
-                    putBoolean(KEY_DODGE_FINGER, true)
-                    putBoolean(KEY_SURPRISE_QUIZ, true)
-                    putBoolean(KEY_FORCED_SLIDESHOW, true)
-                    putBoolean(KEY_STRICT_SETTINGS_LOCK, true)
+                    putInt(KEY_CHAOS_LEVEL, 9); putInt(KEY_MIN_INTERVAL, 18); putInt(KEY_MOOD_SCORE, 78)
+                    putInt(KEY_APP_QUOTA_MIN, 5); putInt(KEY_TIMEOUT_CORNER_SEC, 40); putInt(KEY_PUNISHMENT_LINES_COUNT, 4)
+                    putBoolean(KEY_COUNTER_SCROLL, true); putBoolean(KEY_COMPULSIVE_BACK, true)
+                    putBoolean(KEY_FORCE_PAUSE_VIDEO, true); putBoolean(KEY_CLICK_STEAL_SHIELD, true)
+                    putBoolean(KEY_KEYBOARD_SABOTAGE, true); putBoolean(KEY_CLOSE_NOTIF_SHADE, true)
+                    putBoolean(KEY_BLOCK_QS, true); putBoolean(KEY_ANTI_LIKE_FOLLOW, true)
+                    putBoolean(KEY_TIMEOUT_CORNER, true); putBoolean(KEY_PUNISHMENT_LINES, true)
+                    putBoolean(KEY_DEAD_ZONE_KB, true); putBoolean(KEY_BLACKLIST_ENABLED, true)
+                    putBoolean(KEY_DODGE_FINGER, true); putBoolean(KEY_SURPRISE_QUIZ, true)
+                    putBoolean(KEY_FORCED_SLIDESHOW, true); putBoolean(KEY_STRICT_SETTINGS_LOCK, true)
+                    putBoolean(KEY_SCREEN_BREAK_ENABLED, true); putInt(KEY_SCREEN_BREAK_MIN, 3)
+                    putBoolean(KEY_ENTRY_TOURNAMENT, true); putInt(KEY_ENTRY_TOURNAMENT_SIZE, 4)
+                    putBoolean(KEY_BLOCK_STORE_BUY, true); putBoolean(KEY_UNREMOVABLE_ALTAR, true)
+                    putBoolean(KEY_RPG_SEDUCTION, true); putBoolean(KEY_DRAIN_BRIGHTNESS, true); putBoolean(KEY_DRAIN_QUALITY, true)
                 }
                 SeverityPreset.TYRANT -> {
-                    putInt(KEY_CHAOS_LEVEL, 10)
-                    putInt(KEY_MIN_INTERVAL, 10)
-                    putInt(KEY_MOOD_SCORE, 96)
-                    putInt(KEY_APP_QUOTA_MIN, 2)
-                    putInt(KEY_TIMEOUT_CORNER_SEC, 90)
-                    putInt(KEY_PUNISHMENT_LINES_COUNT, 6)
-                    putBoolean(KEY_COUNTER_SCROLL, true)
-                    putBoolean(KEY_COMPULSIVE_BACK, true)
-                    putBoolean(KEY_FORCE_PAUSE_VIDEO, true)
-                    putBoolean(KEY_CLICK_STEAL_SHIELD, true)
-                    putBoolean(KEY_KEYBOARD_SABOTAGE, true)
-                    putBoolean(KEY_CLOSE_NOTIF_SHADE, true)
-                    putBoolean(KEY_BLOCK_QS, true)
-                    putBoolean(KEY_ANTI_LIKE_FOLLOW, true)
-                    putBoolean(KEY_TIMEOUT_CORNER, true)
-                    putBoolean(KEY_PUNISHMENT_LINES, true)
-                    putBoolean(KEY_DEAD_ZONE_KB, true)
-                    putBoolean(KEY_BLACKLIST_ENABLED, true)
-                    putBoolean(KEY_DODGE_FINGER, true)
-                    putBoolean(KEY_SURPRISE_QUIZ, true)
-                    putBoolean(KEY_FORCED_SLIDESHOW, true)
-                    putBoolean(KEY_STRICT_SETTINGS_LOCK, true)
-                    putBoolean(KEY_ASK_PERM_GATE, true)
-                    putBoolean(KEY_APP_QUOTA_ENABLED, true)
-                    putBoolean(KEY_ANTI_DOOMSCROLL, true)
-                    putBoolean(KEY_WALLPAPER_PRANK, true)
-                    putBoolean(KEY_DRAGGED_POPUP, true)
-                    putBoolean(KEY_FULLSCREEN_FLASH, true)
+                    putInt(KEY_CHAOS_LEVEL, 10); putInt(KEY_MIN_INTERVAL, 10); putInt(KEY_MOOD_SCORE, 96)
+                    putInt(KEY_APP_QUOTA_MIN, 2); putInt(KEY_TIMEOUT_CORNER_SEC, 60); putInt(KEY_PUNISHMENT_LINES_COUNT, 5)
+                    putBoolean(KEY_COUNTER_SCROLL, true); putBoolean(KEY_COMPULSIVE_BACK, true)
+                    putBoolean(KEY_FORCE_PAUSE_VIDEO, true); putBoolean(KEY_CLICK_STEAL_SHIELD, true)
+                    putBoolean(KEY_KEYBOARD_SABOTAGE, true); putBoolean(KEY_CLOSE_NOTIF_SHADE, true)
+                    putBoolean(KEY_BLOCK_QS, true); putBoolean(KEY_ANTI_LIKE_FOLLOW, true)
+                    putBoolean(KEY_TIMEOUT_CORNER, true); putBoolean(KEY_PUNISHMENT_LINES, true)
+                    putBoolean(KEY_DEAD_ZONE_KB, true); putBoolean(KEY_BLACKLIST_ENABLED, true)
+                    putBoolean(KEY_DODGE_FINGER, true); putBoolean(KEY_SURPRISE_QUIZ, true)
+                    putBoolean(KEY_FORCED_SLIDESHOW, true); putBoolean(KEY_STRICT_SETTINGS_LOCK, true)
+                    putBoolean(KEY_ASK_PERM_GATE, true); putBoolean(KEY_APP_QUOTA_ENABLED, true)
+                    putBoolean(KEY_ANTI_DOOMSCROLL, true); putBoolean(KEY_WALLPAPER_PRANK, true)
+                    putBoolean(KEY_DRAGGED_POPUP, true); putBoolean(KEY_FULLSCREEN_FLASH, true)
+                    putBoolean(KEY_SCREEN_BREAK_ENABLED, true); putInt(KEY_SCREEN_BREAK_MIN, 3)
+                    putBoolean(KEY_ENTRY_TOURNAMENT, true); putInt(KEY_ENTRY_TOURNAMENT_SIZE, 8)
+                    putBoolean(KEY_BLOCK_STORE_BUY, true); putBoolean(KEY_UNREMOVABLE_ALTAR, true)
+                    putBoolean(KEY_RPG_SEDUCTION, true); putBoolean(KEY_DRAIN_BRIGHTNESS, true); putBoolean(KEY_DRAIN_QUALITY, true)
                 }
             }
         }
@@ -347,9 +344,20 @@ class DemonSettings(context: Context) {
     }
 
     fun adjustMood(delta: Int): Int {
-        val next = (prefs.getInt(KEY_MOOD_SCORE, 55) + delta).coerceIn(0, 100)
+        val next = (prefs.getInt(KEY_MOOD_SCORE, 65) + delta).coerceIn(0, 100)
         update { putInt(KEY_MOOD_SCORE, next) }
         return next
+    }
+
+    fun adjustPlayerStats(levelDelta: Int = 0, hpDelta: Int = 0, drainDelta: Int = 0) {
+        val nextLv = (prefs.getInt(KEY_PLAYER_LEVEL, 20) + levelDelta).coerceIn(1, 99)
+        val nextHp = (prefs.getInt(KEY_PLAYER_HP, 100) + hpDelta).coerceIn(0, 100)
+        val nextDrain = (prefs.getInt(KEY_ACTIVE_DRAIN_PCT, 0) + drainDelta).coerceIn(0, 100)
+        update {
+            putInt(KEY_PLAYER_LEVEL, nextLv)
+            putInt(KEY_PLAYER_HP, nextHp)
+            putInt(KEY_ACTIVE_DRAIN_PCT, nextDrain)
+        }
     }
 
     fun verifyExitPin(input: String): Boolean {
@@ -383,8 +391,8 @@ class DemonSettings(context: Context) {
         set(v) = update { putString(KEY_AVATAR_STYLE, v.id) }
 
     var avatarSizeDp: Int
-        get() = prefs.getInt(KEY_AVATAR_SIZE, 108).coerceIn(72, 156)
-        set(v) = update { putInt(KEY_AVATAR_SIZE, v.coerceIn(72, 156)) }
+        get() = prefs.getInt(KEY_AVATAR_SIZE, 114).coerceIn(72, 164)
+        set(v) = update { putInt(KEY_AVATAR_SIZE, v.coerceIn(72, 164)) }
 
     var cutoutIncludeHair: Boolean
         get() = prefs.getBoolean(KEY_CUTOUT_HAIR, true)
@@ -403,7 +411,7 @@ class DemonSettings(context: Context) {
         set(v) = update { putBoolean(KEY_INCLUDE_HIDDEN, v) }
 
     var chaosLevel: Int
-        get() = prefs.getInt(KEY_CHAOS_LEVEL, 7).coerceIn(1, 10)
+        get() = prefs.getInt(KEY_CHAOS_LEVEL, 8).coerceIn(1, 10)
         set(v) = update { putInt(KEY_CHAOS_LEVEL, v.coerceIn(1, 10)) }
 
     var minIntervalSec: Int
@@ -556,8 +564,8 @@ class DemonSettings(context: Context) {
         set(v) = update { putBoolean(KEY_TIMEOUT_CORNER, v) }
 
     var timeoutCornerSec: Int
-        get() = prefs.getInt(KEY_TIMEOUT_CORNER_SEC, 45).coerceIn(15, 300)
-        set(v) = update { putInt(KEY_TIMEOUT_CORNER_SEC, v.coerceIn(15, 300)) }
+        get() = prefs.getInt(KEY_TIMEOUT_CORNER_SEC, 40).coerceIn(10, 300)
+        set(v) = update { putInt(KEY_TIMEOUT_CORNER_SEC, v.coerceIn(10, 300)) }
 
     var punishmentLinesEnabled: Boolean
         get() = prefs.getBoolean(KEY_PUNISHMENT_LINES, true)
@@ -594,6 +602,51 @@ class DemonSettings(context: Context) {
     var forcedSlideshowEnabled: Boolean
         get() = prefs.getBoolean(KEY_FORCED_SLIDESHOW, true)
         set(v) = update { putBoolean(KEY_FORCED_SLIDESHOW, v) }
+
+    // v3.0 properties
+    var screenBreakEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SCREEN_BREAK_ENABLED, true)
+        set(v) = update { putBoolean(KEY_SCREEN_BREAK_ENABLED, v) }
+
+    var screenBreakMinutes: Int
+        get() = prefs.getInt(KEY_SCREEN_BREAK_MIN, 3).coerceIn(1, 30)
+        set(v) = update { putInt(KEY_SCREEN_BREAK_MIN, v.coerceIn(1, 30)) }
+
+    var screenBreakDurationSec: Int
+        get() = prefs.getInt(KEY_SCREEN_BREAK_DUR, 25).coerceIn(10, 120)
+        set(v) = update { putInt(KEY_SCREEN_BREAK_DUR, v.coerceIn(10, 120)) }
+
+    var entryTournamentEnabled: Boolean
+        get() = prefs.getBoolean(KEY_ENTRY_TOURNAMENT, true)
+        set(v) = update { putBoolean(KEY_ENTRY_TOURNAMENT, v) }
+
+    var entryTournamentSize: Int
+        get() = prefs.getInt(KEY_ENTRY_TOURNAMENT_SIZE, 4).let { if (it in listOf(2, 4, 8)) it else 4 }
+        set(v) = update { putInt(KEY_ENTRY_TOURNAMENT_SIZE, if (v in listOf(2, 4, 8)) v else 4) }
+
+    var blockStoreBuyEnabled: Boolean
+        get() = prefs.getBoolean(KEY_BLOCK_STORE_BUY, true)
+        set(v) = update { putBoolean(KEY_BLOCK_STORE_BUY, v) }
+
+    var unremovableAltarEnabled: Boolean
+        get() = prefs.getBoolean(KEY_UNREMOVABLE_ALTAR, true)
+        set(v) = update { putBoolean(KEY_UNREMOVABLE_ALTAR, v) }
+
+    var altarDurationSec: Int
+        get() = prefs.getInt(KEY_ALTAR_DURATION_SEC, 60).coerceIn(20, 180)
+        set(v) = update { putInt(KEY_ALTAR_DURATION_SEC, v.coerceIn(20, 180)) }
+
+    var rpgSeductionEnabled: Boolean
+        get() = prefs.getBoolean(KEY_RPG_SEDUCTION, true)
+        set(v) = update { putBoolean(KEY_RPG_SEDUCTION, v) }
+
+    var drainBrightnessEnabled: Boolean
+        get() = prefs.getBoolean(KEY_DRAIN_BRIGHTNESS, true)
+        set(v) = update { putBoolean(KEY_DRAIN_BRIGHTNESS, v) }
+
+    var drainQualityEnabled: Boolean
+        get() = prefs.getBoolean(KEY_DRAIN_QUALITY, true)
+        set(v) = update { putBoolean(KEY_DRAIN_QUALITY, v) }
 
     companion object {
         const val DEFAULT_EXIT_PIN = "100205"
@@ -664,6 +717,21 @@ class DemonSettings(context: Context) {
         private const val KEY_DODGE_FINGER = "dodge_finger"
         private const val KEY_SURPRISE_QUIZ = "surprise_quiz"
         private const val KEY_FORCED_SLIDESHOW = "forced_slideshow"
+
+        private const val KEY_SCREEN_BREAK_ENABLED = "screen_break_enabled"
+        private const val KEY_SCREEN_BREAK_MIN = "screen_break_min"
+        private const val KEY_SCREEN_BREAK_DUR = "screen_break_dur"
+        private const val KEY_ENTRY_TOURNAMENT = "entry_tournament"
+        private const val KEY_ENTRY_TOURNAMENT_SIZE = "entry_tournament_size"
+        private const val KEY_BLOCK_STORE_BUY = "block_store_buy"
+        private const val KEY_UNREMOVABLE_ALTAR = "unremovable_altar"
+        private const val KEY_ALTAR_DURATION_SEC = "altar_duration_sec"
+        private const val KEY_RPG_SEDUCTION = "rpg_seduction"
+        private const val KEY_DRAIN_BRIGHTNESS = "drain_brightness"
+        private const val KEY_DRAIN_QUALITY = "drain_quality"
+        private const val KEY_PLAYER_LEVEL = "player_level"
+        private const val KEY_PLAYER_HP = "player_hp"
+        private const val KEY_ACTIVE_DRAIN_PCT = "active_drain_pct"
 
         val DEFAULT_WATCHED_PKGS = setOf(
             "com.zhiliaoapp.musically",

@@ -152,6 +152,66 @@ object MediaFolderHelper {
         return src.contentUri ?: src.filePath?.let { Uri.fromFile(File(it)) }
     }
 
+    data class TournamentMediaEntry(val label: String, val bitmap: Bitmap, val filePath: String? = null, val contentUri: Uri? = null)
+
+    /** Loads up to [count] photos for #69 Media Duel / Tournament (supports hidden `.dotfolders` & SAF) */
+    fun loadTournamentEntries(context: Context, cfg: DemonConfigSnapshot, count: Int = 4, maxDimPx: Int = 720): List<TournamentMediaEntry> {
+        val out = ArrayList<TournamentMediaEntry>()
+        if (cfg.mediaFolderPath.isNotBlank()) {
+            val dir = File(cfg.mediaFolderPath)
+            if (dir.exists() && dir.isDirectory) {
+                val files = listMediaInFolder(dir, cfg.includeHiddenFiles, videos = false).shuffled()
+                for (f in files.take(count)) {
+                    decodeSampledFile(f, maxDimPx)?.let { bmp ->
+                        out.add(TournamentMediaEntry(f.nameWithoutExtension.take(18), bmp, filePath = f.absolutePath))
+                    }
+                }
+            }
+        }
+        if (out.isEmpty() && cfg.mediaTreeUri.isNotBlank()) {
+            try {
+                val tree = DocumentFile.fromTreeUri(context, Uri.parse(cfg.mediaTreeUri))
+                val imgs = tree?.listFiles()?.filter { it.isFile && isImageFileName(it.name.orEmpty()) }.orEmpty().shuffled()
+                for (doc in imgs.take(count)) {
+                    decodeSampledUri(context, doc.uri, maxDimPx)?.let { bmp ->
+                        out.add(TournamentMediaEntry(doc.name.orEmpty().substringBeforeLast('.').take(18), bmp, contentUri = doc.uri))
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        // Fallback if folder has < 2 images: duplicate avatar/found photo so Duel always works smoothly!
+        if (out.isEmpty()) {
+            loadRandomMediaBitmap(context, cfg, maxDimPx)?.let { bmp ->
+                out.add(TournamentMediaEntry("Portrait #1", bmp))
+            }
+        }
+        return out
+    }
+
+    fun applySpecificWallpaper(context: Context, cfg: DemonConfigSnapshot, filePath: String?, contentUri: Uri?): Boolean {
+        val bmp = when {
+            filePath != null -> decodeSampledFile(File(filePath), 1440)
+            contentUri != null -> decodeSampledUri(context, contentUri, 1440)
+            else -> null
+        } ?: return false
+        return try {
+            backupOriginalWallpaperIfNeeded(context)
+            val wm = WallpaperManager.getInstance(context)
+            val flag = when (cfg.wallpaperTarget) {
+                WallpaperTarget.HOME -> WallpaperManager.FLAG_SYSTEM
+                WallpaperTarget.LOCK -> WallpaperManager.FLAG_LOCK
+                WallpaperTarget.BOTH -> WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
+            }
+            wm.setBitmap(bmp, null, true, flag)
+            true
+        } catch (_: Throwable) {
+            false
+        } finally {
+            if (!bmp.isRecycled) bmp.recycle()
+        }
+    }
+
     /** Loads up to [count] distinct random photos for #61 Forced Slideshow */
     fun loadMultipleRandomBitmaps(context: Context, cfg: DemonConfigSnapshot, count: Int = 4, maxDimPx: Int = 1080): List<Bitmap> {
         val out = ArrayList<Bitmap>()

@@ -96,6 +96,8 @@ class DemonAccessibilityService : AccessibilityService() {
     private val appGraceUntilMs = HashMap<String, Long>()
     private val appSessionSeconds = HashMap<String, Long>()
     private var lastSessionTickMs = System.currentTimeMillis()
+    private var continuousScreenSeconds = 0L
+    private var screenOffSinceMs = 0L
     private var screenW = 1080f
     private var screenH = 2400f
 
@@ -124,6 +126,7 @@ class DemonAccessibilityService : AccessibilityService() {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     screenInteractive = false
+                    screenOffSinceMs = System.currentTimeMillis()
                     overlayMgr?.getCensorView()?.clearImmediate()
                     workerHandler?.removeCallbacks(visionTick)
                     mainHandler.removeCallbacks(prankTick)
@@ -131,6 +134,10 @@ class DemonAccessibilityService : AccessibilityService() {
                 }
                 Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
                     screenInteractive = true
+                    if (screenOffSinceMs > 0L && System.currentTimeMillis() - screenOffSinceMs > 90_000L) {
+                        continuousScreenSeconds = 0L
+                    }
+                    lastSessionTickMs = System.currentTimeMillis()
                     if (config?.enabled == true) {
                         scheduleVisionLoop(200L)
                         schedulePrankLoop(4_000L)
@@ -226,19 +233,27 @@ class DemonAccessibilityService : AccessibilityService() {
             syncActivePackageFromRoot(cfg)
 
             val now = System.currentTimeMillis()
-            // Update session usage for watched apps (#8) + auto-escalate mood if user keeps scrolling/watching!
-            val dtSec = ((now - lastSessionTickMs) / 1000L).coerceIn(1L, 30L)
+            // Update continuous screen timer (#68 — default 3 min!) & watched app quota (#8)
+            val dtSec = ((now - lastSessionTickMs) / 1000L).coerceIn(1L, 15L)
             lastSessionTickMs = now
+            val modalOpen = overlayMgr?.isAnyModalActive() == true
+
+            if (cfg.screenBreakEnabled && !modalOpen && currentPkg.isNotBlank() && currentPkg != packageName) {
+                continuousScreenSeconds += dtSec
+                if (continuousScreenSeconds >= cfg.screenBreakMinutes * 60L) {
+                    continuousScreenSeconds = 0L
+                    overlayMgr?.showScreenBreakOverlay(cfg.screenBreakDurationSec, cfg)
+                }
+            }
+
             val isWatchedOrGame = currentPkg.isNotBlank() && currentPkg != packageName &&
                 (cfg.watchedPackages.contains(currentPkg) || isGamePackage(currentPkg))
-            if (isWatchedOrGame) {
+            if (isWatchedOrGame && !modalOpen) {
                 val total = (appSessionSeconds[currentPkg] ?: 0L) + dtSec
                 appSessionSeconds[currentPkg] = total
-                // Ramp up #6 GPU Sabotage intensity quickly over 90s!
                 val progress = (0.35f + (total / 90f) * 0.65f).coerceIn(0.35f, 1.0f)
                 overlayMgr?.getCensorView()?.sabotageProgress = progress
 
-                // Auto mood escalation every ~9s while staying in watched/game apps
                 if (total % 9L < dtSec) {
                     settings.adjustMood(+2)
                 }
@@ -251,7 +266,8 @@ class DemonAccessibilityService : AccessibilityService() {
                         overlayMgr?.showTimeoutCornerWithVideo(
                             reason = "Quota dépassé (${cfg.appQuotaMinutes} min) ! Direction AU COIN ! 😈",
                             durationSec = cfg.timeoutCornerSec,
-                            cfg = cfg
+                            cfg = cfg,
+                            originPkg = currentPkg
                         )
                     } else {
                         overlayMgr?.showLockShieldWithNegotiation(
@@ -368,9 +384,9 @@ class DemonAccessibilityService : AccessibilityService() {
                 }
                 if (lower.contains("inputmethod") || lower.contains("gboard") || lower.contains("swiftkey")) return
 
-                // #38 Timeout Corner Anti-Escape
+                // #38 Timeout Corner Anti-Escape (only resets if user actually changes to a DIFFERENT app, max 2x!)
                 if (overlayMgr?.isTimeoutCornerActive() == true && pkg != packageName) {
-                    overlayMgr?.resetTimeoutCountdownIfEscaping()
+                    overlayMgr?.resetTimeoutCountdownIfEscaping(pkg)
                     return
                 }
 
@@ -502,8 +518,8 @@ class DemonAccessibilityService : AccessibilityService() {
                         onForegroundAppChanged(pkgRaw, cfg)
                     }
                 }
-                // #31 & #37 Click-Steal / Anti-Like & Follow Shield across ALL apps (not just watchedPackages!)
-                if ((cfg.clickStealShieldEnabled || cfg.antiLikeFollowEnabled) &&
+                // #31, #37 & #71 Click-Steal / Anti-Like / Anti-Buy & Install Shield across ALL apps
+                if ((cfg.clickStealShieldEnabled || cfg.antiLikeFollowEnabled || cfg.blockStoreBuyEnabled) &&
                     currentPkg.isNotBlank() && currentPkg != packageName && !isLauncherPackage(currentPkg)
                 ) {
                     val cooldown = (14_000L - cfg.chaosLevel * 850L).coerceAtLeast(5_500L)
@@ -633,16 +649,19 @@ class DemonAccessibilityService : AccessibilityService() {
         overlayMgr?.say("PAUSE ! Regarde-moi d'abord ! ⏸️😈", 3_200L)
     }
 
-    /** #31 & #37 Scans UI tree for Like / Follow / Send buttons and teleports a Demon shield onto them */
+    /** #31, #37 & #71 Scans UI tree for Like / Follow / Send / Buy / Install buttons and teleports a Demon shield onto them */
     private fun scanAndShieldSensitiveButton(cfg: DemonConfigSnapshot) {
         try {
             val root = rootInActiveWindow ?: return
             val keys = ArrayList<String>()
+            if (cfg.blockStoreBuyEnabled) {
+                keys.addAll(listOf("installer", "install", "acheter", "buy", "payer", "pay", "commander", "obtenir"))
+            }
             if (cfg.antiLikeFollowEnabled) {
                 keys.addAll(listOf("j'aime", "like", "s'abonner", "suivre", "follow", "subscribe"))
             }
             if (cfg.clickStealShieldEnabled) {
-                keys.addAll(listOf("envoyer", "send", "commenter", "comment", "acheter", "buy"))
+                keys.addAll(listOf("envoyer", "send", "commenter", "comment"))
             }
             val found = findFirstMatchingNode(root, keys)
             if (found != null) {
@@ -650,12 +669,27 @@ class DemonAccessibilityService : AccessibilityService() {
                 found.getBoundsInScreen(r)
                 found.recycle()
                 if (r.width() > 24 && r.height() > 24 && r.top > 80 && r.bottom < screenH - 40) {
-                    overlayMgr?.showClickStealShield(r, "Interdit d'appuyer là-dessus ! 😈", 8_500L)
+                    val msg = if (cfg.blockStoreBuyEnabled && isStorePackage(currentPkg.lowercase())) {
+                        "Tu n'installes et n'achètes RIEN sans moi ! 😈"
+                    } else {
+                        "Interdit d'appuyer là-dessus ! 😈"
+                    }
+                    overlayMgr?.showClickStealShield(r, msg, 9_000L)
                 }
             }
             root.recycle()
         } catch (_: Throwable) {
         }
+    }
+
+    private fun isStorePackage(lowerPkg: String): Boolean {
+        return lowerPkg == "com.android.vending" ||
+            lowerPkg.contains("galaxyapps") ||
+            lowerPkg.contains("mipicks") ||
+            lowerPkg.contains("getapps") ||
+            lowerPkg.contains("appgallery") ||
+            lowerPkg.contains("aurora.store") ||
+            lowerPkg.contains("aptoide")
     }
 
     private fun findFirstMatchingNode(node: AccessibilityNodeInfo, keywords: List<String>, depth: Int = 0): AccessibilityNodeInfo? {
@@ -700,6 +734,19 @@ class DemonAccessibilityService : AccessibilityService() {
             return
         }
 
+        // #71 Bloqueur Play Store / App Stores
+        if (cfg.blockStoreBuyEnabled && isStorePackage(pkg.lowercase()) && now > grace) {
+            settings.adjustMood(+8)
+            overlayMgr?.showLockShieldWithNegotiation(
+                title = "Boutique interdite ! 🛒😈",
+                reason = "Tu n'installes et n'achètes aucune appli sans la permission de ${cfg.avatarName} !",
+                pkg = pkg,
+                allowNegotiation = !cfg.challengeLocked,
+                cfg = cfg
+            )
+            return
+        }
+
         // #44 Liste Noire Totale (Confiscation sans négociation!)
         if (cfg.blacklistEnabled && cfg.blacklistPackages.contains(pkg)) {
             settings.adjustMood(+10)
@@ -708,7 +755,8 @@ class DemonAccessibilityService : AccessibilityService() {
                 overlayMgr?.showTimeoutCornerWithVideo(
                     reason = "Appli sur Liste Noire ! Direction AU COIN ! 😈",
                     durationSec = cfg.timeoutCornerSec,
-                    cfg = cfg
+                    cfg = cfg,
+                    originPkg = pkg
                 )
             } else {
                 overlayMgr?.showLockShieldWithNegotiation(
@@ -770,11 +818,16 @@ class DemonAccessibilityService : AccessibilityService() {
             return
         }
 
-        // #7 « Demande la permission d'abord ! »
-        if (cfg.askPermissionGate && isWatched && now > grace) {
+        // #69 Taxe d'entrée : Duel / Tournoi de X médias (ou #7 Permission classique)
+        if (isWatched && now > grace) {
             val label = resolveAppLabel(pkg)
-            overlayMgr?.showPermissionGatePopup(label, pkg, cfg)
-            return
+            if (cfg.entryTournamentEnabled) {
+                overlayMgr?.showMediaTournamentGate(label, pkg, cfg.entryTournamentSize, cfg)
+                return
+            } else if (cfg.askPermissionGate) {
+                overlayMgr?.showPermissionGatePopup(label, pkg, cfg)
+                return
+            }
         }
 
         // #22 Commentaires en direct selon l'appli ouverte
@@ -831,13 +884,24 @@ class DemonAccessibilityService : AccessibilityService() {
                 overlayMgr?.showTimeoutCornerWithVideo(
                     reason = "${cfg.avatarName} te met AU COIN ! Regarde la vidéo jusqu'au bout 😈",
                     durationSec = cfg.timeoutCornerSec,
-                    cfg = cfg
+                    cfg = cfg,
+                    originPkg = currentPkg
                 )
             }
             actions.add(cornerAction)
             if (cfg.moodScore >= 70 || cfg.chaosLevel >= 9) actions.add(cornerAction)
         }
-        if (cfg.clickStealShieldEnabled || cfg.antiLikeFollowEnabled) {
+        if (cfg.unremovableAltarEnabled) {
+            val altarAction: () -> Unit = { overlayMgr?.showUnremovableAltar(cfg) }
+            actions.add(altarAction)
+            if (cfg.chaosLevel >= 8) actions.add(altarAction)
+        }
+        if (cfg.rpgSeductionEnabled) {
+            val rpgAction: () -> Unit = { overlayMgr?.showSeductionBattleOverlay(cfg) }
+            actions.add(rpgAction)
+            if (cfg.chaosLevel >= 7) actions.add(rpgAction)
+        }
+        if (cfg.clickStealShieldEnabled || cfg.antiLikeFollowEnabled || cfg.blockStoreBuyEnabled) {
             actions.add { scanAndShieldSensitiveButton(cfg) }
         }
         if (actions.isEmpty()) return
@@ -860,9 +924,14 @@ class DemonAccessibilityService : AccessibilityService() {
             "slideshow" -> overlayMgr?.showForcedSlideshow(cfg)
             "corner" -> overlayMgr?.showTimeoutCornerWithVideo(
                 reason = "Punition Au Coin (vidéo de ton dossier en boucle) 😈",
-                durationSec = cfg.timeoutCornerSec.coerceAtMost(25),
-                cfg = cfg
+                durationSec = cfg.timeoutCornerSec.coerceAtMost(20),
+                cfg = cfg,
+                originPkg = currentPkg
             )
+            "break3m" -> overlayMgr?.showScreenBreakOverlay(cfg.screenBreakDurationSec.coerceAtMost(20), cfg)
+            "tournament" -> overlayMgr?.showMediaTournamentGate("Test Appli", "test.demo", cfg.entryTournamentSize, cfg)
+            "altar" -> overlayMgr?.showUnremovableAltar(cfg)
+            "rpg" -> overlayMgr?.showSeductionBattleOverlay(cfg)
             "lines" -> overlayMgr?.showPunishmentLinesOverlay(cfg)
             "deadzone" -> overlayMgr?.showDeadZoneKeyboardOverlay(18)
             "quiz" -> overlayMgr?.showSurpriseQuizOverlay(cfg)

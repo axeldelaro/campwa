@@ -3,7 +3,11 @@ package com.demonpet.app.overlay
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.Typeface
@@ -11,8 +15,10 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -33,6 +39,7 @@ import com.demonpet.app.config.DemonConfigSnapshot
 import com.demonpet.app.config.DemonSettings
 import com.demonpet.app.media.MediaFolderHelper
 import java.io.File
+import java.text.Normalizer
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.random.Random
@@ -70,16 +77,35 @@ class DemonOverlayManager(
     private var flashOverlayView: View? = null
     private var flashBitmap: Bitmap? = null
     private var activeModalView: View? = null
+    private var modalToken = 0
+
     private var deadZoneView: View? = null
+    private var deadZoneTickRunnable: Runnable? = null
+
     private var clickShieldView: View? = null
+    private var clickShieldHideRunnable: Runnable? = null
+
     private var slideshowView: View? = null
     private val slideshowBitmaps = ArrayList<Bitmap>()
+    private var slideshowStepRunnable: Runnable? = null
+
+    private var altarView: View? = null
+    private var altarBitmap: Bitmap? = null
+    private var altarTickRunnable: Runnable? = null
+    private var lastAltarTrapMs = 0L
+
+    private var drainOverlayView: View? = null
+    private var drainClearRunnable: Runnable? = null
+
     private var activeTimeoutVideoView: VideoView? = null
     @Volatile
     private var timeoutCornerActive = false
-    private var timeoutRemainingSec = 0
-    private var timeoutTotalSec = 45
+    private var timeoutEndElapsedMs = 0L
+    private var timeoutTotalSec = 40
+    private var timeoutResetCount = 0
+    private var timeoutOriginPkg = ""
     private var timeoutTimerTv: TextView? = null
+    private var timeoutTickRunnable: Runnable? = null
 
     private var physicsRunning = false
     private var lastFrameNs = 0L
@@ -149,6 +175,8 @@ class DemonOverlayManager(
             dismissDeadZone()
             dismissClickShield()
             dismissSlideshow()
+            dismissUnremovableAltar()
+            clearDrainVisualOverlay()
             clearAllPopups()
             petView?.let { v -> try { wm.removeViewImmediate(v) } catch (_: Throwable) {} }
             petView = null
@@ -160,14 +188,33 @@ class DemonOverlayManager(
 
     fun isTimeoutCornerActive(): Boolean = timeoutCornerActive
 
-    fun resetTimeoutCountdownIfEscaping() {
+    fun isAnyModalActive(): Boolean = activeModalView != null
+
+    /**
+     * Only resets #38 Timeout Corner if user ACTUALLY switches away to another package voluntarily,
+     * capped at max 2 resets so the timer can NEVER trap the user forever!
+     */
+    fun resetTimeoutCountdownIfEscaping(newPkg: String) {
         mainHandler.post {
-            if (timeoutCornerActive && activeModalView != null) {
-                timeoutRemainingSec = timeoutTotalSec
-                timeoutTimerTv?.text = "⏳ $timeoutRemainingSec s (tentative de fuite = chrono remis à zéro !)"
-                vibrateShort(90L)
-                petView?.say("Tu essaies de fuir ?! Chrono remis à zéro ! 😈", 3_500L)
-            }
+            if (!timeoutCornerActive || activeModalView == null) return@post
+            if (newPkg.isBlank() || newPkg == timeoutOriginPkg) return@post
+            if (timeoutResetCount >= 2) return@post
+            timeoutResetCount++
+            timeoutEndElapsedMs = SystemClock.elapsedRealtime() + timeoutTotalSec * 1000L
+            timeoutTimerTv?.text = "⏳ ${timeoutTotalSec}s (tentative de fuite #$timeoutResetCount/2 = chrono remis !)"
+            vibrateShort(90L)
+            petView?.say("Tu essaies de fuir ?! Chrono remis à zéro ! 😈", 3_200L)
+        }
+    }
+
+    /** Always re-raises the living Demon Pet above any modal so 20-tap + 100205 ALWAYS works! */
+    private fun bringPetToFront() {
+        val v = petView ?: return
+        val p = petParams ?: return
+        try {
+            wm.removeViewImmediate(v)
+            wm.addView(v, p)
+        } catch (_: Throwable) {
         }
     }
 
@@ -882,12 +929,13 @@ class DemonOverlayManager(
         return card
     }
 
-    private fun presentModal(card: LinearLayout, focusable: Boolean) {
+    private fun presentModal(card: LinearLayout, focusable: Boolean, keepPetOnTop: Boolean = true) {
         dismissModal()
+        modalToken++
         try {
             val backdrop = FrameLayout(context).apply {
-                setBackgroundColor(Color.argb(205, 9, 9, 12))
-                setPadding(dp(22), dp(22), dp(22), dp(22))
+                setBackgroundColor(Color.argb(214, 8, 7, 14))
+                setPadding(dp(20), dp(20), dp(20), dp(20))
             }
             backdrop.addView(card, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
             val flags = if (focusable) {
@@ -904,13 +952,18 @@ class DemonOverlayManager(
             )
             wm.addView(backdrop, params)
             activeModalView = backdrop
+            if (keepPetOnTop) bringPetToFront()
         } catch (_: Throwable) {
         }
     }
 
     fun dismissModal() {
+        modalToken++
         timeoutCornerActive = false
         timeoutTimerTv = null
+        timeoutTickRunnable?.let { mainHandler.removeCallbacks(it) }
+        timeoutTickRunnable = null
+        petView?.seductionAuraActive = false
         try { activeTimeoutVideoView?.stopPlayback() } catch (_: Throwable) {}
         activeTimeoutVideoView = null
         val v = activeModalView ?: return
@@ -999,24 +1052,30 @@ class DemonOverlayManager(
                 clickShieldView = box
                 petView?.say(label, 3_000L)
                 vibrateShort(30L)
-                mainHandler.postDelayed({ dismissClickShield() }, durationMs)
+                val hideRun = Runnable { if (clickShieldView === box) dismissClickShield() }
+                clickShieldHideRunnable = hideRun
+                mainHandler.postDelayed(hideRun, durationMs)
             } catch (_: Throwable) {
             }
         }
     }
 
     fun dismissClickShield() {
+        clickShieldHideRunnable?.let { mainHandler.removeCallbacks(it) }
+        clickShieldHideRunnable = null
         val v = clickShieldView ?: return
         clickShieldView = null
         try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
     }
 
-    // ==================== #42 DEAD-ZONE KEYBOARD BLOCKER ====================
+    // ==================== #42 DEAD-ZONE KEYBOARD BLOCKER (MONOTONIC CLOCK!) ====================
 
     fun showDeadZoneKeyboardOverlay(durationSec: Int = 25) {
         mainHandler.post {
             dismissDeadZone()
             try {
+                val safeSec = durationSec.coerceIn(5, 90)
+                val endElapsed = SystemClock.elapsedRealtime() + safeSec * 1000L
                 val zoneH = (screenH * 0.44f).toInt().coerceAtLeast(dp(260))
                 val panel = LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
@@ -1048,7 +1107,7 @@ class DemonOverlayManager(
                     gravity = Gravity.CENTER
                 })
                 val timerTv = TextView(context).apply {
-                    text = "Libération dans ${durationSec}s…"
+                    text = "Libération dans ${safeSec}s…"
                     setTextColor(Color.rgb(253, 164, 175))
                     textSize = 13f
                     gravity = Gravity.CENTER
@@ -1066,43 +1125,64 @@ class DemonOverlayManager(
 
                 wm.addView(panel, params)
                 deadZoneView = panel
+                bringPetToFront()
                 vibrateShort(60L)
-                petView?.say("Clavier confisqué ${durationSec}s ! 😈", 3_500L)
+                petView?.say("Clavier confisqué ${safeSec}s ! 😈", 3_500L)
 
-                var rem = durationSec
                 val tick = object : Runnable {
                     override fun run() {
                         if (deadZoneView !== panel) return
-                        rem--
-                        if (rem <= 0) {
+                        val remMs = endElapsed - SystemClock.elapsedRealtime()
+                        if (remMs <= 0L) {
                             dismissDeadZone()
                         } else {
-                            timerTv.text = "Libération dans ${rem}s…"
-                            mainHandler.postDelayed(this, 1_000L)
+                            val remSec = ((remMs + 999L) / 1000L).toInt()
+                            timerTv.text = "Libération dans ${remSec}s…"
+                            mainHandler.postDelayed(this, 500L)
                         }
                     }
                 }
-                mainHandler.postDelayed(tick, 1_000L)
+                deadZoneTickRunnable = tick
+                mainHandler.postDelayed(tick, 500L)
             } catch (_: Throwable) {
             }
         }
     }
 
     fun dismissDeadZone() {
+        deadZoneTickRunnable?.let { mainHandler.removeCallbacks(it) }
+        deadZoneTickRunnable = null
         val v = deadZoneView ?: return
         deadZoneView = null
         try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
     }
 
-    // ==================== #38 "AU COIN !" STRICT TIMEOUT WITH VIDEO FROM FOLDER ====================
+    // ==================== #38 "AU COIN !" & #68 PAUSE 3 MIN (BULLETPROOF ELAPSEDREALTIME TIMER!) ====================
 
-    fun showTimeoutCornerWithVideo(reason: String, durationSec: Int, cfg: DemonConfigSnapshot) {
+    fun showScreenBreakOverlay(durationSec: Int, cfg: DemonConfigSnapshot) {
+        showTimeoutCornerWithVideo(
+            reason = "⏱️ ${cfg.screenBreakMinutes} min d'écran d'affilée ! Pause obligatoire !",
+            durationSec = durationSec,
+            cfg = cfg,
+            originPkg = "",
+            titleText = "⏱️ PAUSE ÉCRAN OBLIGATOIRE (#68)",
+            allowEscapeReset = false
+        )
+    }
+
+    fun showTimeoutCornerWithVideo(
+        reason: String,
+        durationSec: Int,
+        cfg: DemonConfigSnapshot,
+        originPkg: String = "",
+        titleText: String = "😈 AU COIN ! PUNITION !",
+        allowEscapeReset: Boolean = true
+    ) {
         mainHandler.post {
             if (activeModalView != null) return@post
-            val total = durationSec.coerceIn(10, 300)
-            timeoutTotalSec = total
-            timeoutRemainingSec = total
-            timeoutCornerActive = true
+            // IMPORTANT FIX: clean state FIRST, THEN build modal & presentModal, THEN set active flags + start monotonic clock!
+            dismissModal()
+            val total = durationSec.coerceIn(8, 300)
 
             val card = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
@@ -1115,12 +1195,24 @@ class DemonOverlayManager(
                 }
             }
 
+            // Built-in emergency 20-tap on title as well (in addition to floating Demon always on top!)
+            var titleTapCount = 0
+            var titleTapMs = 0L
             card.addView(TextView(context).apply {
-                text = "😈 AU COIN ! PUNITION !"
+                text = titleText
                 setTextColor(Color.rgb(253, 164, 175))
                 textSize = 18f
                 typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
+                setOnClickListener {
+                    val now = System.currentTimeMillis()
+                    titleTapCount = if (now - titleTapMs <= 1650L) titleTapCount + 1 else 1
+                    titleTapMs = now
+                    if (titleTapCount >= DemonSettings.REQUIRED_EXIT_TAPS) {
+                        titleTapCount = 0
+                        showSecretExitPinDialog()
+                    }
+                }
             })
             card.addView(TextView(context).apply {
                 text = reason
@@ -1130,7 +1222,6 @@ class DemonOverlayManager(
                 setPadding(0, dp(4), 0, dp(10))
             })
 
-            // Media frame: plays random VIDEO from user's folder (hidden included!) in loop, or photo fallback
             val mediaBox = FrameLayout(context).apply {
                 background = GradientDrawable().apply {
                     cornerRadius = dp(16).toFloat()
@@ -1138,31 +1229,68 @@ class DemonOverlayManager(
                 }
                 clipToOutline = true
             }
-            card.addView(mediaBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(260)).apply {
+            card.addView(mediaBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(250)).apply {
                 bottomMargin = dp(12)
             })
 
+            val timerTv = TextView(context).apply {
+                text = "⏳ ${total}s restantes"
+                setTextColor(Color.WHITE)
+                textSize = 17f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+            }
+            card.addView(timerTv)
+
+            card.addView(TextView(context).apply {
+                text = if (allowEscapeReset) {
+                    "Reste ici jusqu'à 0s ! (Urgence : 20 taps sur le démon + 100205)"
+                } else {
+                    "Repose tes yeux jusqu'à la fin du chrono (Urgence : 20 taps + 100205)"
+                }
+                setTextColor(Color.rgb(161, 161, 175))
+                textSize = 11f
+                gravity = Gravity.CENTER
+                setPadding(0, dp(6), 0, 0)
+            })
+
+            // 1) Attach modal FIRST (this calls dismissModal() cleanly BEFORE setting active flags!)
+            presentModal(card, focusable = false, keepPetOnTop = true)
+            val myToken = modalToken
+
+            // 2) NOW arm the active flags & monotonic SystemClock timer (impossible to freeze!)
+            timeoutTotalSec = total
+            timeoutResetCount = 0
+            timeoutOriginPkg = originPkg
+            timeoutEndElapsedMs = SystemClock.elapsedRealtime() + total * 1000L
+            timeoutTimerTv = timerTv
+            timeoutCornerActive = allowEscapeReset
+
             fun showPhotoFallbackIn(box: FrameLayout) {
+                if (modalToken != myToken) return
                 box.removeAllViews()
                 val iv = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
                 box.addView(iv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
                 Thread {
                     val bmp = MediaFolderHelper.loadRandomMediaBitmap(context, cfg, 900)
-                    mainHandler.post { if (bmp != null && timeoutCornerActive) iv.setImageBitmap(bmp) }
+                    mainHandler.post {
+                        if (bmp != null && modalToken == myToken) iv.setImageBitmap(bmp)
+                        else bmp?.let { if (!it.isRecycled) it.recycle() }
+                    }
                 }.start()
             }
 
+            // 3) Start looping video AFTER modal is mounted
             val videoSrc = MediaFolderHelper.pickRandomVideoSource(context, cfg)
             if (videoSrc != null) {
                 val vv = VideoView(context).apply {
-                    if (videoSrc.filePath != null) {
-                        setVideoPath(videoSrc.filePath)
-                    } else if (videoSrc.contentUri != null) {
-                        setVideoURI(videoSrc.contentUri)
-                    }
+                    if (videoSrc.filePath != null) setVideoPath(videoSrc.filePath)
+                    else if (videoSrc.contentUri != null) setVideoURI(videoSrc.contentUri)
                     setOnPreparedListener { mp ->
-                        mp.isLooping = true
-                        start()
+                        if (modalToken == myToken) {
+                            mp.isLooping = true
+                            start()
+                        }
                     }
                     setOnErrorListener { _, _, _ ->
                         activeTimeoutVideoView = null
@@ -1176,51 +1304,44 @@ class DemonOverlayManager(
                 showPhotoFallbackIn(mediaBox)
             }
 
-            val timerTv = TextView(context).apply {
-                text = "⏳ $timeoutRemainingSec s restantes"
-                setTextColor(Color.WHITE)
-                textSize = 16f
-                typeface = Typeface.DEFAULT_BOLD
-                gravity = Gravity.CENTER
-            }
-            timeoutTimerTv = timerTv
-            card.addView(timerTv)
-
-            card.addView(TextView(context).apply {
-                text = "Ne quitte pas l'écran sinon le chrono repart à zéro ! (Sortie d'urgence : 20 taps sur le démon + 100205)"
-                setTextColor(Color.rgb(161, 161, 175))
-                textSize = 11f
-                gravity = Gravity.CENTER
-                setPadding(0, dp(6), 0, 0)
-            })
-
-            presentModal(card, focusable = false)
-            vibrateShort(90L)
+            vibrateShort(85L)
 
             val tick = object : Runnable {
                 override fun run() {
-                    if (!timeoutCornerActive || activeModalView == null) return
-                    timeoutRemainingSec--
-                    if (timeoutRemainingSec <= 0) {
+                    if (modalToken != myToken || activeModalView == null) return
+                    val remMs = timeoutEndElapsedMs - SystemClock.elapsedRealtime()
+                    if (remMs <= 0L) {
                         dismissModal()
                         settings.adjustMood(-10)
-                        petView?.say("Punition terminée… tiens-toi bien ! 😈", 3_800L)
+                        petView?.say("Chrono terminé… tiens-toi bien ! 😈", 3_600L)
                     } else {
-                        timeoutTimerTv?.text = "⏳ $timeoutRemainingSec s restantes"
-                        mainHandler.postDelayed(this, 1_000L)
+                        val remSec = ((remMs + 999L) / 1000L).toInt()
+                        timerTv.text = "⏳ ${remSec}s restantes"
+                        mainHandler.postDelayed(this, 400L)
                     }
                 }
             }
-            mainHandler.postDelayed(tick, 1_000L)
+            timeoutTickRunnable = tick
+            mainHandler.postDelayed(tick, 400L)
         }
     }
 
-    // ==================== #39 PUNISHMENT LINES TO RETYPE (ANTI-PASTE!) ====================
+    // ==================== #39 PUNISHMENT LINES (SMART ACCENT/APOSTROPHE NORMALIZATION!) ====================
+
+    private fun normalizePunishmentText(raw: String): String {
+        val decomposed = Normalizer.normalize(raw.trim().lowercase(), Normalizer.Form.NFD)
+        return decomposed
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+            .replace('’', '\'')
+            .replace('`', '\'')
+            .replace(Regex("\\s+"), " ")
+    }
 
     fun showPunishmentLinesOverlay(cfg: DemonConfigSnapshot) {
         mainHandler.post {
             if (activeModalView != null) return@post
             val targetPhrase = cfg.punishmentPhrase.ifBlank { DemonSettings.DEFAULT_PUNISHMENT_PHRASE }
+            val normalizedTarget = normalizePunishmentText(targetPhrase)
             val totalLines = cfg.punishmentLinesCount.coerceIn(2, 10)
             var doneLines = 0
 
@@ -1268,8 +1389,8 @@ class DemonOverlayManager(
                 }
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                     val cur = s?.toString().orEmpty()
-                    // Block copy-paste bursts (> 3 chars inserted at once)
-                    if (cur.length - prevLen > 3) {
+                    // Allow normal keyboard word autocomplete (<= 10 chars), block whole-sentence copy-paste!
+                    if (cur.length - prevLen > 12) {
                         input.setText("")
                         warnTv.text = "🚫 Pas de copier-coller ! Tape à la main ! 😈"
                         vibrateShort(50L)
@@ -1283,8 +1404,8 @@ class DemonOverlayManager(
 
             val checkBtn = makePrimaryButton("Valider la ligne")
             checkBtn.setOnClickListener {
-                val typed = input.text?.toString().orEmpty().trim()
-                if (typed.equals(targetPhrase.trim(), ignoreCase = true)) {
+                val typedNorm = normalizePunishmentText(input.text?.toString().orEmpty())
+                if (typedNorm == normalizedTarget) {
                     doneLines++
                     input.setText("")
                     warnTv.text = "Bien ! ✅"
@@ -1297,14 +1418,598 @@ class DemonOverlayManager(
                         progressTv.text = "Progression : $doneLines / $totalLines lignes"
                     }
                 } else {
-                    warnTv.text = "❌ Faute de frappe ! Recommence cette ligne."
+                    warnTv.text = "❌ Faute de frappe ! Vérifie les mots et recommence."
                     vibrateShort(55L)
                 }
             }
             card.addView(checkBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
-            presentModal(card, focusable = true)
+            presentModal(card, focusable = true, keepPetOnTop = true)
             vibrateShort(65L)
         }
+    }
+
+    // ==================== #69 MEDIA DUEL / ELIMINATION TOURNAMENT (2 / 4 / 8 MEDIA) ====================
+
+    fun showMediaTournamentGate(appLabel: String, pkg: String, targetSize: Int, cfg: DemonConfigSnapshot) {
+        Thread {
+            val desired = targetSize.coerceIn(2, 8)
+            val loaded = MediaFolderHelper.loadTournamentEntries(context, cfg, count = desired, maxDimPx = 680)
+            if (loaded.isEmpty()) return@Thread
+            val pool = ArrayList(loaded)
+            while (pool.size < 2) {
+                val copy = pool[0].bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                pool.add(MediaFolderHelper.TournamentMediaEntry("Option B", copy, pool[0].filePath, pool[0].contentUri))
+            }
+
+            mainHandler.post {
+                if (activeModalView != null) {
+                    pool.forEach { if (!it.bitmap.isRecycled) it.bitmap.recycle() }
+                    return@post
+                }
+
+                var currentRound = ArrayList(pool)
+                val nextRound = ArrayList<MediaFolderHelper.TournamentMediaEntry>()
+                var matchIdx = 0
+
+                val card = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    setPadding(dp(16), dp(16), dp(16), dp(16))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(24).toFloat()
+                        setColor(Color.rgb(16, 13, 24))
+                        setStroke(dp(2), Color.rgb(168, 85, 247))
+                    }
+                }
+
+                val titleTv = TextView(context).apply {
+                    text = "🏆 Taxe d'entrée : Tournoi (${pool.size} médias)"
+                    setTextColor(Color.WHITE)
+                    textSize = 16.5f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                }
+                val subTv = TextView(context).apply {
+                    text = "Pour ouvrir « $appLabel », choisis la photo que tu GARDES (l'autre est éliminée) !"
+                    setTextColor(Color.rgb(212, 212, 224))
+                    textSize = 12f
+                    gravity = Gravity.CENTER
+                    setPadding(0, dp(4), 0, dp(10))
+                }
+                val roundBadgeTv = TextView(context).apply {
+                    setTextColor(Color.rgb(216, 180, 254))
+                    textSize = 12.5f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    setPadding(0, 0, 0, dp(10))
+                }
+                card.addView(titleTv)
+                card.addView(subTv)
+                card.addView(roundBadgeTv)
+
+                val duelRow = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                }
+
+                fun makeOptionPane(): Triple<LinearLayout, ImageView, TextView> {
+                    val pane = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        setPadding(dp(6), dp(6), dp(6), dp(8))
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(16).toFloat()
+                            setColor(Color.rgb(28, 22, 42))
+                            setStroke(dp(2), Color.argb(150, 244, 63, 94))
+                        }
+                    }
+                    val iv = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+                    val lbl = TextView(context).apply {
+                        text = "GARDER 💖"
+                        setTextColor(Color.WHITE)
+                        textSize = 12f
+                        typeface = Typeface.DEFAULT_BOLD
+                        gravity = Gravity.CENTER
+                        setPadding(0, dp(6), 0, 0)
+                    }
+                    pane.addView(iv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(215)))
+                    pane.addView(lbl)
+                    return Triple(pane, iv, lbl)
+                }
+
+                val (leftPane, leftIv, leftLbl) = makeOptionPane()
+                val (rightPane, rightIv, rightLbl) = makeOptionPane()
+                duelRow.addView(leftPane, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(6) })
+                duelRow.addView(rightPane, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
+                card.addView(duelRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(10)
+                })
+
+                val quitBtn = makeSecondaryButton("Abandonner et retourner à l'accueil")
+                quitBtn.setOnClickListener {
+                    dismissModal()
+                    pool.forEach { if (!it.bitmap.isRecycled) it.bitmap.recycle() }
+                    onGoHome()
+                }
+                card.addView(quitBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))
+
+                var curA: MediaFolderHelper.TournamentMediaEntry? = null
+                var curB: MediaFolderHelper.TournamentMediaEntry? = null
+
+                fun finishWithChampion(champ: MediaFolderHelper.TournamentMediaEntry) {
+                    val champCopy = try { champ.bitmap.copy(Bitmap.Config.ARGB_8888, false) } catch (_: Throwable) { null }
+                    val fPath = champ.filePath
+                    val cUri = champ.contentUri
+                    dismissModal()
+                    pool.forEach { if (!it.bitmap.isRecycled) it.bitmap.recycle() }
+                    onGraceGranted(pkg, 6)
+                    petView?.say("🏆 Gagnante couronnée ! Fond d'écran + Autel ! 😈", 4_200L)
+                    Thread {
+                        if (fPath != null || cUri != null) {
+                            MediaFolderHelper.applySpecificWallpaper(context, cfg, fPath, cUri)
+                        }
+                    }.start()
+                    if (cfg.unremovableAltarEnabled && champCopy != null) {
+                        showUnremovableAltar(cfg, fixedBitmap = champCopy)
+                    } else {
+                        champCopy?.let { if (!it.isRecycled) it.recycle() }
+                    }
+                }
+
+                fun renderNextDuel() {
+                    if (matchIdx >= currentRound.size) {
+                        if (nextRound.size <= 1) {
+                            val winner = nextRound.firstOrNull() ?: currentRound.first()
+                            finishWithChampion(winner)
+                            return
+                        }
+                        currentRound = ArrayList(nextRound)
+                        nextRound.clear()
+                        matchIdx = 0
+                    }
+                    if (matchIdx == currentRound.size - 1) {
+                        // Odd bye advances automatically
+                        nextRound.add(currentRound[matchIdx])
+                        matchIdx++
+                        renderNextDuel()
+                        return
+                    }
+                    val a = currentRound[matchIdx]
+                    val b = currentRound[matchIdx + 1]
+                    curA = a
+                    curB = b
+                    val remaining = currentRound.size - matchIdx + nextRound.size
+                    roundBadgeTv.text = if (remaining == 2) "🔥 FINALE ! Choisis l'unique survivante" else "Duel • Encore $remaining médias en lice"
+                    leftIv.setImageBitmap(a.bitmap)
+                    rightIv.setImageBitmap(b.bitmap)
+                    leftLbl.text = "GARDER 💖"
+                    rightLbl.text = "GARDER 💖"
+                }
+
+                leftPane.setOnClickListener {
+                    val winner = curA ?: return@setOnClickListener
+                    vibrateShort(25L)
+                    nextRound.add(winner)
+                    matchIdx += 2
+                    renderNextDuel()
+                }
+                rightPane.setOnClickListener {
+                    val winner = curB ?: return@setOnClickListener
+                    vibrateShort(25L)
+                    nextRound.add(winner)
+                    matchIdx += 2
+                    renderNextDuel()
+                }
+
+                presentModal(card, focusable = false, keepPetOnTop = true)
+                renderNextDuel()
+                vibrateShort(45L)
+            }
+        }.start()
+    }
+
+    // ==================== #87 UNREMOVABLE TRAPPED ALTAR (TOUCHING IT SPAWNS EXTRA FORFEITS!) ====================
+
+    fun showUnremovableAltar(cfg: DemonConfigSnapshot, fixedBitmap: Bitmap? = null) {
+        Thread {
+            val bmp = fixedBitmap ?: MediaFolderHelper.loadRandomMediaBitmap(context, cfg, maxDimPx = 560) ?: return@Thread
+            mainHandler.post {
+                dismissUnremovableAltar()
+                try {
+                    val durSec = cfg.altarDurationSec.coerceIn(15, 180)
+                    val endElapsed = SystemClock.elapsedRealtime() + durSec * 1000L
+                    altarBitmap = bmp
+
+                    val frame = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(5), dp(5), dp(5), dp(5))
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(16).toFloat()
+                            setColor(Color.argb(242, 22, 12, 26))
+                            setStroke(dp(2), Color.rgb(244, 63, 94))
+                        }
+                    }
+
+                    val header = TextView(context).apply {
+                        text = "🔒 Autel (${durSec}s)"
+                        setTextColor(Color.rgb(253, 164, 175))
+                        textSize = 10.5f
+                        typeface = Typeface.DEFAULT_BOLD
+                        gravity = Gravity.CENTER
+                        setPadding(0, 0, 0, dp(3))
+                    }
+                    val iv = ImageView(context).apply {
+                        setImageBitmap(bmp)
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                    }
+                    frame.addView(header)
+                    frame.addView(iv, LinearLayout.LayoutParams(dp(118), dp(142)))
+
+                    // NO CLOSE BUTTON! Any attempt to tap or drag it triggers stacked extra forfeits!
+                    frame.setOnTouchListener { _, ev ->
+                        if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastAltarTrapMs > 2_800L) {
+                                lastAltarTrapMs = now
+                                vibrateShort(65L)
+                                settings.adjustMood(+8)
+                                petView?.say("Interdit de retirer l'Autel ! Gage bonus en superposition ! 😈", 3_500L)
+                                triggerStackedAltarForfeit(settings.snapshot())
+                            }
+                        }
+                        true
+                    }
+
+                    val params = WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        windowType,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                        PixelFormat.TRANSLUCENT
+                    ).apply {
+                        gravity = Gravity.TOP or Gravity.END
+                        x = dp(10)
+                        y = dp(90)
+                    }
+                    wm.addView(frame, params)
+                    altarView = frame
+                    bringPetToFront()
+
+                    val tick = object : Runnable {
+                        override fun run() {
+                            if (altarView !== frame) return
+                            val remMs = endElapsed - SystemClock.elapsedRealtime()
+                            if (remMs <= 0L) {
+                                dismissUnremovableAltar()
+                            } else {
+                                val remSec = ((remMs + 999L) / 1000L).toInt()
+                                header.text = "🔒 Autel (${remSec}s)"
+                                mainHandler.postDelayed(this, 600L)
+                            }
+                        }
+                    }
+                    altarTickRunnable = tick
+                    mainHandler.postDelayed(tick, 600L)
+                } catch (_: Throwable) {
+                    dismissUnremovableAltar()
+                }
+            }
+        }.start()
+    }
+
+    private fun triggerStackedAltarForfeit(cfg: DemonConfigSnapshot) {
+        when (Random.nextInt(5)) {
+            0 -> showDraggedPhotoPopup(cfg)
+            1 -> showDeadZoneKeyboardOverlay(16)
+            2 -> {
+                if (activeModalView == null) showSeductionBattleOverlay(cfg)
+                else showDraggedPhotoPopup(cfg)
+            }
+            3 -> {
+                if (activeModalView == null) showSurpriseQuizOverlay(cfg)
+                else showFullscreenPhotoFlash(cfg)
+            }
+            else -> {
+                Thread { MediaFolderHelper.applyRandomWallpaperPrank(context, cfg) }.start()
+                showFullscreenPhotoFlash(cfg)
+            }
+        }
+    }
+
+    fun dismissUnremovableAltar() {
+        altarTickRunnable?.let { mainHandler.removeCallbacks(it) }
+        altarTickRunnable = null
+        val v = altarView
+        altarView = null
+        if (v != null) {
+            try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
+        }
+        altarBitmap?.let { if (!it.isRecycled) it.recycle() }
+        altarBitmap = null
+    }
+
+    // ==================== MGQ-STYLE SEDUCTION RPG BATTLE & LEVEL / BRIGHTNESS / QUALITY DRAIN ====================
+
+    private fun createQualityDrainedBitmap(source: Bitmap, qualityPct: Int): Bitmap {
+        val q = qualityPct.coerceIn(8, 100)
+        if (q >= 96) return source.copy(Bitmap.Config.ARGB_8888, false)
+        val scale = (q / 100f).coerceIn(0.07f, 0.95f)
+        val sw = (source.width * scale).toInt().coerceAtLeast(18)
+        val sh = (source.height * scale).toInt().coerceAtLeast(18)
+        val tiny = Bitmap.createScaledBitmap(source, sw, sh, true)
+        // Nearest-neighbor upscale (filter = false) creates dramatic retro/drained quality degradation!
+        val pix = Bitmap.createScaledBitmap(tiny, source.width, source.height, false)
+        if (tiny !== pix) tiny.recycle()
+
+        // Apply hypnotic violet-pink desaturation wash proportional to drain
+        val drainFrac = (100 - q) / 100f
+        val out = Bitmap.createBitmap(pix.width, pix.height, Bitmap.Config.ARGB_8888)
+        val c = Canvas(out)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        val cm = ColorMatrix().apply { setSaturation((1f - drainFrac * 0.55f).coerceIn(0.35f, 1f)) }
+        p.colorFilter = ColorMatrixColorFilter(cm)
+        c.drawBitmap(pix, 0f, 0f, p)
+        c.drawColor(Color.argb((drainFrac * 95f).toInt().coerceIn(0, 110), 192, 38, 211))
+        pix.recycle()
+        return out
+    }
+
+    /** Applies live screen brightness & hypnotic overlay drain (auto-expires cleanly after 75s!) */
+    fun applyDrainVisualEffects(drainPct: Int, cfg: DemonConfigSnapshot) {
+        val clamped = drainPct.coerceIn(0, 100)
+        settings.update { putInt("active_drain_pct", clamped) }
+
+        // 1) Real System Brightness Drain (if WRITE_SETTINGS granted)
+        if (cfg.drainBrightnessEnabled && clamped > 0) {
+            try {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.System.canWrite(context)) {
+                    val targetBright = (200 - (clamped * 1.75f).toInt()).coerceIn(24, 210)
+                    Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+                    Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, targetBright)
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
+        // 2) Non-touchable hypnotic/dimming overlay veil (auto-clears after 75s!)
+        mainHandler.post {
+            clearDrainVisualOverlay()
+            if (clamped < 15) return@post
+            try {
+                val veil = FrameLayout(context).apply {
+                    val darkAlpha = if (cfg.drainBrightnessEnabled) (clamped * 1.15f).toInt().coerceIn(0, 125) else 0
+                    val tintAlpha = if (cfg.drainQualityEnabled) (clamped * 0.55f).toInt().coerceIn(0, 65) else 0
+                    setBackgroundColor(Color.argb((darkAlpha + tintAlpha).coerceAtMost(145), 48, 8, 56))
+                }
+                val params = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    windowType,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT
+                )
+                wm.addView(veil, params)
+                drainOverlayView = veil
+                bringPetToFront()
+
+                val clearRun = Runnable {
+                    clearDrainVisualOverlay()
+                    settings.update { putInt("active_drain_pct", 0) }
+                }
+                drainClearRunnable = clearRun
+                mainHandler.postDelayed(clearRun, 75_000L)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    fun clearDrainVisualOverlay() {
+        drainClearRunnable?.let { mainHandler.removeCallbacks(it) }
+        drainClearRunnable = null
+        val v = drainOverlayView ?: return
+        drainOverlayView = null
+        try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
+    }
+
+    fun showSeductionBattleOverlay(cfg: DemonConfigSnapshot) {
+        Thread {
+            val samplePhoto = MediaFolderHelper.loadRandomMediaBitmap(context, cfg, maxDimPx = 640)
+            mainHandler.post {
+                if (activeModalView != null) {
+                    samplePhoto?.let { if (!it.isRecycled) it.recycle() }
+                    return@post
+                }
+                val snap0 = settings.snapshot()
+                var hp = snap0.playerHp.coerceAtLeast(60)
+                var demonResolve = 100
+                var photoQuality = 100
+                var brightPct = 100
+                var currentLevel = snap0.playerLevel
+                var drainedCopy: Bitmap? = null
+
+                val attacks = listOf(
+                    Triple("Regard Hypnotique 👁️✨", 22, 1),
+                    Triple("Drain d'Énergie Vitale 💋", 28, 2),
+                    Triple("Voile d'Obscurité 🌙", 24, 1),
+                    Triple("Charme Possessif 😈💖", 30, 2),
+                    Triple("Baiser Vampirique 🦇💜", 34, 3)
+                )
+
+                val card = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    setPadding(dp(16), dp(14), dp(16), dp(14))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(24).toFloat()
+                        setColor(Color.rgb(18, 10, 28))
+                        setStroke(dp(2), Color.rgb(217, 70, 239))
+                    }
+                }
+
+                card.addView(TextView(context).apply {
+                    text = "⚔️ COMBAT DE SÉDUCTION — ${cfg.avatarName}"
+                    setTextColor(Color.rgb(240, 171, 252))
+                    textSize = 14.5f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                })
+
+                val hudTv = TextView(context).apply {
+                    setTextColor(Color.WHITE)
+                    textSize = 12f
+                    typeface = Typeface.MONOSPACE
+                    gravity = Gravity.CENTER
+                    setPadding(dp(8), dp(6), dp(8), dp(6))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(10).toFloat()
+                        setColor(Color.rgb(32, 18, 48))
+                    }
+                }
+                card.addView(hudTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(6)
+                    bottomMargin = dp(8)
+                })
+
+                val photoIv = ImageView(context).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(16).toFloat()
+                        setColor(Color.rgb(28, 16, 40))
+                    }
+                    clipToOutline = true
+                }
+                if (samplePhoto != null) photoIv.setImageBitmap(samplePhoto)
+                card.addView(photoIv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(200)).apply {
+                    bottomMargin = dp(8)
+                })
+
+                val logTv = TextView(context).apply {
+                    text = "${cfg.avatarName} t'encercle avec une aura envoûtante…\nRésiste à ses attaques de drainage !"
+                    setTextColor(Color.rgb(245, 208, 254))
+                    textSize = 12.2f
+                    gravity = Gravity.CENTER
+                    setPadding(dp(10), dp(8), dp(10), dp(8))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(12).toFloat()
+                        setColor(Color.argb(180, 38, 16, 56))
+                    }
+                }
+                card.addView(logTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(10)
+                })
+
+                fun refreshHud() {
+                    hudTv.text = "NV $currentLevel • PV $hp/100 • Emprise ${demonResolve}%\nQualité ${photoQuality}% • Lumière ${brightPct}%"
+                    if (samplePhoto != null && cfg.drainQualityEnabled) {
+                        val nextBmp = createQualityDrainedBitmap(samplePhoto, photoQuality)
+                        photoIv.setImageBitmap(nextBmp)
+                        drainedCopy?.let { if (!it.isRecycled) it.recycle() }
+                        drainedCopy = nextBmp
+                    }
+                }
+
+                fun cleanupAndClose(victory: Boolean) {
+                    dismissModal()
+                    drainedCopy?.let { if (!it.isRecycled) it.recycle() }
+                    samplePhoto?.let { if (!it.isRecycled) it.recycle() }
+                    if (victory) {
+                        settings.adjustPlayerStats(levelDelta = +1, hpDelta = 100 - hp, drainDelta = -100)
+                        clearDrainVisualOverlay()
+                        settings.adjustMood(-15)
+                        petView?.say("Grr… tu as résisté ! (+1 NV, Qualité restaurée) 😤", 4_000L)
+                    } else {
+                        settings.adjustPlayerStats(levelDelta = -2, hpDelta = 60, drainDelta = +35)
+                        applyDrainVisualEffects(75, cfg)
+                        settings.adjustMood(+18)
+                        petView?.say("💋 Capturé ! -2 NV, Lumière & Qualité drainées ! 😈", 4_500L)
+                        if (cfg.unremovableAltarEnabled) showUnremovableAltar(cfg)
+                    }
+                }
+
+                fun demonCounterAttack(multiplier: Float = 1f) {
+                    val (atkName, baseDmg, lvlDrain) = attacks.random()
+                    val dmg = (baseDmg * multiplier).toInt().coerceAtLeast(8)
+                    val realLvlLoss = (lvlDrain * multiplier).toInt().coerceAtLeast(1)
+                    hp = (hp - dmg).coerceAtLeast(0)
+                    currentLevel = (currentLevel - realLvlLoss).coerceAtLeast(1)
+                    if (cfg.drainQualityEnabled) photoQuality = (photoQuality - (24 * multiplier).toInt()).coerceAtLeast(10)
+                    if (cfg.drainBrightnessEnabled) brightPct = (brightPct - (22 * multiplier).toInt()).coerceAtLeast(15)
+
+                    val drainNow = (100 - minOf(photoQuality, brightPct)).coerceIn(15, 90)
+                    settings.adjustPlayerStats(levelDelta = -realLvlLoss, hpDelta = -dmg, drainDelta = +18)
+                    applyDrainVisualEffects(drainNow, cfg)
+                    vibrateShort(75L)
+
+                    logTv.text = "💥 ${cfg.avatarName} lance « $atkName » !\n-$dmg PV • -$realLvlLoss NV • Qualité ${photoQuality}% • Lumière ${brightPct}%"
+                    refreshHud()
+                    if (hp <= 0) {
+                        mainHandler.postDelayed({ cleanupAndClose(victory = false) }, 950L)
+                    }
+                }
+
+                val row1 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                val resistBtn = makeAccentButton("🛡️ Résister")
+                val counterBtn = makePrimaryButton("⚔️ Repousser")
+                row1.addView(resistBtn, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(6) })
+                row1.addView(counterBtn, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(6) })
+                card.addView(row1, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(8)
+                })
+
+                val row2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                val yieldBtn = makeSecondaryButton("💖 Céder (Drain)")
+                val begBtn = makeSecondaryButton("🙏 Supplier")
+                row2.addView(yieldBtn, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(6) })
+                row2.addView(begBtn, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(6) })
+                card.addView(row2)
+
+                resistBtn.setOnClickListener {
+                    if (Random.nextFloat() < 0.65f) {
+                        demonResolve = (demonResolve - 36).coerceAtLeast(0)
+                        photoQuality = (photoQuality + 12).coerceAtMost(100)
+                        logTv.text = "🛡️ Tu résistes au charme ! Emprise -36 % !"
+                        vibrateShort(25L)
+                        refreshHud()
+                        if (demonResolve <= 0) mainHandler.postDelayed({ cleanupAndClose(victory = true) }, 700L)
+                    } else {
+                        demonCounterAttack(0.85f)
+                    }
+                }
+                counterBtn.setOnClickListener {
+                    if (Random.nextFloat() < 0.50f) {
+                        demonResolve = (demonResolve - 52).coerceAtLeast(0)
+                        logTv.text = "⚔️ Coup critique de volonté ! Emprise -52 % !"
+                        vibrateShort(30L)
+                        refreshHud()
+                        if (demonResolve <= 0) mainHandler.postDelayed({ cleanupAndClose(victory = true) }, 700L)
+                    } else {
+                        demonCounterAttack(1.25f)
+                    }
+                }
+                yieldBtn.setOnClickListener {
+                    demonCounterAttack(1.6f)
+                }
+                begBtn.setOnClickListener {
+                    if (Random.nextFloat() < 0.45f) {
+                        demonResolve = (demonResolve - 45).coerceAtLeast(0)
+                        logTv.text = "🙏 Elle sourit avec pitié… Emprise -45 % !"
+                        refreshHud()
+                        if (demonResolve <= 0) mainHandler.postDelayed({ cleanupAndClose(victory = true) }, 700L)
+                    } else {
+                        logTv.text = "😈 « Supplier ne marchera pas ! »"
+                        demonCounterAttack(1.1f)
+                    }
+                }
+
+                presentModal(card, focusable = false, keepPetOnTop = true)
+                petView?.seductionAuraActive = true
+                refreshHud()
+                vibrateShort(65L)
+            }
+        }.start()
     }
 
     // ==================== #53 SURPRISE QUIZ "MAMAN TE TESTE" ====================
@@ -1407,6 +2112,7 @@ class DemonOverlayManager(
                     )
                     wm.addView(root, params)
                     slideshowView = root
+                    bringPetToFront()
                     vibrateShort(55L)
 
                     var idx = 0
@@ -1423,6 +2129,7 @@ class DemonOverlayManager(
                             mainHandler.postDelayed(this, 2_100L)
                         }
                     }
+                    slideshowStepRunnable = step
                     mainHandler.post(step)
                 } catch (_: Throwable) {
                     dismissSlideshow()
@@ -1432,6 +2139,8 @@ class DemonOverlayManager(
     }
 
     fun dismissSlideshow() {
+        slideshowStepRunnable?.let { mainHandler.removeCallbacks(it) }
+        slideshowStepRunnable = null
         val v = slideshowView
         slideshowView = null
         if (v != null) {

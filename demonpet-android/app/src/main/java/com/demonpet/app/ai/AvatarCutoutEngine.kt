@@ -154,9 +154,9 @@ object AvatarCutoutEngine {
         val sh = source.height
         val bestFace = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
 
-        // Portrait 4:5 HD canvas (512 x 640) for crisp realistic bust/portrait!
-        val outW = 512
-        val outH = 640
+        // Ultra-HD Portrait 4:5 canvas (640 x 800) with edge defringing for razor-sharp realistic hair & skin!
+        val outW = 640
+        val outH = 800
         val result = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(result)
         var meta = AvatarFaceMeta()
@@ -318,6 +318,10 @@ object AvatarCutoutEngine {
             if (!scaled.isRecycled) scaled.recycle()
         }
 
+        // Subtle color decontamination (defringing) on semi-transparent hair boundary pixels:
+        // removes white/gray studio halos so the real portrait blends seamlessly over dark & bright apps!
+        defringeSemiTransparentEdges(result)
+
         // Save metadata + HD cutout PNG
         try {
             File(context.filesDir, AVATAR_META_FILE).writeText(meta.toJson())
@@ -329,6 +333,48 @@ object AvatarCutoutEngine {
         }
         result.recycle()
         return outFile.absolutePath
+    }
+
+    private fun defringeSemiTransparentEdges(bmp: Bitmap) {
+        val w = bmp.width
+        val h = bmp.height
+        val px = IntArray(w * h)
+        bmp.getPixels(px, 0, w, 0, 0, w, h)
+        val out = px.copyOf()
+        for (y in 1 until (h - 1)) {
+            val row = y * w
+            for (x in 1 until (w - 1)) {
+                val c = px[row + x]
+                val a = (c ushr 24) and 0xFF
+                if (a in 12..230) {
+                    // Find nearest opaque interior neighbor to pull genuine hair/skin color into the fringe
+                    var sumR = 0; var sumG = 0; var sumB = 0; var cnt = 0
+                    for (dy in -2..2 step 2) {
+                        val ny = y + dy
+                        if (ny !in 0 until h) continue
+                        for (dx in -2..2 step 2) {
+                            val nx = x + dx
+                            if (nx !in 0 until w) continue
+                            val nc = px[ny * w + nx]
+                            val na = (nc ushr 24) and 0xFF
+                            if (na >= 235) {
+                                sumR += (nc ushr 16) and 0xFF
+                                sumG += (nc ushr 8) and 0xFF
+                                sumB += nc and 0xFF
+                                cnt++
+                            }
+                        }
+                    }
+                    if (cnt > 0) {
+                        val r = sumR / cnt
+                        val g = sumG / cnt
+                        val b = sumB / cnt
+                        out[row + x] = (a shl 24) or (r shl 16) or (g shl 8) or b
+                    }
+                }
+            }
+        }
+        bmp.setPixels(out, 0, w, 0, 0, w, h)
     }
 
     private fun clipSmoothPortraitMask(canvas: Canvas, w: Int, h: Int) {

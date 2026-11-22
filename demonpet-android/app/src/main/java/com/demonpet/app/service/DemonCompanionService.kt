@@ -175,6 +175,10 @@ class DemonCompanionService : Service() {
                 durationSec = snap.timeoutCornerSec.coerceAtMost(20),
                 cfg = snap
             )
+            "break3m" -> fallbackOverlay?.showScreenBreakOverlay(snap.screenBreakDurationSec.coerceAtMost(20), snap)
+            "tournament" -> fallbackOverlay?.showMediaTournamentGate("Test Appli", "test.demo", snap.entryTournamentSize, snap)
+            "altar" -> fallbackOverlay?.showUnremovableAltar(snap)
+            "rpg" -> fallbackOverlay?.showSeductionBattleOverlay(snap)
             "lines" -> fallbackOverlay?.showPunishmentLinesOverlay(snap)
             "deadzone" -> fallbackOverlay?.showDeadZoneKeyboardOverlay(15)
             "quiz" -> fallbackOverlay?.showSurpriseQuizOverlay(snap)
