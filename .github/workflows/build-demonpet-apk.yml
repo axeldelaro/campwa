@@ -1,0 +1,133 @@
+name: Build & Release DemonMom AI APK (Standalone)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'demonpet-android/**'
+      - '.github/workflows/build-demonpet-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-demonpet-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK (API 34)
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -z "$SDK_ROOT" ]; then
+            SDK_ROOT="$HOME/android-sdk"
+          fi
+          mkdir -p "$SDK_ROOT"
+          SDKMANAGER=$(find "$SDK_ROOT" -name sdkmanager -type f 2>/dev/null | head -n 1 || true)
+          if [ -z "$SDKMANAGER" ]; then
+            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdtools.zip
+            mkdir -p "$SDK_ROOT/cmdline-tools"
+            unzip -q /tmp/cmdtools.zip -d "$SDK_ROOT/cmdline-tools"
+            mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses > /dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Setup Gradle Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore or Persist DemonMom Signing Keystore Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.demonpet-signing
+          key: demonpet-release-keystore-v1
+
+      - name: Prepare Release Keystore (V1 + V2 Signed APK)
+        run: |
+          mkdir -p ~/.demonpet-signing
+          KEYSTORE_FILE="$HOME/.demonpet-signing/demonpet-release.jks"
+          if [ ! -f "$KEYSTORE_FILE" ]; then
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_FILE" \
+              -storetype PKCS12 \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -alias demonpet \
+              -storepass demonpet2026 \
+              -keypass demonpet2026 \
+              -dname "CN=DemonMom, OU=Companion, O=DemonMom, L=Paris, S=IDF, C=FR"
+          fi
+          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASSWORD=demonpet2026" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=demonpet" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=demonpet2026" >> "$GITHUB_ENV"
+
+      - name: Ensure Bundled NudeNet v3 ONNX Model
+        run: |
+          MODEL_PATH="demonpet-android/app/src/main/assets/nudenet_320n.onnx"
+          if [ ! -f "$MODEL_PATH" ]; then
+            mkdir -p demonpet-android/app/src/main/assets
+            curl -fsSL "https://raw.githubusercontent.com/notAI-tech/NudeNet/v3/nudenet/320n.onnx" -o "$MODEL_PATH"
+          fi
+          ls -lh "$MODEL_PATH"
+
+      - name: Compile Signed DemonMom Release APK
+        working-directory: ./demonpet-android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Package Ready-to-Install DemonMom.apk
+        run: |
+          APK_OUT="demonpet-android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK_OUT" ]; then
+            echo "DemonMom Release APK not found at $APK_OUT"
+            exit 1
+          fi
+          cp "$APK_OUT" ./DemonMom.apk
+          ls -lh ./DemonMom.apk
+
+      - name: Upload DemonMom.apk to Workflow Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DemonMom-APK
+          path: ./DemonMom.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish Signed DemonMom.apk to GitHub Releases
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: demonmom-v1.0.${{ github.run_number }}
+          name: "DemonMom AI v1.0.${{ github.run_number }} (Avatar IA • 23 Pouvoirs • Dossiers Masqués • Verrouillage 20 Taps)"
+          body: |
+            ### DemonMom AI v1.0 (`demonmom-v1.0.${{ github.run_number }}`)
+
+            Application Android 100 % autonome (indépendante de SentinelCam et BlurShield AI) : transforme la photo d'une personne en un **petit avatar démon possessif** qui vit sur l'écran avec **23 fonctionnalités ludiques et de contrôle parental local**.
+
+            - **Avatar IA vivant 60–120 FPS (#24)** : détourage local du visage (`ML Kit Face Contours` + `Selfie Segmentation`), corps animé (Démon, Maman Poule, Chibi, Tête pure), physique de lancer/rebond, escalade des bords, cache-cache et bulles de dialogue.
+            - **Censure IA Jalouse & NSFW (#1–#6)** : flou jaloux, **Face-Swap** collant sa propre tête sur les autres visages (#2), filtre jalousie par genre (#3), bouclier NSFW dramatique NudeNet (#4), bandeau yeux (#5) et sabotage GPU AGSL progressif (#6).
+            - **Contrôle Parental « Maman Démon » (#7–#13, #19–#23)** : demande de permission (#7), quota par appli (#8), mini-jeux de négociation +10 min (#9), couvre-feu bonnet de nuit (#10), mode Devoirs (#11), anti-doomscroll (#12), panique Paramètres (#13), luminosité nuit (#19), alerte batterie < 20 % (#20), jauge d'humeur dynamique (#21), commentaires par appli (#22), alerte vitesse GPS passif (#23).
+            - **Bêtises & Dossiers Masqués (#14–#16, #25)** : changement de fond d'écran aléatoire avec **sauvegarde & restauration 1 clic** (#14), pop-ups photo tirées façon *Desktop Goose* (#15), flash plein écran (#16), et explorateur natif supportant les **dossiers cachés (`.*`) et `.nomedia`**.
+            - **Verrouillage Défi (Administrateur + Accessibilité)** : sortie propre garantie à tout moment en **tapotant le démon 20 fois de suite** puis en saisissant le code **`100205`** (retire aussi automatiquement l'Administrateur).
+          files: ./DemonMom.apk
+          draft: false
+          prerelease: false
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

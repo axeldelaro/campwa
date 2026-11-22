@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DemonMom AI</string>
+    <string name="a11y_service_label">DemonMom AI (Avatar &amp; Filtre)</string>
+    <string name="a11y_service_description">Anime ton avatar démon sur l’écran, détecte les visages/NSFW localement, réagit aux applis et au défilement. Sortie immédiate en tapotant le démon 20 fois + code 100205.</string>
+    <string name="device_admin_desc">Verrouillage défi DemonMom AI : protège l’avatar contre une fermeture accidentelle (libéré automatiquement dès que tu saisis le code de sortie 100205).</string>
+</resources>
