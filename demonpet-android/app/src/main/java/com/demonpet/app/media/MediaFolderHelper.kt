@@ -121,14 +121,16 @@ object MediaFolderHelper {
         return out
     }
 
-    /** Picks a random video Uri from the configured folder (including hidden `.dotfolders`!) for #38 Timeout Corner */
-    fun pickRandomVideoUri(context: Context, cfg: DemonConfigSnapshot): Uri? {
+    data class VideoSource(val filePath: String? = null, val contentUri: Uri? = null)
+
+    /** Picks a random video from the configured folder (including hidden `.dotfolders`!) for #38 Timeout Corner */
+    fun pickRandomVideoSource(context: Context, cfg: DemonConfigSnapshot): VideoSource? {
         if (cfg.mediaFolderPath.isNotBlank()) {
             val dir = File(cfg.mediaFolderPath)
             if (dir.exists() && dir.isDirectory) {
                 val vids = listMediaInFolder(dir, cfg.includeHiddenFiles, videos = true)
                 if (vids.isNotEmpty()) {
-                    return Uri.fromFile(vids[Random.nextInt(vids.size)])
+                    return VideoSource(filePath = vids[Random.nextInt(vids.size)].absolutePath)
                 }
             }
         }
@@ -137,12 +139,17 @@ object MediaFolderHelper {
                 val tree = DocumentFile.fromTreeUri(context, Uri.parse(cfg.mediaTreeUri))
                 val vids = tree?.listFiles()?.filter { it.isFile && isVideoFileName(it.name.orEmpty()) }.orEmpty()
                 if (vids.isNotEmpty()) {
-                    return vids[Random.nextInt(vids.size)].uri
+                    return VideoSource(contentUri = vids[Random.nextInt(vids.size)].uri)
                 }
             } catch (_: Throwable) {
             }
         }
         return null
+    }
+
+    fun pickRandomVideoUri(context: Context, cfg: DemonConfigSnapshot): Uri? {
+        val src = pickRandomVideoSource(context, cfg) ?: return null
+        return src.contentUri ?: src.filePath?.let { Uri.fromFile(File(it)) }
     }
 
     /** Loads up to [count] distinct random photos for #61 Forced Slideshow */

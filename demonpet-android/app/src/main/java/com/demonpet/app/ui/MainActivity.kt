@@ -532,14 +532,24 @@ class MainActivity : AppCompatActivity() {
         // 2. Compact Permissions Status Card (1-tap chips!)
         val permCard = makeCard()
         permCard.addView(sectionTitle("🛡️ Autorisations"))
-        val accessOk = DemonAccessibilityService.isEnabledInSettings(this)
+        val accessRunning = DemonAccessibilityService.isServiceActive()
+        val accessOk = accessRunning || DemonAccessibilityService.isEnabledInSettings(this)
         val adminOk = DemonDeviceAdminReceiver.isAdminActive(this)
         val filesOk = MediaFolderHelper.hasAllFilesAccess()
         val ovOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
         val wsOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.System.canWrite(this)
 
+        if (!accessRunning) {
+            permCard.addView(TextView(this).apply {
+                text = "⚠️ Service d'Accessibilité non connecté : les pouvoirs #26–#44 et le verrouillage Paramètres nécessitent de l'activer (ou le relancer après mise à jour)."
+                setTextColor(Color.rgb(253, 186, 116))
+                textSize = 11.5f
+                setPadding(0, dp(4), 0, dp(4))
+            })
+        }
+
         val pRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(6)) }
-        pRow1.addView(makePermChip("Accessibilité", accessOk) { openAccessibility() }, gridLp(endMargin = dp(5)))
+        pRow1.addView(makePermChip(if (accessRunning) "Accessibilité" else "Activer Access.", accessRunning) { openAccessibility() }, gridLp(endMargin = dp(5)))
         pRow1.addView(makePermChip("Admin", adminOk) { requestDeviceAdmin() }, gridLp(startMargin = dp(5), endMargin = dp(5)))
         pRow1.addView(makePermChip("Fichiers .*", filesOk) { requestAllFilesAccess() }, gridLp(startMargin = dp(5)))
         permCard.addView(pRow1)
@@ -556,7 +566,7 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(permCard)
 
-        // 3. Quick Live Tests (6 clean buttons)
+        // 3. Quick Live Tests
         val testCard = makeCard()
         testCard.addView(sectionTitle("🧪 Tester en direct"))
         val t1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(6)) }
@@ -569,9 +579,9 @@ class MainActivity : AppCompatActivity() {
         t2.addView(makeGridTestBtn("📸 Diaporama") { runLiveTest("slideshow") }, gridLp(startMargin = dp(5)))
         testCard.addView(t2)
 
-        val t3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val t3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(6)) }
         t3.addView(makeGridTestBtn("🚫 Zone Morte") { runLiveTest("deadzone") }, gridLp(endMargin = dp(5)))
-        t3.addView(makeGridTestBtn("🖼️ Pop-up (#15)") { runLiveTest("popup") }, gridLp(startMargin = dp(5)))
+        t3.addView(makeGridTestBtn("🔥 Crise Furieuse") { runLiveTest("fury") }, gridLp(startMargin = dp(5)))
         testCard.addView(t3)
         root.addView(testCard)
     }
@@ -795,7 +805,7 @@ class MainActivity : AppCompatActivity() {
         val tuneCard = makeCard()
         tuneCard.addView(sectionTitle("🎛️ Intensité & Punitions"))
         tuneCard.addView(makeSliderRow("Niveau de chaos", 1, 10, snap.chaosLevel, "/10") { settings.chaosLevel = it })
-        tuneCard.addView(makeSliderRow("Intervalle min entre bêtises", 15, 300, snap.minIntervalSec, " s") { settings.minIntervalSec = it })
+        tuneCard.addView(makeSliderRow("Intervalle min entre bêtises", 8, 300, snap.minIntervalSec, " s") { settings.minIntervalSec = it })
         tuneCard.addView(makeSliderRow("Durée Au Coin Vidéo (#38)", 15, 300, snap.timeoutCornerSec, " s") { settings.timeoutCornerSec = it })
         tuneCard.addView(makeSliderRow("Nombre de lignes à recopier (#39)", 2, 10, snap.punishmentLinesCount, " lignes") { settings.punishmentLinesCount = it })
         tuneCard.addView(makeSliderRow("Quota par appli (#8)", 2, 60, snap.appQuotaMinutes, " min") { settings.appQuotaMinutes = it })

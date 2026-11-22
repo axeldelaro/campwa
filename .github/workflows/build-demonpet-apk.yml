@@ -113,8 +113,8 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demonmom-v2.0.${{ github.run_number }}
-          name: "DemonMom AI v2.0.${{ github.run_number }} (Design Photo-Réaliste • +16 Pouvoirs Accessibilité • Vidéo Au Coin • UI 4 Onglets)"
+          tag_name: demonmom-v2.1.${{ github.run_number }}
+          name: "DemonMom AI v2.1.${{ github.run_number }} (Sévérité Réelle & Correctifs Accessibilité + Vidéo Au Coin)"
           body: |
             ### DemonMom AI v2.0 (`demonmom-v2.0.${{ github.run_number }}`)
 

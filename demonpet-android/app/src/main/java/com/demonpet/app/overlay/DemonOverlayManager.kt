@@ -1142,27 +1142,38 @@ class DemonOverlayManager(
                 bottomMargin = dp(12)
             })
 
-            val videoUri = MediaFolderHelper.pickRandomVideoUri(context, cfg)
-            if (videoUri != null) {
+            fun showPhotoFallbackIn(box: FrameLayout) {
+                box.removeAllViews()
+                val iv = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+                box.addView(iv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                Thread {
+                    val bmp = MediaFolderHelper.loadRandomMediaBitmap(context, cfg, 900)
+                    mainHandler.post { if (bmp != null && timeoutCornerActive) iv.setImageBitmap(bmp) }
+                }.start()
+            }
+
+            val videoSrc = MediaFolderHelper.pickRandomVideoSource(context, cfg)
+            if (videoSrc != null) {
                 val vv = VideoView(context).apply {
-                    setVideoURI(videoUri)
+                    if (videoSrc.filePath != null) {
+                        setVideoPath(videoSrc.filePath)
+                    } else if (videoSrc.contentUri != null) {
+                        setVideoURI(videoSrc.contentUri)
+                    }
                     setOnPreparedListener { mp ->
                         mp.isLooping = true
                         start()
                     }
                     setOnErrorListener { _, _, _ ->
+                        activeTimeoutVideoView = null
+                        showPhotoFallbackIn(mediaBox)
                         true
                     }
                 }
                 activeTimeoutVideoView = vv
                 mediaBox.addView(vv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER))
             } else {
-                val iv = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-                mediaBox.addView(iv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                Thread {
-                    val bmp = MediaFolderHelper.loadRandomMediaBitmap(context, cfg, 900)
-                    mainHandler.post { if (bmp != null && timeoutCornerActive) iv.setImageBitmap(bmp) }
-                }.start()
+                showPhotoFallbackIn(mediaBox)
             }
 
             val timerTv = TextView(context).apply {

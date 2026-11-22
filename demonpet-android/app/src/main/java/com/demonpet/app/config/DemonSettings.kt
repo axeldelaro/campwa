@@ -179,9 +179,9 @@ class DemonSettings(context: Context) {
             mediaFolderPath = prefs.getString(KEY_MEDIA_FOLDER, "").orEmpty(),
             mediaTreeUri = prefs.getString(KEY_MEDIA_TREE_URI, "").orEmpty(),
             includeHiddenFiles = prefs.getBoolean(KEY_INCLUDE_HIDDEN, true),
-            chaosLevel = prefs.getInt(KEY_CHAOS_LEVEL, 7).coerceIn(1, 10),
-            moodScore = prefs.getInt(KEY_MOOD_SCORE, 55).coerceIn(0, 100),
-            minIntervalSec = prefs.getInt(KEY_MIN_INTERVAL, 35).coerceIn(15, 300),
+            chaosLevel = prefs.getInt(KEY_CHAOS_LEVEL, 8).coerceIn(1, 10),
+            moodScore = prefs.getInt(KEY_MOOD_SCORE, 65).coerceIn(0, 100),
+            minIntervalSec = prefs.getInt(KEY_MIN_INTERVAL, 22).coerceIn(8, 300),
             vibrateOnPrank = prefs.getBoolean(KEY_VIBRATE, true),
             faceCensorMode = FaceCensorMode.fromId(prefs.getString(KEY_FACE_CENSOR, FaceCensorMode.FACE_SWAP_SELF.id)),
             faceGenderFilter = GenderFilter.fromId(prefs.getString(KEY_FACE_GENDER, GenderFilter.ALL.id)),
@@ -281,10 +281,10 @@ class DemonSettings(context: Context) {
                     putBoolean(KEY_FORCED_SLIDESHOW, true)
                 }
                 SeverityPreset.STRICT -> {
-                    putInt(KEY_CHAOS_LEVEL, 8)
-                    putInt(KEY_MIN_INTERVAL, 30)
-                    putInt(KEY_MOOD_SCORE, 68)
-                    putInt(KEY_APP_QUOTA_MIN, 8)
+                    putInt(KEY_CHAOS_LEVEL, 9)
+                    putInt(KEY_MIN_INTERVAL, 18)
+                    putInt(KEY_MOOD_SCORE, 78)
+                    putInt(KEY_APP_QUOTA_MIN, 5)
                     putInt(KEY_TIMEOUT_CORNER_SEC, 45)
                     putInt(KEY_PUNISHMENT_LINES_COUNT, 4)
                     putBoolean(KEY_COUNTER_SCROLL, true)
@@ -306,9 +306,9 @@ class DemonSettings(context: Context) {
                 }
                 SeverityPreset.TYRANT -> {
                     putInt(KEY_CHAOS_LEVEL, 10)
-                    putInt(KEY_MIN_INTERVAL, 18)
-                    putInt(KEY_MOOD_SCORE, 92)
-                    putInt(KEY_APP_QUOTA_MIN, 4)
+                    putInt(KEY_MIN_INTERVAL, 10)
+                    putInt(KEY_MOOD_SCORE, 96)
+                    putInt(KEY_APP_QUOTA_MIN, 2)
                     putInt(KEY_TIMEOUT_CORNER_SEC, 90)
                     putInt(KEY_PUNISHMENT_LINES_COUNT, 6)
                     putBoolean(KEY_COUNTER_SCROLL, true)
@@ -330,6 +330,9 @@ class DemonSettings(context: Context) {
                     putBoolean(KEY_ASK_PERM_GATE, true)
                     putBoolean(KEY_APP_QUOTA_ENABLED, true)
                     putBoolean(KEY_ANTI_DOOMSCROLL, true)
+                    putBoolean(KEY_WALLPAPER_PRANK, true)
+                    putBoolean(KEY_DRAGGED_POPUP, true)
+                    putBoolean(KEY_FULLSCREEN_FLASH, true)
                 }
             }
         }
@@ -404,8 +407,8 @@ class DemonSettings(context: Context) {
         set(v) = update { putInt(KEY_CHAOS_LEVEL, v.coerceIn(1, 10)) }
 
     var minIntervalSec: Int
-        get() = prefs.getInt(KEY_MIN_INTERVAL, 35).coerceIn(15, 300)
-        set(v) = update { putInt(KEY_MIN_INTERVAL, v.coerceIn(15, 300)) }
+        get() = prefs.getInt(KEY_MIN_INTERVAL, 22).coerceIn(8, 300)
+        set(v) = update { putInt(KEY_MIN_INTERVAL, v.coerceIn(8, 300)) }
 
     var vibrateOnPrank: Boolean
         get() = prefs.getBoolean(KEY_VIBRATE, true)

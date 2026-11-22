@@ -178,6 +178,12 @@ class DemonCompanionService : Service() {
             "lines" -> fallbackOverlay?.showPunishmentLinesOverlay(snap)
             "deadzone" -> fallbackOverlay?.showDeadZoneKeyboardOverlay(15)
             "quiz" -> fallbackOverlay?.showSurpriseQuizOverlay(snap)
+            "fury" -> {
+                settings.update { putInt("mood_score", 98) }
+                fallbackOverlay?.triggerPanicMode("CRISE DE COLÈRE ! 😈🔥", 5_000L)
+                fallbackOverlay?.showDraggedPhotoPopup(snap)
+                mainHandler.postDelayed({ fallbackOverlay?.showDeadZoneKeyboardOverlay(15) }, 1_200L)
+            }
             "wallpaper" -> {
                 fallbackOverlay?.say("Nouveau fond d'écran ! 🖼️😈", 3_500L)
                 Thread { MediaFolderHelper.applyRandomWallpaperPrank(applicationContext, snap) }.start()

@@ -2,6 +2,7 @@ package com.demonpet.app.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -48,6 +49,7 @@ class DemonAccessibilityService : AccessibilityService() {
     private lateinit var settings: DemonSettings
     private lateinit var visionEngine: DemonVisionEngine
     private lateinit var powerManager: PowerManager
+    private lateinit var keyguardManager: KeyguardManager
 
     private var overlayMgr: DemonOverlayManager? = null
     private var workerThread: HandlerThread? = null
@@ -104,12 +106,14 @@ class DemonAccessibilityService : AccessibilityService() {
                 ensureOverlayAttached(snap)
                 overlayMgr?.updateConfig(snap)
                 scheduleVisionLoop(150L)
-                schedulePrankLoop(15_000L)
+                schedulePrankLoop(2_000L)
+                scheduleGuardLoop(650L)
             } else {
                 overlayMgr?.detachAll()
                 overlayMgr = null
                 workerHandler?.removeCallbacks(visionTick)
                 mainHandler.removeCallbacks(prankTick)
+                mainHandler.removeCallbacks(guardTick)
             }
             notifyStateChanged()
         }
@@ -123,12 +127,14 @@ class DemonAccessibilityService : AccessibilityService() {
                     overlayMgr?.getCensorView()?.clearImmediate()
                     workerHandler?.removeCallbacks(visionTick)
                     mainHandler.removeCallbacks(prankTick)
+                    mainHandler.removeCallbacks(guardTick)
                 }
                 Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
                     screenInteractive = true
                     if (config?.enabled == true) {
                         scheduleVisionLoop(200L)
-                        schedulePrankLoop(20_000L)
+                        schedulePrankLoop(4_000L)
+                        scheduleGuardLoop(650L)
                     }
                 }
                 Intent.ACTION_BATTERY_CHANGED -> {
@@ -202,33 +208,60 @@ class DemonAccessibilityService : AccessibilityService() {
         }
     }
 
+    /** Fast 650ms guard loop: keeps currentPkg synced & enforces strict Settings Lock + #44 Blacklist instantly */
+    private val guardTick = object : Runnable {
+        override fun run() {
+            val cfg = config ?: return
+            if (!screenInteractive || !cfg.enabled) return
+            syncActivePackageFromRoot(cfg)
+            mainHandler.postDelayed(this, 650L)
+        }
+    }
+
     private val prankTick = object : Runnable {
         override fun run() {
             val cfg = config ?: return
             if (!screenInteractive || !cfg.enabled) return
 
+            syncActivePackageFromRoot(cfg)
+
             val now = System.currentTimeMillis()
-            // Update session usage for watched apps (#8)
+            // Update session usage for watched apps (#8) + auto-escalate mood if user keeps scrolling/watching!
             val dtSec = ((now - lastSessionTickMs) / 1000L).coerceIn(1L, 30L)
             lastSessionTickMs = now
-            if (currentPkg.isNotBlank() && cfg.watchedPackages.contains(currentPkg)) {
+            val isWatchedOrGame = currentPkg.isNotBlank() && currentPkg != packageName &&
+                (cfg.watchedPackages.contains(currentPkg) || isGamePackage(currentPkg))
+            if (isWatchedOrGame) {
                 val total = (appSessionSeconds[currentPkg] ?: 0L) + dtSec
                 appSessionSeconds[currentPkg] = total
-                // Ramp up #6 GPU Sabotage intensity over 3 minutes of video watching!
-                val progress = (0.30f + (total / 180f) * 0.70f).coerceIn(0.30f, 1.0f)
+                // Ramp up #6 GPU Sabotage intensity quickly over 90s!
+                val progress = (0.35f + (total / 90f) * 0.65f).coerceIn(0.35f, 1.0f)
                 overlayMgr?.getCensorView()?.sabotageProgress = progress
+
+                // Auto mood escalation every ~9s while staying in watched/game apps
+                if (total % 9L < dtSec) {
+                    settings.adjustMood(+2)
+                }
 
                 val grace = appGraceUntilMs[currentPkg] ?: 0L
                 if (cfg.appQuotaLockEnabled && now > grace && total >= cfg.appQuotaMinutes * 60L) {
                     appSessionSeconds[currentPkg] = 0L
-                    settings.adjustMood(+8)
-                    overlayMgr?.showLockShieldWithNegotiation(
-                        title = "C'est bon, ça suffit ! 😈",
-                        reason = "Tu as déjà passé ${cfg.appQuotaMinutes} min sur cette appli. Pause obligatoire !",
-                        pkg = currentPkg,
-                        allowNegotiation = true,
-                        cfg = cfg
-                    )
+                    settings.adjustMood(+12)
+                    if (cfg.timeoutCornerEnabled && cfg.chaosLevel >= 8) {
+                        overlayMgr?.showTimeoutCornerWithVideo(
+                            reason = "Quota dépassé (${cfg.appQuotaMinutes} min) ! Direction AU COIN ! 😈",
+                            durationSec = cfg.timeoutCornerSec,
+                            cfg = cfg
+                        )
+                    } else {
+                        overlayMgr?.showLockShieldWithNegotiation(
+                            title = "C'est bon, ça suffit ! 😈",
+                            reason = "Tu as déjà passé ${cfg.appQuotaMinutes} min sur cette appli. Pause obligatoire !",
+                            pkg = currentPkg,
+                            allowNegotiation = true,
+                            cfg = cfg
+                        )
+                    }
                 }
             }
 
@@ -239,16 +272,47 @@ class DemonAccessibilityService : AccessibilityService() {
                 dimNightBrightnessSafely()
             }
 
-            // Periodic Mischievous Prank Trigger (#14 Wallpaper / #15 Dragged Popup / #16 Fullscreen Flash)
-            val chaosFactor = (11 - cfg.chaosLevel).coerceIn(1, 10)
-            val moodBoostMs = if (cfg.moodScore > 70) 0.72f else 1.0f
-            val intervalMs = (cfg.minIntervalSec * 1000L * (0.45f + chaosFactor * 0.14f) * moodBoostMs).toLong().coerceAtLeast(15_000L)
-            if (currentPkg != packageName && (now - lastPrankMs) >= intervalMs) {
+            // Faithful, aggressive periodic mischief interval:
+            // Respects minIntervalSec directly, and cuts it by up to 40% when furious or Tyran!
+            val moodMul = when {
+                cfg.moodScore >= 85 -> 0.60f
+                cfg.moodScore >= 65 -> 0.78f
+                else -> 1.0f
+            }
+            val intervalMs = (cfg.minIntervalSec * 1000L * moodMul).toLong().coerceAtLeast(6_000L)
+            val isOutsideSelf = currentPkg.isNotBlank() && currentPkg != packageName
+            if (isOutsideSelf && (now - lastPrankMs) >= intervalMs) {
                 lastPrankMs = now
                 runRandomMischief(cfg)
             }
 
-            mainHandler.postDelayed(this, 6_000L)
+            mainHandler.postDelayed(this, 3_000L)
+        }
+    }
+
+    private fun syncActivePackageFromRoot(cfg: DemonConfigSnapshot) {
+        val root = try { rootInActiveWindow } catch (_: Throwable) { null } ?: return
+        val pkg = try { root.packageName?.toString()?.trim().orEmpty() } finally {
+            try { root.recycle() } catch (_: Throwable) {}
+        }
+        if (pkg.isEmpty()) return
+        val lower = pkg.lowercase()
+        if (lower == "com.android.systemui") {
+            maybeBlockSystemUiShade(cfg, lower, "")
+            return
+        }
+        if (lower.contains("inputmethod") || lower.contains("gboard") || lower.contains("swiftkey")) return
+
+        if (isProtectedSettingsPackage(lower) && (cfg.challengeLocked || cfg.strictSettingsLock)) {
+            enforceStrictSettingsLock(pkg, cfg)
+            return
+        }
+        if (pkg != currentPkg) {
+            currentPkg = pkg
+            currentPkgEnteredMs = System.currentTimeMillis()
+            scrollBurstCount = 0
+            overlayMgr?.getCensorView()?.clearImmediate()
+            onForegroundAppChanged(pkg, cfg)
         }
     }
 
@@ -258,6 +322,7 @@ class DemonAccessibilityService : AccessibilityService() {
         config = settings.snapshot()
         visionEngine = DemonVisionEngine(applicationContext)
         powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         val dm = resources.displayMetrics
         screenW = dm.widthPixels.toFloat().coerceAtLeast(360f)
         screenH = dm.heightPixels.toFloat().coerceAtLeast(640f)
@@ -276,7 +341,8 @@ class DemonAccessibilityService : AccessibilityService() {
         if (snap.enabled) {
             ensureOverlayAttached(snap)
             scheduleVisionLoop(200L)
-            schedulePrankLoop(12_000L)
+            schedulePrankLoop(3_500L)
+            scheduleGuardLoop(650L)
         }
         notifyStateChanged()
     }
@@ -293,26 +359,11 @@ class DemonAccessibilityService : AccessibilityService() {
                 if (pkg.isEmpty()) return
                 val lower = pkg.lowercase()
                 val cls = event.className?.toString()?.lowercase().orEmpty()
-                val evText = event.text?.joinToString(" ")?.lowercase().orEmpty()
+                val evText = event.text.joinToString(" ").lowercase()
 
                 // #34 & #35 Notification Shade & Quick Settings Blocker
                 if (lower == "com.android.systemui") {
-                    val isShade = cls.contains("notification") || cls.contains("shade") || cls.contains("status") ||
-                        evText.contains("notification")
-                    val isQs = cls.contains("qs") || cls.contains("quick") || cls.contains("control") ||
-                        evText.contains("wi-fi") || evText.contains("wifi") || evText.contains("avion") || evText.contains("bluetooth")
-                    if (((cfg.closeNotifShadeEnabled && isShade) || (cfg.blockQuickSettingsEnabled && isQs)) &&
-                        now - lastShadeDismissMs > 1_800L
-                    ) {
-                        lastShadeDismissMs = now
-                        dismissNotificationShadeSafely()
-                        settings.adjustMood(+4)
-                        overlayMgr?.say(
-                            if (isQs) "N'essaie même pas de toucher aux réglages rapides ! 😈"
-                            else "Pas touche aux notifications ! 😤",
-                            3_000L
-                        )
-                    }
+                    maybeBlockSystemUiShade(cfg, cls, evText)
                     return
                 }
                 if (lower.contains("inputmethod") || lower.contains("gboard") || lower.contains("swiftkey")) return
@@ -339,6 +390,15 @@ class DemonAccessibilityService : AccessibilityService() {
             }
 
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
+                val evPkg = event.packageName?.toString()?.trim().orEmpty()
+                if (evPkg.isNotEmpty() && evPkg != "com.android.systemui" && evPkg != currentPkg &&
+                    !evPkg.lowercase().contains("inputmethod")
+                ) {
+                    currentPkg = evPkg
+                    currentPkgEnteredMs = now
+                    onForegroundAppChanged(evPkg, cfg)
+                }
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     val dy = event.scrollDeltaY
                     val dx = event.scrollDeltaX
@@ -350,83 +410,103 @@ class DemonAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                // #26 Contre-scroll / Vol de scroll (real Accessibility Gesture!)
-                if (cfg.counterScrollEnabled && currentPkg != packageName && currentPkg.isNotBlank()) {
-                    val cooldown = (22_000L - cfg.chaosLevel * 1_400L).coerceAtLeast(6_500L)
-                    if (now - lastCounterScrollMs > cooldown && Random.nextFloat() < (0.12f + cfg.chaosLevel * 0.04f)) {
+                // #26 Contre-scroll / Vol de scroll (aggressive & responsive!)
+                if (cfg.counterScrollEnabled && currentPkg.isNotBlank() && currentPkg != packageName) {
+                    val cooldown = (12_000L - cfg.chaosLevel * 850L).coerceAtLeast(3_500L)
+                    val prob = (0.30f + cfg.chaosLevel * 0.055f).coerceAtMost(0.88f)
+                    if (now - lastCounterScrollMs > cooldown && Random.nextFloat() < prob) {
                         lastCounterScrollMs = now
-                        performCounterScrollGesture()
+                        performCounterScrollGesture(doubleSwipe = cfg.chaosLevel >= 9)
                         overlayMgr?.say("Hop ! On remonte ! Tu scrolles trop ! 😈", 2_800L)
                     }
                 }
 
-                // #12 Anti-Doomscrolling detector
-                if (cfg.antiDoomscrollEnabled && currentPkg != packageName) {
-                    if (now - scrollBurstStartMs > 45_000L) {
+                // #12 Anti-Doomscrolling detector (triggers after 12 scrolls!)
+                if (cfg.antiDoomscrollEnabled && currentPkg.isNotBlank() && currentPkg != packageName) {
+                    if (now - scrollBurstStartMs > 35_000L) {
                         scrollBurstStartMs = now
                         scrollBurstCount = 1
                     } else {
                         scrollBurstCount++
                     }
-                    if (scrollBurstCount >= 28 && now - lastDoomscrollMs > 85_000L) {
+                    if (scrollBurstCount >= 12 && now - lastDoomscrollMs > 45_000L) {
                         scrollBurstCount = 0
                         lastDoomscrollMs = now
-                        settings.adjustMood(+6)
+                        settings.adjustMood(+8)
                         overlayMgr?.triggerSitInCenter("Arrête de scroller à l'infini !! 😤", 7_500L)
-                        if (cfg.draggedPopupEnabled) {
-                            overlayMgr?.showDraggedPhotoPopup(cfg)
-                        }
+                        if (cfg.counterScrollEnabled) performCounterScrollGesture(doubleSwipe = true)
+                        if (cfg.draggedPopupEnabled) overlayMgr?.showDraggedPhotoPopup(cfg)
                     }
                 }
             }
 
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
-                // #32 Sabotage de saisie clavier (remplace le texte ou ferme le clavier)
+                // #32 Sabotage de saisie clavier (triggers reliably from 4 chars, with BACK/DeadZone fallback!)
                 val pkg = event.packageName?.toString().orEmpty()
                 if (cfg.keyboardSabotageEnabled && pkg.isNotBlank() && pkg != packageName &&
                     overlayMgr?.isTimeoutCornerActive() != true
                 ) {
-                    val typed = event.text?.joinToString(" ").orEmpty()
-                    val cooldown = (48_000L - cfg.chaosLevel * 3_200L).coerceAtLeast(15_000L)
-                    if (typed.length >= 6 && now - lastKbSabotageMs > cooldown && Random.nextFloat() < (0.16f + cfg.chaosLevel * 0.04f)) {
+                    val typed = event.text.joinToString(" ")
+                    val cooldown = (24_000L - cfg.chaosLevel * 1_600L).coerceAtLeast(8_000L)
+                    val prob = (0.35f + cfg.chaosLevel * 0.055f).coerceAtMost(0.90f)
+                    if (typed.length >= 4 && now - lastKbSabotageMs > cooldown && Random.nextFloat() < prob) {
+                        lastKbSabotageMs = now
+                        var replaced = false
                         val src = event.source
                         if (src != null) {
                             try {
                                 if (src.isEditable) {
-                                    lastKbSabotageMs = now
                                     val replacement = KEYBOARD_SABOTAGE_PHRASES.random()
                                     val args = Bundle().apply {
                                         putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, replacement)
                                     }
-                                    val ok = src.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-                                    if (!ok) {
-                                        performGlobalAction(GLOBAL_ACTION_BACK)
-                                    }
-                                    settings.adjustMood(+4)
-                                    overlayMgr?.say("Hihi j'ai corrigé ton message ! 😈", 3_200L)
+                                    replaced = src.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                                 }
                             } catch (_: Throwable) {
                             } finally {
                                 try { src.recycle() } catch (_: Throwable) {}
                             }
                         }
+                        if (!replaced) {
+                            try { performGlobalAction(GLOBAL_ACTION_BACK) } catch (_: Throwable) {}
+                            if (cfg.deadZoneKeyboardEnabled && cfg.chaosLevel >= 8) {
+                                overlayMgr?.showDeadZoneKeyboardOverlay(18)
+                            }
+                        }
+                        settings.adjustMood(+5)
+                        overlayMgr?.say(
+                            if (replaced) "Hihi j'ai corrigé ton message ! 😈" else "Clavier fermé ! Tu écris à qui là ?! 😈",
+                            3_200L
+                        )
                     }
                 }
             }
 
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_CLICKED -> {
-                val pkg = event.packageName?.toString()?.lowercase().orEmpty()
-                if (pkg.isNotEmpty() && isProtectedSettingsPackage(pkg) && (cfg.challengeLocked || cfg.strictSettingsLock)) {
-                    enforceStrictSettingsLock(pkg, cfg)
+                val pkgRaw = event.packageName?.toString()?.trim().orEmpty()
+                val pkgLower = pkgRaw.lowercase()
+                if (pkgLower == "com.android.systemui") {
+                    maybeBlockSystemUiShade(cfg, event.className?.toString()?.lowercase().orEmpty(), event.text.joinToString(" ").lowercase())
                     return
                 }
-                // #31 & #37 Click-Steal / Anti-Like & Follow Shield on watched apps
+                if (pkgRaw.isNotEmpty() && !pkgLower.contains("inputmethod") && !pkgLower.contains("gboard")) {
+                    if (isProtectedSettingsPackage(pkgLower) && (cfg.challengeLocked || cfg.strictSettingsLock)) {
+                        enforceStrictSettingsLock(pkgRaw, cfg)
+                        return
+                    }
+                    if (pkgRaw != currentPkg) {
+                        currentPkg = pkgRaw
+                        currentPkgEnteredMs = now
+                        scrollBurstCount = 0
+                        onForegroundAppChanged(pkgRaw, cfg)
+                    }
+                }
+                // #31 & #37 Click-Steal / Anti-Like & Follow Shield across ALL apps (not just watchedPackages!)
                 if ((cfg.clickStealShieldEnabled || cfg.antiLikeFollowEnabled) &&
-                    currentPkg.isNotBlank() && currentPkg != packageName &&
-                    cfg.watchedPackages.contains(currentPkg)
+                    currentPkg.isNotBlank() && currentPkg != packageName && !isLauncherPackage(currentPkg)
                 ) {
-                    val cooldown = (20_000L - cfg.chaosLevel * 1_100L).coerceAtLeast(8_000L)
+                    val cooldown = (14_000L - cfg.chaosLevel * 850L).coerceAtLeast(5_500L)
                     if (now - lastClickShieldMs > cooldown) {
                         lastClickShieldMs = now
                         scanAndShieldSensitiveButton(cfg)
@@ -463,29 +543,67 @@ class DemonAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun maybeBlockSystemUiShade(cfg: DemonConfigSnapshot, cls: String, evText: String) {
+        if (!cfg.closeNotifShadeEnabled && !cfg.blockQuickSettingsEnabled) return
+        if (try { keyguardManager.isKeyguardLocked } catch (_: Throwable) { false }) return
+        if (cls.contains("volume") || cls.contains("toast")) return
+        val now = System.currentTimeMillis()
+        if (now - lastShadeDismissMs < 1_400L) return
+        lastShadeDismissMs = now
+        dismissNotificationShadeSafely()
+        settings.adjustMood(+4)
+        val isQs = cls.contains("qs") || cls.contains("quick") || cls.contains("control") ||
+            evText.contains("wi-fi") || evText.contains("wifi") || evText.contains("avion")
+        overlayMgr?.say(
+            if (isQs) "Pas touche aux Réglages Rapides ! 😈" else "Notifications interdites ! 😤",
+            2_800L
+        )
+    }
+
+    private fun isLauncherPackage(pkg: String): Boolean {
+        val l = pkg.lowercase()
+        return l.contains("launcher") || l.contains("trebuchet") || l.contains("miui.home") || l.contains("nexuslauncher")
+    }
+
     private fun dismissNotificationShadeSafely() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
-            } else {
-                performGlobalAction(GLOBAL_ACTION_BACK)
             }
+            performGlobalAction(GLOBAL_ACTION_BACK)
         } catch (_: Throwable) {
-            try { performGlobalAction(GLOBAL_ACTION_BACK) } catch (_: Throwable) {}
+        }
+        // Fallback upward swipe from bottom of shade for OEM Control Centers (MIUI/HyperOS/OneUI)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                val path = Path().apply {
+                    moveTo(screenW * 0.5f, screenH * 0.88f)
+                    lineTo(screenW * 0.5f, screenH * 0.12f)
+                }
+                val stroke = GestureDescription.StrokeDescription(path, 0L, 180L)
+                dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
+            } catch (_: Throwable) {
+            }
         }
     }
 
     /** #26 Real downward-drag gesture (scrolls content back UP!) */
-    private fun performCounterScrollGesture() {
+    private fun performCounterScrollGesture(doubleSwipe: Boolean = false) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
-        try {
-            val path = Path().apply {
-                moveTo(screenW * 0.5f, screenH * 0.30f)
-                lineTo(screenW * 0.5f, screenH * 0.78f)
+        fun swipeOnce() {
+            try {
+                val path = Path().apply {
+                    moveTo(screenW * 0.5f, screenH * 0.24f)
+                    lineTo(screenW * 0.5f, screenH * 0.84f)
+                }
+                val stroke = GestureDescription.StrokeDescription(path, 0L, 210L)
+                dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
+            } catch (_: Throwable) {
             }
-            val stroke = GestureDescription.StrokeDescription(path, 0L, 220L)
-            dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
-        } catch (_: Throwable) {
+        }
+        swipeOnce()
+        if (doubleSwipe) {
+            mainHandler.postDelayed({ swipeOnce() }, 300L)
         }
     }
 
@@ -541,17 +659,21 @@ class DemonAccessibilityService : AccessibilityService() {
     }
 
     private fun findFirstMatchingNode(node: AccessibilityNodeInfo, keywords: List<String>, depth: Int = 0): AccessibilityNodeInfo? {
-        if (depth > 10) return null
+        if (depth > 12) return null
         val desc = node.contentDescription?.toString()?.lowercase().orEmpty()
         val txt = node.text?.toString()?.lowercase().orEmpty()
+        val vid = node.viewIdResourceName?.lowercase().orEmpty()
         if (node.isClickable && node.isVisibleToUser) {
             for (k in keywords) {
-                if ((desc.isNotEmpty() && desc.contains(k)) || (txt.isNotEmpty() && txt == k)) {
+                if ((desc.isNotEmpty() && desc.contains(k)) ||
+                    (txt.isNotEmpty() && txt.contains(k)) ||
+                    (vid.isNotEmpty() && vid.contains(k))
+                ) {
                     return AccessibilityNodeInfo.obtain(node)
                 }
             }
         }
-        val cnt = node.childCount.coerceAtMost(24)
+        val cnt = node.childCount.coerceAtMost(28)
         for (i in 0 until cnt) {
             val child = node.getChild(i) ?: continue
             val hit = findFirstMatchingNode(child, keywords, depth + 1)
@@ -678,34 +800,45 @@ class DemonAccessibilityService : AccessibilityService() {
             }
         }
         if (cfg.compulsiveBackEnabled) {
-            actions.add {
-                val times = if (cfg.moodScore > 75) 2 else 1
+            val backAction = {
+                val times = if (cfg.moodScore >= 70 || cfg.chaosLevel >= 9) 2 else 1
                 overlayMgr?.say("Retour ! Tu n'as rien à faire là ! ⬅️😈", 3_000L)
                 for (i in 0 until times) {
                     mainHandler.postDelayed({ try { performGlobalAction(GLOBAL_ACTION_BACK) } catch (_: Throwable) {} }, i * 260L)
                 }
             }
+            actions.add(backAction)
+            if (cfg.chaosLevel >= 8) actions.add(backAction)
         }
-        if (cfg.forcePauseVideoEnabled && isVideoPackage(currentPkg)) {
+        if (cfg.forcePauseVideoEnabled && (isVideoPackage(currentPkg) || cfg.watchedPackages.contains(currentPkg))) {
             actions.add { performVideoForcePause() }
+            if (isVideoPackage(currentPkg)) actions.add { performVideoForcePause() }
         }
         if (cfg.deadZoneKeyboardEnabled) {
-            actions.add { overlayMgr?.showDeadZoneKeyboardOverlay(if (cfg.chaosLevel >= 8) 35 else 22) }
+            actions.add { overlayMgr?.showDeadZoneKeyboardOverlay(if (cfg.chaosLevel >= 8) 32 else 20) }
         }
         if (cfg.surpriseQuizEnabled) {
             actions.add { overlayMgr?.showSurpriseQuizOverlay(cfg) }
         }
-        if (cfg.punishmentLinesEnabled && cfg.moodScore >= 65) {
-            actions.add { overlayMgr?.showPunishmentLinesOverlay(cfg) }
+        // Always active when enabled (no longer gated behind mood >= 65/75!), weighted 2x when strict/furious
+        if (cfg.punishmentLinesEnabled) {
+            val linesAction: () -> Unit = { overlayMgr?.showPunishmentLinesOverlay(cfg) }
+            actions.add(linesAction)
+            if (cfg.moodScore >= 65 || cfg.chaosLevel >= 9) actions.add(linesAction)
         }
-        if (cfg.timeoutCornerEnabled && cfg.moodScore >= 75) {
-            actions.add {
+        if (cfg.timeoutCornerEnabled) {
+            val cornerAction: () -> Unit = {
                 overlayMgr?.showTimeoutCornerWithVideo(
-                    reason = "${cfg.avatarName} est en colère ! Regarde la vidéo jusqu'au bout 😈",
+                    reason = "${cfg.avatarName} te met AU COIN ! Regarde la vidéo jusqu'au bout 😈",
                     durationSec = cfg.timeoutCornerSec,
                     cfg = cfg
                 )
             }
+            actions.add(cornerAction)
+            if (cfg.moodScore >= 70 || cfg.chaosLevel >= 9) actions.add(cornerAction)
+        }
+        if (cfg.clickStealShieldEnabled || cfg.antiLikeFollowEnabled) {
+            actions.add { scanAndShieldSensitiveButton(cfg) }
         }
         if (actions.isEmpty()) return
         actions.random().invoke()
@@ -714,7 +847,8 @@ class DemonAccessibilityService : AccessibilityService() {
     private fun isVideoPackage(pkg: String): Boolean {
         val l = pkg.lowercase()
         return l.contains("youtube") || l.contains("tiktok") || l.contains("musically") ||
-            l.contains("instagram") || l.contains("netflix") || l.contains("twitch") || l.contains("vlc")
+            l.contains("instagram") || l.contains("netflix") || l.contains("twitch") ||
+            l.contains("vlc") || l.contains("chrome") || l.contains("browser") || l.contains("snapchat")
     }
 
     fun triggerManualTest(kind: String) {
@@ -725,13 +859,19 @@ class DemonAccessibilityService : AccessibilityService() {
             "flash" -> overlayMgr?.showFullscreenPhotoFlash(cfg)
             "slideshow" -> overlayMgr?.showForcedSlideshow(cfg)
             "corner" -> overlayMgr?.showTimeoutCornerWithVideo(
-                reason = "Test Punition Au Coin (vidéo de ton dossier en boucle) 😈",
-                durationSec = cfg.timeoutCornerSec.coerceAtMost(20),
+                reason = "Punition Au Coin (vidéo de ton dossier en boucle) 😈",
+                durationSec = cfg.timeoutCornerSec.coerceAtMost(25),
                 cfg = cfg
             )
             "lines" -> overlayMgr?.showPunishmentLinesOverlay(cfg)
-            "deadzone" -> overlayMgr?.showDeadZoneKeyboardOverlay(15)
+            "deadzone" -> overlayMgr?.showDeadZoneKeyboardOverlay(18)
             "quiz" -> overlayMgr?.showSurpriseQuizOverlay(cfg)
+            "fury" -> {
+                settings.update { putInt("mood_score", 98) }
+                overlayMgr?.triggerPanicMode("CRISE DE COLÈRE ! Je ne te lâche plus ! 😈🔥", 5_500L)
+                overlayMgr?.showDraggedPhotoPopup(cfg)
+                mainHandler.postDelayed({ overlayMgr?.showDeadZoneKeyboardOverlay(15) }, 1_200L)
+            }
             "wallpaper" -> {
                 overlayMgr?.say("Changement de fond d'écran ! 🖼️😈", 4_000L)
                 Thread { MediaFolderHelper.applyRandomWallpaperPrank(applicationContext, cfg) }.start()
@@ -867,6 +1007,13 @@ class DemonAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun scheduleGuardLoop(delayMs: Long) {
+        mainHandler.removeCallbacks(guardTick)
+        if (screenInteractive && config?.enabled == true) {
+            mainHandler.postDelayed(guardTick, delayMs)
+        }
+    }
+
     private fun isCurfewActive(cfg: DemonConfigSnapshot): Boolean {
         if (!cfg.curfewEnabled) return false
         val h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
@@ -977,6 +1124,7 @@ class DemonAccessibilityService : AccessibilityService() {
         }
         workerHandler?.removeCallbacks(visionTick)
         mainHandler.removeCallbacks(prankTick)
+        mainHandler.removeCallbacks(guardTick)
         try { workerThread?.quitSafely() } catch (_: Throwable) {}
         overlayMgr?.detachAll()
         overlayMgr = null
