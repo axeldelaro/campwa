@@ -592,19 +592,28 @@ class WitchRpgBattleOverlay(
             }
             val targetLv = (playerLv - totalLevelsLost).coerceAtLeast(1)
 
-            // Apply Trophy Wallpaper + REAL Shizuku/MDM app greying safely on background thread
+            // Apply REAL Shizuku/MDM app greying on background thread.
+            // CRITICAL ANDROID 12-16 FIX: Do NOT call WallpaperManager.setBitmap() while the End Scene is still open!
+            // On Android 12-16 (Material You / Xiaomi HyperOS), changing wallpaper immediately dispatches a dynamic
+            // theme ConfigurationChange that destroys & recreates the foreground Activity, ejecting the End Scene!
+            // Instead we apply the Trophy Wallpaper right AFTER the player finishes the 5-step End Scene!
             val wPath = curWitch.sourceFilePath
             val wUri = curWitch.sourceUri
             val mdmSummaryRef = AtomicReference("⏳ Application du sceau système Shizuku/MDM…")
             val mdmAffectedAppRef = AtomicReference<String?>(null)
             var currentStepIndex = 0
 
+            fun applyDeferredTrophyWallpaper() {
+                if (cfg.wallpaperPrankEnabled && (wPath != null || wUri != null)) {
+                    Thread {
+                        try {
+                            MediaFolderHelper.applySpecificWallpaper(context.applicationContext, cfg, wPath, wUri)
+                        } catch (_: Throwable) {}
+                    }.start()
+                }
+            }
+
             Thread {
-                try {
-                    if (cfg.wallpaperPrankEnabled && (wPath != null || wUri != null)) {
-                        MediaFolderHelper.applySpecificWallpaper(context, cfg, wPath, wUri)
-                    }
-                } catch (_: Throwable) {}
                 try {
                     val rep = DemonMdmManager.applyDefeatMdmDamage(context, playerLv, severe)
                     mdmSummaryRef.set(rep.summary)
@@ -710,6 +719,7 @@ class WitchRpgBattleOverlay(
                             settings.update { putInt("player_hp", 80) }
                             settings.adjustMood(+18)
                             closeBattleAndNotify()
+                            applyDeferredTrophyWallpaper()
                             onSayPet("💋 Défaite face à ${curWitch.def.name} ! ${mdmAffectedAppRef.get()?.let { "$it grisée !" } ?: "Énergie drainée !"}")
                             if (cfg.unremovableAltarEnabled) {
                                 try { onSpawnTrappedAltar(cfg) } catch (_: Throwable) {}
@@ -717,8 +727,20 @@ class WitchRpgBattleOverlay(
                         }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(5) })
                         actionsBox.addView(row)
                     }
-                } catch (_: Throwable) {
-                    closeBattleAndNotify()
+                } catch (e: Throwable) {
+                    // NEVER silently eject the End Scene — show safe fallback step!
+                    speakerTv.text = "💋 ${curWitch.def.name} — Scène Finale (${currentStepIndex + 1}/$totalSteps)"
+                    dialogueTv.text = "Ton énergie a été drainée par ${curWitch.def.name} ! (${e.javaClass.simpleName})"
+                    actionsBox.removeAllViews()
+                    if (currentStepIndex < totalSteps - 1) {
+                        actionsBox.addView(makeActionBtn("Suite ▶", Color.rgb(162, 28, 175)) {
+                            currentStepIndex++; showSceneStep()
+                        })
+                    } else {
+                        actionsBox.addView(makeActionBtn("😈 Fermer", Color.rgb(64, 24, 78)) {
+                            closeBattleAndNotify()
+                        })
+                    }
                 }
             }
             showSceneStep()

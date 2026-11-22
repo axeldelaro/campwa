@@ -973,7 +973,7 @@ class DemonOverlayManager(
     }
 
     fun presentFullscreenOverlay(fullView: View) {
-        dismissModal()
+        dismissModal(cleanupBattle = false)
         modalToken++
         try {
             val params = WindowManager.LayoutParams(
@@ -992,7 +992,7 @@ class DemonOverlayManager(
         }
     }
 
-    fun dismissModal() {
+    fun dismissModal(cleanupBattle: Boolean = true) {
         modalToken++
         timeoutCornerActive = false
         timeoutTimerTv = null
@@ -1001,7 +1001,7 @@ class DemonOverlayManager(
         petView?.seductionAuraActive = false
         try { activeTimeoutVideoView?.stopPlayback() } catch (_: Throwable) {}
         activeTimeoutVideoView = null
-        witchRpgBattle.forceCleanup()
+        if (cleanupBattle) witchRpgBattle.forceCleanup()
         val v = activeModalView ?: return
         activeModalView = null
         try { wm.removeViewImmediate(v) } catch (_: Throwable) {}

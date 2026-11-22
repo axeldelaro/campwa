@@ -113,8 +113,8 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demonmom-v6.0.${{ github.run_number }}
-          name: "DemonMom RPG v6.0.${{ github.run_number }} (Fix Shizuku Provider + Grisement Applis • Fix Crash Scène Fin • Combats Tactiques Longs & Variés • Forge & Tour Infinie)"
+          tag_name: demonmom-v6.1.${{ github.run_number }}
+          name: "DemonMom RPG v6.1.${{ github.run_number }} (Fix Éjection Scènes de Fin Android 16/HyperOS + Fix Overlay + Shizuku + Combats Tactiques)"
           body: |
             ### DemonMom RPG v6.0 (`demonmom-v6.0.${{ github.run_number }}`)
 
