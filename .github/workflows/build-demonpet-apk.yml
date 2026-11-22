@@ -113,8 +113,8 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demonmom-v4.0.${{ github.run_number }}
-          name: "DemonMom RPG v4.0.${{ github.run_number }} (Femdom Witch RPG Plein Écran • Détourage Auto Sorcières • Scènes Fin de Drainage • Dégâts MDM par Usage)"
+          tag_name: demonmom-v4.1.${{ github.run_number }}
+          name: "DemonMom RPG v4.1.${{ github.run_number }} (Shizuku Natif Android 16 • Dégâts Applis par Usage sans Reset • Femdom Witch RPG Plein Écran)"
           body: |
             ### DemonMom RPG v4.0 (`demonmom-v4.0.${{ github.run_number }}`)
 

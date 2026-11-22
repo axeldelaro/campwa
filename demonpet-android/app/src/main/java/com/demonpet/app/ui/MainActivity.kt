@@ -44,11 +44,13 @@ import com.demonpet.app.config.GenderFilter
 import com.demonpet.app.config.SeverityPreset
 import com.demonpet.app.config.WallpaperTarget
 import com.demonpet.app.mdm.DemonMdmManager
+import com.demonpet.app.mdm.DemonShizukuBridge
 import com.demonpet.app.media.MediaFolderHelper
 import com.demonpet.app.overlay.DemonPetView
 import com.demonpet.app.receiver.DemonDeviceAdminReceiver
 import com.demonpet.app.service.DemonAccessibilityService
 import com.demonpet.app.service.DemonCompanionService
+import rikka.shizuku.Shizuku
 
 /**
  * Clean 4-Tab Native Material 3 Dashboard for DemonMom AI v2.0:
@@ -149,15 +151,33 @@ class MainActivity : AppCompatActivity() {
         renderScreen(settings.snapshot())
     }
 
+    private val shizukuPermListener = Shizuku.OnRequestPermissionResultListener { reqCode, grantResult ->
+        if (reqCode == DemonShizukuBridge.REQ_CODE_SHIZUKU) {
+            mainHandler.post {
+                if (grantResult == PackageManager.PERMISSION_GRANTED) {
+                    Thread { DemonShizukuBridge.ensureBound() }.start()
+                    Toast.makeText(this, "⚡ Shizuku autorisé ! Dégâts système par ordre d'usage ACTIFS !", Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(this, "Autorisation Shizuku refusée.", Toast.LENGTH_SHORT).show()
+                }
+                if (!settings.challengeLocked) renderActiveTab(settings.snapshot())
+            }
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         DemonSettings.addListener(cfgListener)
         DemonAccessibilityService.addStateListener(accessListener)
+        try { Shizuku.addRequestPermissionResultListener(shizukuPermListener) } catch (_: Throwable) {}
     }
 
     override fun onResume() {
         super.onResume()
         val snap = settings.snapshot()
+        if (DemonShizukuBridge.hasShizukuPermission()) {
+            Thread { DemonShizukuBridge.ensureBound() }.start()
+        }
         if (lastRenderedLockState != snap.challengeLocked) {
             renderScreen(snap)
         } else if (!snap.challengeLocked) {
@@ -172,6 +192,7 @@ class MainActivity : AppCompatActivity() {
         super.onStop()
         DemonSettings.removeListener(cfgListener)
         DemonAccessibilityService.removeStateListener(accessListener)
+        try { Shizuku.removeRequestPermissionResultListener(shizukuPermListener) } catch (_: Throwable) {}
         mainHandler.removeCallbacks(animTick)
     }
 
@@ -311,31 +332,62 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun performFullUnlock() {
-        val msg = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
-        DemonDeviceAdminReceiver.removeAdminSafely(applicationContext)
-        DemonAccessibilityService.activeInstance?.performSecretExitUnlock()
-        settings.update {
-            putBoolean("challenge_locked", false)
-            putBoolean("strict_settings_lock", false)
-            putBoolean("enabled", false)
-            putInt("active_drain_pct", 0)
-            putInt("player_hp", 100)
-        }
-        DemonCompanionService.stop(applicationContext)
-        Toast.makeText(this, "🔓 Code 100205 accepté ! $msg", Toast.LENGTH_LONG).show()
-        renderScreen(settings.snapshot())
+        Thread {
+            val msg = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
+            mainHandler.post {
+                DemonDeviceAdminReceiver.removeAdminSafely(applicationContext)
+                DemonAccessibilityService.activeInstance?.performSecretExitUnlock()
+                settings.update {
+                    putBoolean("challenge_locked", false)
+                    putBoolean("strict_settings_lock", false)
+                    putBoolean("enabled", false)
+                    putInt("active_drain_pct", 0)
+                    putInt("player_hp", 100)
+                }
+                DemonCompanionService.stop(applicationContext)
+                Toast.makeText(this, "🔓 Code 100205 accepté ! $msg", Toast.LENGTH_LONG).show()
+                renderScreen(settings.snapshot())
+            }
+        }.start()
     }
 
     private fun performEndGameRestoreAll() {
-        val msg = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
-        settings.update {
-            putInt("player_level", 20)
-            putInt("player_hp", 100)
-            putInt("active_drain_pct", 0)
-            putInt("mood_score", 30)
+        Toast.makeText(this, "Restauration complète en cours…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val msg = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
+            mainHandler.post {
+                settings.update {
+                    putInt("player_level", 20)
+                    putInt("player_hp", 100)
+                    putInt("active_drain_pct", 0)
+                    putInt("mood_score", 30)
+                }
+                Toast.makeText(this, "🕊️ Fin du jeu ! $msg", Toast.LENGTH_LONG).show()
+                renderActiveTab(settings.snapshot())
+            }
+        }.start()
+    }
+
+    private fun handleShizukuAction() {
+        when {
+            DemonShizukuBridge.hasShizukuPermission() -> {
+                Thread { DemonShizukuBridge.ensureBound() }.start()
+                Toast.makeText(this, "⚡ Shizuku déjà actif et connecté !", Toast.LENGTH_SHORT).show()
+            }
+            DemonShizukuBridge.isShizukuRunning() -> {
+                DemonShizukuBridge.requestShizukuPermission()
+            }
+            DemonShizukuBridge.isShizukuInstalled(this) -> {
+                Toast.makeText(this, "Lance Shizuku via « Débogage sans fil », puis reviens ici !", Toast.LENGTH_LONG).show()
+                DemonShizukuBridge.openShizukuApp(this)
+            }
+            else -> {
+                Toast.makeText(this, "Installe d'abord l'app gratuite Shizuku (Play Store ou GitHub) !", Toast.LENGTH_LONG).show()
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/RikkaApps/Shizuku/releases/latest")))
+                } catch (_: Throwable) {}
+            }
         }
-        Toast.makeText(this, "🕊️ Fin du jeu ! $msg", Toast.LENGTH_LONG).show()
-        renderActiveTab(settings.snapshot())
     }
 
     private fun copyTermuxMdmScript() {
@@ -553,30 +605,28 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // MDM Status & End-Game Full Restore Bar
-        val isDo = DemonMdmManager.isDeviceOwner(this)
+        // Shizuku / MDM Status & End-Game Full Restore Bar
+        val privOk = DemonMdmManager.hasPrivilegedControl(this)
         val susp = DemonMdmManager.getSuspendedPackages(this)
         val hid = DemonMdmManager.getHiddenPackages(this)
         val curses = DemonMdmManager.getActiveCurses(this)
         val mdmInfo = TextView(this).apply {
-            text = if (isDo) {
-                "👑 MDM Device Owner ACTIF • ${susp.size + hid.size} appli(s) gelée(s) • ${curses.size} sceau(x)"
-            } else {
-                "⚙️ MDM Device Owner non activé (optionnel pour geler les applis par usage)"
-            }
-            setTextColor(if (isDo) Color.rgb(167, 243, 208) else Color.rgb(180, 180, 198))
+            text = "${DemonMdmManager.getControlStatusLabel(this@MainActivity)} • ${susp.size + hid.size} appli(s) gelée(s) • ${curses.size} sceau(x)"
+            setTextColor(if (privOk) Color.rgb(167, 243, 208) else Color.rgb(253, 186, 116))
             textSize = 11.5f
-            setPadding(0, dp(10), 0, dp(4))
+            setPadding(0, dp(10), 0, dp(6))
         }
         hero.addView(mdmInfo)
 
         val mdmRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        if (!isDo) {
-            mdmRow.addView(makeSecondaryBtn("📋 Script Termux MDM") { copyTermuxMdmScript() }, gridLp(endMargin = dp(5)))
+        if (!privOk) {
+            mdmRow.addView(makeAccentButton("⚡ Autoriser Shizuku", Color.rgb(126, 34, 206)) {
+                handleShizukuAction()
+            }, gridLp(endMargin = dp(5)))
         }
         mdmRow.addView(makeAccentButton("🕊️ Fin du jeu : Tout restaurer", Color.rgb(16, 128, 96)) {
             performEndGameRestoreAll()
-        }, gridLp(startMargin = if (!isDo) dp(5) else 0))
+        }, gridLp(startMargin = if (!privOk) dp(5) else 0))
         hero.addView(mdmRow)
         root.addView(hero)
 
@@ -846,16 +896,26 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== TAB 3 : RÉGLAGES (SETTINGS LOCK, APPS, TIMERS) ====================
     private fun populateSettingsTab(root: LinearLayout, snap: DemonConfigSnapshot) {
-        // MDM Device Owner Card (ADB / Termux 1-paste setup + Usage Stats + Safe Release)
+        // Shizuku & MDM Privileged System Damage Card (Works on Android 16 without reset!)
         val mdmCard = makeCard(accentStroke = Color.argb(120, 16, 185, 129))
         val doActive = DemonMdmManager.isDeviceOwner(this)
+        val shizukuOk = DemonMdmManager.isShizukuActive()
         val usageOk = DemonMdmManager.hasUsageStatsAccess(this)
-        mdmCard.addView(sectionTitle("👑 MDM Device Owner (Dégâts réels par usage)"))
+        mdmCard.addView(sectionTitle("⚡ Shizuku / MDM — Dégâts réels par ordre d'usage"))
         mdmCard.addView(sectionSub(
-            if (doActive) "Actif ✅ : les défaites RPG suspendent tes applis par ordre d'usage et posent des sceaux réversibles."
-            else "Active via Termux en 1 copier-coller pour autoriser la suspension d'applis par ordre d'usage et les sceaux MDM."
+            when {
+                shizukuOk -> "⚡ Shizuku ACTIF ✅ : les défaites RPG suspendent/désactivent tes applis par ordre d'usage sans reset usine !"
+                doActive -> "👑 MDM Device Owner ACTIF ✅ : suspension d'applis et sceaux système actifs."
+                else -> "Idéal Android 15/16 (Xiaomi HyperOS) : lance Shizuku via Débogage sans fil puis clique Autoriser ci-dessous !"
+            }
         ))
-        mdmCard.addView(makeAccentButton("📋 Copier le script Termux (ADB + MDM + Accessibilité)", Color.rgb(126, 34, 206)) {
+        mdmCard.addView(makeAccentButton(
+            if (shizukuOk) "✅ Shizuku connecté (Android 11–16)" else "⚡ Autoriser / Ouvrir Shizuku (Sans reset !)",
+            if (shizukuOk) Color.rgb(16, 128, 96) else Color.rgb(126, 34, 206)
+        ) {
+            handleShizukuAction()
+        })
+        mdmCard.addView(makeSecondaryBtn("📋 Copier script Termux (Permissions appops + UsageStats)") {
             copyTermuxMdmScript()
         })
         if (!usageOk) {
@@ -872,9 +932,13 @@ class MainActivity : AppCompatActivity() {
                     .setTitle("Retirer Device Owner ?")
                     .setMessage("Toutes les applis suspendues et restrictions MDM seront restaurées, puis le statut Device Owner sera retiré.")
                     .setPositiveButton("Retirer & Restaurer") { _, _ ->
-                        val res = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = true)
-                        Toast.makeText(this, res, Toast.LENGTH_LONG).show()
-                        renderActiveTab(settings.snapshot())
+                        Thread {
+                            val res = DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = true)
+                            mainHandler.post {
+                                Toast.makeText(this, res, Toast.LENGTH_LONG).show()
+                                renderActiveTab(settings.snapshot())
+                            }
+                        }.start()
                     }
                     .setNegativeButton("Annuler", null)
                     .show()

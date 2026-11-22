@@ -145,7 +145,7 @@ class DemonCompanionService : Service() {
                     try { startActivity(home) } catch (_: Throwable) {}
                 },
                 onExitUnlocked = {
-                    DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
+                    Thread { DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false) }.start()
                     DemonDeviceAdminReceiver.removeAdminSafely(applicationContext)
                     settings.update {
                         putBoolean("challenge_locked", false)

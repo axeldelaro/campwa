@@ -24,6 +24,11 @@
     <!-- Media & Hidden Folder Browsing (All Files Access + Media Images & Videos) -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API" />
+
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+    </queries>
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />

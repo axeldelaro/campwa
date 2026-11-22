@@ -1,2 +1,5 @@
 -keep class ai.onnxruntime.** { *; }
 -keep class com.google.mlkit.** { *; }
+-keep class rikka.shizuku.** { *; }
+-keep class com.demonpet.app.mdm.DemonShizukuUserService { *; }
+-keep class com.demonpet.app.mdm.IDemonShellService** { *; }

@@ -246,7 +246,11 @@ class WitchRpgBattleOverlay(
                 embrace >= 75 -> "🔥 EMPRISE CRITIQUE"
                 else -> "⚔️ DUEL"
             }
-            val mdmTag = if (DemonMdmManager.isDeviceOwner(context)) " • 👑 MDM" else ""
+            val mdmTag = when {
+                DemonMdmManager.isDeviceOwner(context) -> " • 👑 MDM"
+                DemonMdmManager.isShizukuActive() -> " • ⚡ SHIZUKU"
+                else -> ""
+            }
             bossTitleTv.text = "${curWitch.profile.name} • NV ${curWitch.profile.bossLevel} (${curWitch.profile.element}) • $phaseLabel$mdmTag"
             val stStr = if (status.isNotEmpty()) " • ⚠️ $status" else ""
             playerStatsTv.text = "NV $playerLv (${obedienceRankFor(playerLv)}) | PV $hp/100 | PM $mp/60 | Emprise $embrace% | Boss $witchResolve%$stStr"
@@ -274,21 +278,29 @@ class WitchRpgBattleOverlay(
         lateinit var renderTurnControls: () -> Unit
 
         fun finishBattleVictory() {
-            val healedApp = DemonMdmManager.healOneSuspendedApp(context)
             settings.adjustPlayerStats(levelDelta = +2, hpDelta = 100 - hp, drainDelta = -100)
             settings.adjustMood(-18)
             onClearVisualDrain()
-            val bonusMsg = if (healedApp != null) "\n🕊️ Récompense MDM : « $healedApp » est réactivée !" else ""
-            typeDialogue("✨ VICTOIRE !", "Tu as brisé l'emprise de ${curWitch.profile.name} ! (+2 NV, Luminosité & Qualité restaurées)$bonusMsg")
+            typeDialogue("✨ VICTOIRE !", "Tu as brisé l'emprise de ${curWitch.profile.name} ! (+2 NV, Luminosité & Qualité restaurées)…")
             actionsBox.removeAllViews()
             actionsBox.addView(makeActionBtn("Continuer (Victoire 🏆)", Color.rgb(16, 185, 129)) {
                 forceCleanup()
                 onDismissFullscreen()
                 onSayPet("Grr… tu t'en sors cette fois ! (+2 NV) 😤")
             })
+            Thread {
+                val healedApp = DemonMdmManager.healOneSuspendedApp(context)
+                if (healedApp != null) {
+                    mainHandler.post {
+                        if (sessionActive) {
+                            typeDialogue("✨ VICTOIRE !", "Tu as brisé l'emprise de ${curWitch.profile.name} ! (+2 NV)\n🕊️ Récompense Shizuku/MDM : « $healedApp » est réactivée !")
+                        }
+                    }
+                }
+            }.start()
         }
 
-        // ==================== #113 / #114 / #115 CINEMATIC DRAIN END-SCENE + REAL MDM DAMAGE ====================
+        // ==================== #113 / #114 / #115 CINEMATIC DRAIN END-SCENE + REAL SHIZUKU/MDM DAMAGE ====================
         fun startCinematicDrainEndScene() {
             inEndScene = true
             stage.captureZoomFactor = 1.0f
@@ -296,16 +308,21 @@ class WitchRpgBattleOverlay(
             onApplyVisualDrain(85, cfg)
             refreshHud()
 
-            // Apply REAL MDM damage (suspends most-used app by UsageStats + reversible seal!)
             val severe = playerLv <= 6 || cfg.chaosLevel >= 9
-            val mdmReport = DemonMdmManager.applyDefeatMdmDamage(context, playerLv, severe)
             val totalLevelsLost = if (playerLv <= 4) 1 else Random.nextInt(2, 5)
             val targetLv = (playerLv - totalLevelsLost).coerceAtLeast(1)
 
-            // Apply victorious Witch as wallpaper!
+            // Apply victorious Witch as wallpaper + REAL Shizuku/MDM damage asynchronously off UI thread!
             val wPath = curWitch.sourceFilePath
             val wUri = curWitch.sourceUri
-            Thread { MediaFolderHelper.applySpecificWallpaper(context, cfg, wPath, wUri) }.start()
+            val mdmSummaryRef = java.util.concurrent.atomic.AtomicReference("⏳ Application de la malédiction système…")
+            val mdmAffectedAppRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
+            Thread {
+                MediaFolderHelper.applySpecificWallpaper(context, cfg, wPath, wUri)
+                val rep = DemonMdmManager.applyDefeatMdmDamage(context, playerLv, severe)
+                mdmSummaryRef.set(rep.summary)
+                mdmAffectedAppRef.set(rep.affectedAppLabel)
+            }.start()
 
             // Animated cascading Level Drain!
             val drainStep = object : Runnable {
@@ -323,29 +340,27 @@ class WitchRpgBattleOverlay(
             }
             mainHandler.postDelayed(drainStep, 350L)
 
-            val scenes = ArrayList<Pair<String, String>>()
             val mono = curWitch.profile.defeatMonologue
-            scenes.add(curWitch.profile.name to mono[0])
-            scenes.add(
-                curWitch.profile.name to (mono[1] + "\n\n" + mdmReport.summary)
-            )
-            if (targetLv <= 1) {
-                scenes.add("💀 BAD END ULTIME — NIVEAU 1" to "Tu es tombé au NIVEAU 1 (Soumis Absolu) ! Plus aucune volonté… La Sorcière règne sur ton écran et garde ton fond d'écran en trophée ! 👑💜")
-            } else {
-                scenes.add("💋 DÉFAITE — ÉNERGIE DRAINÉE" to mono[2])
-            }
-            // #115 Classic MGQ Sarcastic Post-Defeat Evaluation!
-            scenes.add("🔮 Conseil Post-Défaite (MGQ)" to curWitch.profile.mgqAdviceLine)
-
             var sceneIdx = 0
+            val totalSteps = 4
+
             fun showSceneStep() {
-                val (spk, txt) = scenes[sceneIdx]
+                val (spk, txt) = when (sceneIdx) {
+                    0 -> curWitch.profile.name to mono[0]
+                    1 -> curWitch.profile.name to (mono[1] + "\n\n" + mdmSummaryRef.get())
+                    2 -> if (targetLv <= 1) {
+                        "💀 BAD END ULTIME — NIVEAU 1" to "Tu es tombé au NIVEAU 1 (Soumis Absolu) ! Plus aucune volonté… La Sorcière règne sur ton écran et garde ton fond d'écran en trophée ! 👑💜"
+                    } else {
+                        "💋 DÉFAITE — ÉNERGIE DRAINÉE" to mono[2]
+                    }
+                    else -> "🔮 Conseil Post-Défaite (MGQ)" to curWitch.profile.mgqAdviceLine
+                }
                 typeDialogue(spk, txt)
                 stage.triggerWitchAttackLunge(intense = sceneIdx < 2)
                 onVibrate(60L)
                 actionsBox.removeAllViews()
-                if (sceneIdx < scenes.size - 1) {
-                    actionsBox.addView(makeActionBtn("Suite ▶ (${sceneIdx + 1}/${scenes.size})", Color.rgb(162, 28, 175)) {
+                if (sceneIdx < totalSteps - 1) {
+                    actionsBox.addView(makeActionBtn("Suite ▶ (${sceneIdx + 1}/$totalSteps)", Color.rgb(162, 28, 175)) {
                         sceneIdx++
                         showSceneStep()
                     })
@@ -362,7 +377,7 @@ class WitchRpgBattleOverlay(
                         settings.adjustMood(+18)
                         forceCleanup()
                         onDismissFullscreen()
-                        onSayPet("💋 Drain terminé ! ${mdmReport.affectedAppLabel?.let { "$it suspendue !" } ?: "Tu m'appartiens !"}")
+                        onSayPet("💋 Drain terminé ! ${mdmAffectedAppRef.get()?.let { "$it suspendue !" } ?: "Tu m'appartiens !"}")
                         if (cfg.unremovableAltarEnabled) onSpawnTrappedAltar(cfg)
                     }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(6) })
                     actionsBox.addView(row)

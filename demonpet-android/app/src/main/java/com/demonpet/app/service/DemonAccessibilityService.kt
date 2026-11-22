@@ -1059,7 +1059,7 @@ class DemonAccessibilityService : AccessibilityService() {
     }
 
     fun performSecretExitUnlock() {
-        DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false)
+        Thread { DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false) }.start()
         DemonDeviceAdminReceiver.removeAdminSafely(applicationContext)
         settings.update {
             putBoolean("challenge_locked", false)
