@@ -973,8 +973,19 @@ class DemonOverlayManager(
     }
 
     fun presentFullscreenOverlay(fullView: View) {
-        dismissModal(cleanupBattle = false)
+        // Detach any PREVIOUS modal view cleanly WITHOUT calling witchRpgBattle.forceCleanup()
+        // (calling forceCleanup() here would kill sessionActive on the battle we are actively mounting!)
         modalToken++
+        timeoutCornerActive = false
+        timeoutTimerTv = null
+        timeoutTickRunnable?.let { mainHandler.removeCallbacks(it) }
+        timeoutTickRunnable = null
+        try { activeTimeoutVideoView?.stopPlayback() } catch (_: Throwable) {}
+        activeTimeoutVideoView = null
+        activeModalView?.let { prev ->
+            activeModalView = null
+            try { wm.removeViewImmediate(prev) } catch (_: Throwable) {}
+        }
         try {
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -982,7 +993,8 @@ class DemonOverlayManager(
                 windowType,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
                 PixelFormat.TRANSLUCENT
             )
             wm.addView(fullView, params)
@@ -992,7 +1004,15 @@ class DemonOverlayManager(
         }
     }
 
-    fun dismissModal(cleanupBattle: Boolean = true) {
+    fun showWitchBattleForDef(cfg: DemonConfigSnapshot, def: com.demonpet.app.rpg.WitchCatalog.WitchDef) {
+        mainHandler.post {
+            if (activeModalView != null) return@post
+            petView?.seductionAuraActive = true
+            witchRpgBattle.launchBattleForWitch(cfg, def)
+        }
+    }
+
+    fun dismissModal() {
         modalToken++
         timeoutCornerActive = false
         timeoutTimerTv = null
@@ -1001,7 +1021,6 @@ class DemonOverlayManager(
         petView?.seductionAuraActive = false
         try { activeTimeoutVideoView?.stopPlayback() } catch (_: Throwable) {}
         activeTimeoutVideoView = null
-        if (cleanupBattle) witchRpgBattle.forceCleanup()
         val v = activeModalView ?: return
         activeModalView = null
         try { wm.removeViewImmediate(v) } catch (_: Throwable) {}

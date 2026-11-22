@@ -24,6 +24,9 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -54,9 +57,11 @@ import com.demonpet.app.overlay.WitchRpgBattleOverlay
 import com.demonpet.app.receiver.DemonDeviceAdminReceiver
 import com.demonpet.app.rpg.WitchCatalog
 import com.demonpet.app.rpg.WitchRpgState
+import com.demonpet.app.rpg.WitchStoryEngine
 import com.demonpet.app.service.DemonAccessibilityService
 import com.demonpet.app.service.DemonCompanionService
 import rikka.shizuku.Shizuku
+import kotlin.random.Random
 
 /**
  * DemonMom RPG v6.0 — Complete 50-Witch Tactical Dark-Fantasy RPG & Reactive Shizuku Punishment Hub:
@@ -103,6 +108,11 @@ class MainActivity : AppCompatActivity() {
 
     private val cfgListener: (DemonConfigSnapshot) -> Unit = { snap ->
         mainHandler.post {
+            if (inAppBattle.isBattleActive()) {
+                // Never rebuild or disturb the active battle/end-scene view!
+                updateHeaderPill(snap)
+                return@post
+            }
             if (lastRenderedLockState != snap.challengeLocked) {
                 renderScreen(snap)
             } else {
@@ -208,11 +218,13 @@ class MainActivity : AppCompatActivity() {
                     FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                 )
                 battleHostFrame.visibility = View.VISIBLE
+                if (rpgState.forcedFullscreen) setImmersiveFullscreen(true)
             },
             onDismissFullscreen = {
                 battleHostFrame.removeAllViews()
                 battleHostFrame.visibility = View.GONE
                 clearWindowBrightnessDrain()
+                setImmersiveFullscreen(false)
             },
             onApplyVisualDrain = { pct, cfg -> applyWindowBrightnessDrain(pct, cfg) },
             onClearVisualDrain = { clearWindowBrightnessDrain() },
@@ -312,10 +324,196 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Throwable) {}
     }
 
-    private fun startInAppDuel(witchDef: WitchCatalog.WitchDef) {
+    @Suppress("DEPRECATION")
+    private fun setImmersiveFullscreen(enable: Boolean) {
+        try {
+            if (enable) {
+                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    window.insetsController?.let { ctrl ->
+                        ctrl.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                        ctrl.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    }
+                } else {
+                    window.decorView.systemUiVisibility = (
+                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                            View.SYSTEM_UI_FLAG_FULLSCREEN or
+                            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                            View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        )
+                }
+            } else {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    window.insetsController?.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                } else {
+                    window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+                }
+            }
+        } catch (_: Throwable) {}
+    }
+
+    private fun startInAppDuel(
+        witchDef: WitchCatalog.WitchDef,
+        battleMods: WitchStoryEngine.BattleModifiers = WitchStoryEngine.BattleModifiers(),
+        storyMilestoneIndex: Int = -1
+    ) {
         if (inAppBattle.isBattleActive()) return
+        // Optional Forced System-Wide Overlay Battle Mode (blocks entire OS via Accessibility Overlay!)
+        if (rpgState.forcedOverlayBattle && DemonAccessibilityService.isServiceActive()) {
+            val ok = DemonAccessibilityService.activeInstance?.launchForcedFullscreenWitchBattle(witchDef) == true
+            if (ok) {
+                Toast.makeText(this, "🔒 Embuscade Plein Écran Forcé : ${witchDef.name} !", Toast.LENGTH_SHORT).show()
+                return
+            }
+        }
         Toast.makeText(this, "⚔️ Invocation de ${witchDef.name} (NV ${witchDef.level})…", Toast.LENGTH_SHORT).show()
-        inAppBattle.launchBattleForWitch(settings.snapshot(), witchDef)
+        inAppBattle.launchBattleForWitch(
+            cfg = settings.snapshot(),
+            witchDef = witchDef,
+            battleMods = battleMods,
+            storyMilestoneIndex = storyMilestoneIndex
+        )
+    }
+
+    /** Launches an atmospheric 5-Act Story Milestone OR an unpredictable suspense encounter (Fate Wheel, 3 Chests, Fog, Raid)! */
+    private fun launchChapterExploration(chapter: Int) {
+        if (inAppBattle.isBattleActive()) return
+        val rSnap = rpgState.snapshot()
+        val ev = WitchStoryEngine.generateExplorationEvent(chapter, rSnap.storyStep, settings.snapshot().playerLevel)
+        showStoryEncounterDialog(ev, chapter)
+    }
+
+    private fun showStoryEncounterDialog(ev: WitchStoryEngine.ExplorationEvent, chapter: Int) {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(16, 11, 28))
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+        }
+        wrap.addView(TextView(this).apply {
+            text = ev.badge
+            setTextColor(Color.rgb(240, 171, 252)); textSize = 11.5f; typeface = Typeface.DEFAULT_BOLD
+        })
+        wrap.addView(TextView(this).apply {
+            text = ev.title
+            setTextColor(Color.WHITE); textSize = 17.5f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(3), 0, dp(8))
+        })
+        wrap.addView(TextView(this).apply {
+            text = ev.narration
+            setTextColor(Color.rgb(225, 220, 240)); textSize = 13f; setPadding(0, 0, 0, dp(14))
+        })
+
+        val dlg = AlertDialog.Builder(this).setView(wrap).setCancelable(true).create()
+        for (choice in ev.choices) {
+            wrap.addView(makeAccentButton(choice.label, choice.colorHex) {
+                dlg.dismiss()
+                if (choice.corruptionDelta != 0) rpgState.adjustCorruption(choice.corruptionDelta)
+                if (choice.rewardGold != 0 || choice.rewardItemKey != null) {
+                    rpgState.grantReward(choice.rewardGold, choice.rewardItemKey)
+                }
+                when (choice.outcomeType) {
+                    WitchStoryEngine.OutcomeType.START_BATTLE -> {
+                        val target = choice.targetWitchId?.let { WitchCatalog.getById(it) }
+                            ?: WitchCatalog.randomWitchForChapter(chapter, includeBoss = false)
+                        startInAppDuel(target, choice.battleMods, ev.storyMilestoneIndex)
+                    }
+                    WitchStoryEngine.OutcomeType.FATE_SPIN -> handleFateWheelSpin(chapter)
+                    WitchStoryEngine.OutcomeType.CHEST_PICK -> handleThreeChestsPick(chapter)
+                    WitchStoryEngine.OutcomeType.GRANT_REWARD_ONLY -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("✨ Destin du Coven")
+                            .setMessage(choice.resultNarration)
+                            .setPositiveButton("Continuer") { _, _ -> renderActiveTab(settings.snapshot()) }
+                            .show()
+                    }
+                }
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(7)
+                }
+            })
+        }
+        dlg.show()
+    }
+
+    private fun handleFateWheelSpin(chapter: Int) {
+        when (Random.nextInt(5)) {
+            0 -> {
+                rpgState.grantReward(140, "aegis")
+                AlertDialog.Builder(this)
+                    .setTitle("🎰 JACKPOT DE L'ÉCLIPSE !")
+                    .setMessage("La Roue s'arrête sur l'Or Runique !\nTu remportes +140 💎 et 1 🛡️ Voile d'Égide !")
+                    .setPositiveButton("Super !") { _, _ -> renderActiveTab(settings.snapshot()) }
+                    .show()
+            }
+            1 -> {
+                Thread {
+                    val freed = DemonMdmManager.healOneSuspendedApp(applicationContext)
+                    mainHandler.post {
+                        settings.update { putInt("player_hp", 100); putInt("active_drain_pct", 0) }
+                        val appMsg = freed?.let { "\n🕊️ Shizuku : « $it » a été dégrisée !" } ?: ""
+                        AlertDialog.Builder(this)
+                            .setTitle("🎰 GRÂCE INESPÉRÉE !")
+                            .setMessage("Une vague lumineuse restaure 100 % de tes PV et dissipe ton drainage !$appMsg")
+                            .setPositiveButton("Continuer") { _, _ -> renderActiveTab(settings.snapshot()) }
+                            .show()
+                    }
+                }.start()
+            }
+            2 -> {
+                rpgState.grantReward(50, "incense")
+                rpgState.grantReward(0, "crystal")
+                AlertDialog.Builder(this)
+                    .setTitle("🎰 PACTE DU MANA !")
+                    .setMessage("Tu obtiens +50 💎, 1 🕯️ Encens de Furie et 1 💎 Cristal de Mana !")
+                    .setPositiveButton("Continuer") { _, _ -> renderActiveTab(settings.snapshot()) }
+                    .show()
+            }
+            3 -> {
+                val elite = WitchCatalog.witchesInChapter(chapter).firstOrNull { it.isMiniBoss }
+                    ?: WitchCatalog.randomWitchForChapter(chapter)
+                Toast.makeText(this, "🎰 PIÈGE DE LA ROUE ! Embuscade Élite : ${elite.name} !", Toast.LENGTH_LONG).show()
+                startInAppDuel(
+                    elite,
+                    WitchStoryEngine.BattleModifiers(startEmbrace = 24, forcedAppRaid = true, introContextLine = "La Roue du Destin t'a piégé devant ${elite.name} !")
+                )
+            }
+            else -> {
+                rpgState.grantReward(110, "talisman")
+                settings.adjustPlayerStats(levelDelta = -1, hpDelta = 0, drainDelta = 0)
+                AlertDialog.Builder(this)
+                    .setTitle("🎰 TRIBUT DES OMBRES")
+                    .setMessage("La Roue aspire -1 NV, mais te récompense de +110 💎 et 1 📜 Talisman de Rupture !")
+                    .setPositiveButton("Continuer") { _, _ -> renderActiveTab(settings.snapshot()) }
+                    .show()
+            }
+        }
+    }
+
+    private fun handleThreeChestsPick(chapter: Int) {
+        val isMimicTrap = Random.nextInt(3) == 0 // 1 in 3 chance of a Mimic Witch Trap!
+        if (isMimicTrap) {
+            val w = WitchCatalog.randomWitchForChapter(chapter, includeBoss = false)
+            Toast.makeText(this, "📦 PIÈGE ! Une Sorcière Mimique bondit du coffre !", Toast.LENGTH_LONG).show()
+            startInAppDuel(
+                w,
+                WitchStoryEngine.BattleModifiers(
+                    startEmbrace = 26,
+                    startCaptured = true,
+                    introContextLine = "PIÈGE DU COFFRE ! ${w.name} t'attrape par surprise dès le 1er tour !"
+                )
+            )
+        } else {
+            val prize = listOf("elixir" to "🧪 Élixir", "talisman" to "📜 Talisman", "aegis" to "🛡️ Voile d'Égide", "incense" to "🕯️ Encens de Furie").random()
+            val gold = Random.nextInt(75, 135)
+            rpgState.grantReward(gold, prize.first)
+            AlertDialog.Builder(this)
+                .setTitle("📦 TRÉSOR DU COVEN !")
+                .setMessage("Bonne pioche ! Le coffre contient +$gold 💎 et 1 ${prize.second} !")
+                .setPositiveButton("Génial !") { _, _ -> renderActiveTab(settings.snapshot()) }
+                .show()
+        }
     }
 
     private fun startInfiniteTower() {
@@ -673,8 +871,8 @@ class MainActivity : AppCompatActivity() {
 
         val aiBadge = if (rSnap.geminiApiKey.isNotBlank()) "✨ Gemini + Locale" else "⚡ IA Locale 0 ms"
         statsCol.addView(TextView(this).apply {
-            text = "📖 ${rSnap.defeatedIds.size}/50 • 🗼 Tour #${rSnap.towerBestFloor} • 🛡️ ${rSnap.perfectParries} Parades\n🧠 $aiBadge • ${rSnap.totalWins}V / ${rSnap.totalDefeats}D"
-            setTextColor(Color.rgb(180, 180, 202)); textSize = 11.2f
+            text = "📜 Intrigue : ${rSnap.storyStep}/15 • ${rSnap.alignmentLabel}\n📖 ${rSnap.defeatedIds.size}/50 • 🗼 Tour #${rSnap.towerBestFloor} • $aiBadge"
+            setTextColor(Color.rgb(180, 180, 202)); textSize = 11.1f
         })
         heroRow.addView(statsCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         hero.addView(heroRow)
@@ -739,10 +937,16 @@ class MainActivity : AppCompatActivity() {
         })
         chCard.addView(chDetail)
 
-        chCard.addView(makeAccentButton("⚔️ EXPLORER — SORCIÈRE ALÉATOIRE (Ch.$curCh)", Color.rgb(225, 29, 72)) {
-            startInAppDuel(WitchCatalog.randomWitchForChapter(curCh, includeBoss = false))
+        val storyInCh = rSnap.storyStep in ((curCh - 1) * 3)..((curCh - 1) * 3 + 2)
+        val exploreLabel = if (storyInCh) {
+            "📜 EXPLORER — SUITE DE L'INTRIGUE (Ch.$curCh)"
+        } else {
+            "🎲 EXPLORER — HASARD, COFFRES & DUEL (Ch.$curCh)"
+        }
+        chCard.addView(makeAccentButton(exploreLabel, Color.rgb(225, 29, 72)) {
+            launchChapterExploration(curCh)
         }.apply {
-            textSize = 13.6f; setPadding(dp(12), dp(13), dp(12), dp(13))
+            textSize = 13.4f; setPadding(dp(12), dp(13), dp(12), dp(13))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
         })
 
@@ -1028,7 +1232,28 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(shopCard)
 
-        // 3. Living Demon Companion & System Ambushes Card
+        // 3. Witch Full Powers & Forced Fullscreen Controls Card
+        val fullPowCard = makeCard(accentStroke = Color.argb(150, 217, 70, 239))
+        fullPowCard.addView(sectionTitle("👑 Pleins Pouvoirs des Sorcières & Plein Écran"))
+        fullPowCard.addView(sectionSub("Contrôle jusqu'où les Sorcières peuvent influencer ton téléphone et ton écran tactile selon ton Niveau !"))
+        fullPowCard.addView(makeSwitchRow("🔒 Plein Écran Immersif Forcé en combat (masque barres système)", rSnap.forcedFullscreen) {
+            rpgState.forcedFullscreen = it
+        })
+        fullPowCard.addView(makeSwitchRow("🖥️ Forcer le combat en Overlay Système (bloque tout l'OS via Accessibilité)", rSnap.forcedOverlayBattle) {
+            rpgState.forcedOverlayBattle = it
+            if (it && !DemonAccessibilityService.isServiceActive()) {
+                Toast.makeText(this, "Active l'Accessibilité dans ⚙️ Dossier & IA pour le mode Overlay Système !", Toast.LENGTH_LONG).show()
+            }
+        })
+        fullPowCard.addView(makeSwitchRow("⚡ Attaques sur tes Applis EN PLEIN COMBAT (Otage Shizuku)", rSnap.midBattleAppPowers) {
+            rpgState.midBattleAppPowers = it
+        })
+        fullPowCard.addView(makeSwitchRow("🖐️ Sabotage Tactile en combat (boutons fuyants, givre, leurres, brouillard)", rSnap.touchSabotageEnabled) {
+            rpgState.touchSabotageEnabled = it
+        })
+        root.addView(fullPowCard)
+
+        // 4. Living Demon Companion & System Ambushes Card
         val demonCard = makeCard(accentStroke = Color.argb(120, 244, 63, 94))
         demonCard.addView(sectionTitle("😈 Compagnon Démon & Embuscades Système"))
         val sw = Switch(this).apply {

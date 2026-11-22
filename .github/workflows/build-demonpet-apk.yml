@@ -113,17 +113,22 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demonmom-v6.1.${{ github.run_number }}
-          name: "DemonMom RPG v6.1.${{ github.run_number }} (Fix Éjection Scènes de Fin Android 16/HyperOS + Fix Overlay + Shizuku + Combats Tactiques)"
+          tag_name: demonmom-v7.0.${{ github.run_number }}
+          name: "DemonMom RPG v7.0.${{ github.run_number }} (Fix Éjection Scène Fin • Pleins Pouvoirs Applis & Tactile en Combat • Intrigue 5 Actes & Hasard • Plein Écran Forcé)"
           body: |
-            ### DemonMom RPG v6.0 (`demonmom-v6.0.${{ github.run_number }}`)
+            ### DemonMom RPG v7.0 (`demonmom-v7.0.${{ github.run_number }}`)
 
-            Correctifs critiques + refonte majeure du moteur de combat RPG :
+            Correctif définitif de l'éjection des scènes de fin + mode **Pleins Pouvoirs des Sorcières, Intrigue Complète & Suspens** :
 
-            - **Fix Shizuku Android 11–16 (HyperOS) & Grisement réel des applis** : ajout du `rikka.shizuku.ShizukuProvider` officiel dans `AndroidManifest.xml`, listeners Binder réactifs, auto-octroi `GET_USAGE_STATS` via Shizuku, suspension par `cmd package suspend --user 0` (grise l'icône sur l'écran d'accueil !), et **bouton 🧪 Tester Shizuku** pour vérifier en 1 tap !
-            - **Fix 100 % du crash des scènes de fin** : suppression du recyclage bitmap HWUI durant `onDraw()` (cause du crash sur Android 14–16 RenderThread lors du passage en drainage), verrous `inEndScene`/`turnLocked`, et scène cinématique de fin en 5 étapes avec rapport Shizuku en direct.
-            - **Combats longs, intenses et anti-spam** : télégraphe d'intention en direct (`🎯`), multiplicateur Combo (`×1.0 → ×2.0`) + **Lecture de jeu anti-spam** si tu répètes la même attaque 3×, **6+ attaques spéciales & envoûtements par Sorcière** (*Charme, Hypnose, Marque de Siphon, Barrière Runique, Mirage, Sceau, Double Temps, Capture, Ultime*), **Phases 2 & 3 Boss**, **3 mini-jeux QTE d'évasion variés** (*Timing Doré, Séquence 3 Runes, Martelage*), **6 compétences tactiques** (*Parade Parfaite, Contre-Sceau, Méditation Anti-Charme, Lame Brise-Bouclier, Exorcisme 50 SP, Jugement 100 SP*).
-            - **Contenu RPG Complet** : **⚒️ Forge d'Âme** (4 améliorations permanentes Nv.1–10), **6 Reliques** (*Élixir, Cristal, Talisman, Amulette, Encens Furie ×1.6, Voile d'Égide*), **🏆 Quêtes tactiques** et **🗼 Tour Infinie des Sorcières** !
+            - **Fix définitif de l'éjection des scènes de fin (2 causes trouvées & éliminées)** :
+              1. `MainActivity` déclare désormais `android:configChanges` complet ET le fond d'écran trophée est appliqué uniquement à la sortie de l'étape 5 (sur Android 12–16 Material You / HyperOS, `WallpaperManager.setBitmap()` déclenchait un rechargement de thème qui recréait l'Activity et éjectait la scène de fin !).
+              2. En mode Overlay, `presentFullscreenOverlay()` ne détruit plus `sessionActive` au montage du duel.
+            - **Attaques sur tes Applis & Sabotage Tactile LIVE *en plein combat* (évolutif selon ton Niveau NV)** :
+              - **Prise d'otage d'applis via Shizuku en cours de duel** : les Sorcières grisent ton appli la plus utilisée en plein combat (`🔒 OTAGE EN COURS`) — bats-la pour la libérer immédiatement !
+              - **6 Sabotages Tactiles évolutifs (`Dom.0/3 → Dom.3/3` de NV 25 à NV 1)** : *Boutons qui fuient ton doigt*, *Givre Tactile (2–3 taps)*, *Commandes mélangées*, *Bouton Piège Mimique*, *Brouillard d'Incertitude (`???`)* et *Verrou Tactile « À genoux »*.
+            - **Intrigue Complète en 5 Actes (15 scènes + 3 Fins) & Suspens/Hasard** :
+              - Scénario *Les Chroniques de l'Éclipse* avec jauge d'alignement (`🔥 Volonté` / `⚖️ Équilibre` / `💜 Ombre`), **Roue du Destin**, **3 Coffres Scellés (dont Sorcière Mimique !)**, **Marchande des Ombres**, **Raids Système imprévus**, **Faille d'Éclipse flottante (réflexe 2,8 s)**, **Bluff de Sorcière**, **Orage Runique ×1.5** et **Sursaut d'Adrénaline à 1 PV**.
+            - **Mode Plein Écran Forcé** : Plein Écran Immersif Sticky (masque les barres système) + option **Overlay Système Forcé** bloquant tout l'OS via Accessibilité jusqu'à l'issue du combat (ou `20 taps + 100205`).
           files: ./DemonMom.apk
           draft: false
           prerelease: false

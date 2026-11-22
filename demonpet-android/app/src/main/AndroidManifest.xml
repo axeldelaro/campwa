@@ -48,9 +48,10 @@
 
         <activity
             android:name=".ui.MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density|colorMode|fontScale|locale|layoutDirection"
             android:exported="true"
-            android:launchMode="singleTask">
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

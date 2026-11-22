@@ -1058,6 +1058,15 @@ class DemonAccessibilityService : AccessibilityService() {
         mgr.attach(cfg)
     }
 
+    fun launchForcedFullscreenWitchBattle(def: com.demonpet.app.rpg.WitchCatalog.WitchDef): Boolean {
+        val cfg = config ?: settings.snapshot()
+        mainHandler.post {
+            ensureOverlayAttached(cfg)
+            overlayMgr?.showWitchBattleForDef(cfg, def)
+        }
+        return true
+    }
+
     fun performSecretExitUnlock() {
         Thread { DemonMdmManager.restoreEverything(applicationContext, releaseDeviceOwner = false) }.start()
         DemonDeviceAdminReceiver.removeAdminSafely(applicationContext)

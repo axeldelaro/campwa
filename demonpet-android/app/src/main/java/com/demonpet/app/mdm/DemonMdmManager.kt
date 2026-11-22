@@ -342,6 +342,79 @@ object DemonMdmManager {
         return MdmDamageReport(true, msg, affectedLabel)
     }
 
+    /** Returns the label of the next most-used unprotected user app so Witches can threaten it LIVE! */
+    fun getNextMostUsedAppLabel(context: Context): String? {
+        val suspended = getSuspendedPackages(context)
+        val hidden = getHiddenPackages(context)
+        return getMostUsedUserApps(context, limit = 15)
+            .firstOrNull { !suspended.contains(it.packageName) && !hidden.contains(it.packageName) }
+            ?.label
+    }
+
+    /**
+     * Mid-Battle Witch Hostage Power: immediately greys out the player's next most-used app LIVE during combat!
+     * Returns Pair(packageName, appLabel) if seized, or null if Shizuku/MDM is not active.
+     */
+    fun seizeAppHostageMidBattle(context: Context): Pair<String, String>? {
+        val useDo = isDeviceOwner(context)
+        val useShizuku = !useDo && isShizukuActive()
+        if (!useDo && !useShizuku) return null
+        if (useShizuku && !hasUsageStatsAccess(context)) DemonShizukuBridge.autoGrantSafeAppOps()
+
+        val prefs = context.applicationContext.getSharedPreferences(MDM_PREFS, Context.MODE_PRIVATE)
+        val suspended = HashSet(prefs.getStringSet(KEY_SUSPENDED_PKGS, emptySet()) ?: emptySet())
+        val hidden = HashSet(prefs.getStringSet(KEY_HIDDEN_PKGS, emptySet()) ?: emptySet())
+        val target = getMostUsedUserApps(context, limit = 25)
+            .firstOrNull { !suspended.contains(it.packageName) && !hidden.contains(it.packageName) }
+            ?: return null
+
+        var seized = false
+        var asDisabled = false
+        if (useDo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                val dpm = context.applicationContext.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                val admin = DemonDeviceAdminReceiver.getComponentName(context)
+                seized = dpm.setPackagesSuspended(admin, arrayOf(target.packageName), true).isEmpty()
+            } catch (_: Throwable) {}
+        } else if (useShizuku) {
+            val (ok, mode) = suspendPackageViaShizuku(target.packageName)
+            seized = ok
+            asDisabled = (mode == "disabled")
+        }
+        if (!seized) return null
+
+        if (asDisabled) hidden.add(target.packageName) else suspended.add(target.packageName)
+        prefs.edit()
+            .putStringSet(KEY_SUSPENDED_PKGS, suspended)
+            .putStringSet(KEY_HIDDEN_PKGS, hidden)
+            .apply()
+        return target.packageName to target.label
+    }
+
+    /** Immediately rescues & un-greys a specific app seized hostage during a battle upon Victory! */
+    fun releaseSpecificHostageApp(context: Context, pkg: String): Boolean {
+        var released = false
+        if (isDeviceOwner(context)) {
+            val dpm = context.applicationContext.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val admin = DemonDeviceAdminReceiver.getComponentName(context)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) dpm.setPackagesSuspended(admin, arrayOf(pkg), false)
+                dpm.setApplicationHidden(admin, pkg, false)
+                released = true
+            } catch (_: Throwable) {}
+        } else if (isShizukuActive()) {
+            released = unsuspendPackageViaShizuku(pkg)
+        }
+        if (released) {
+            val prefs = context.applicationContext.getSharedPreferences(MDM_PREFS, Context.MODE_PRIVATE)
+            val suspended = HashSet(prefs.getStringSet(KEY_SUSPENDED_PKGS, emptySet()) ?: emptySet())
+            val hidden = HashSet(prefs.getStringSet(KEY_HIDDEN_PKGS, emptySet()) ?: emptySet())
+            suspended.remove(pkg); hidden.remove(pkg)
+            prefs.edit().putStringSet(KEY_SUSPENDED_PKGS, suspended).putStringSet(KEY_HIDDEN_PKGS, hidden).apply()
+        }
+        return released
+    }
+
     /** Winning a Witch RPG battle heals & un-greys 1 locked app! */
     fun healOneSuspendedApp(context: Context): String? {
         val prefs = context.applicationContext.getSharedPreferences(MDM_PREFS, Context.MODE_PRIVATE)

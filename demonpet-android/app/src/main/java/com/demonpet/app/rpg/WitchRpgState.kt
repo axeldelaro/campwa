@@ -55,7 +55,14 @@ class WitchRpgState(context: Context) {
         val qteBreaks: Int,
         val towerBestFloor: Int,
         val claimedQuests: Set<String>,
-        val geminiApiKey: String
+        val geminiApiKey: String,
+        // v7.0 Story, Alignment & Full Powers
+        val storyStep: Int,                    // 0..15 (3 scenes per chapter!)
+        val corruption: Int,                   // -100 (Volonté) .. +100 (Ombre/Fascination)
+        val forcedFullscreen: Boolean,         // Immersive sticky fullscreen during battles
+        val forcedOverlayBattle: Boolean,      // Lock battle above entire OS via Accessibility Overlay when available
+        val midBattleAppPowers: Boolean,       // Witches seize/grey real apps LIVE mid-combat!
+        val touchSabotageEnabled: Boolean      // Witches hijack buttons, dodge fingers, frost/scramble touch!
     ) {
         val maxHp: Int get() = 100 + (cloakRank - 1) * 14
         val maxMp: Int get() = 60 + (grimoireRank - 1) * 10
@@ -63,6 +70,11 @@ class WitchRpgState(context: Context) {
         val embraceResistMult: Float get() = (1.0f - (cloakRank - 1) * 0.04f - (wardRank - 1) * 0.03f).coerceAtLeast(0.50f)
         val spBonusPerAction: Int get() = (grimoireRank - 1) * 2
         val totalItems: Int get() = elixirs + crystals + talismans + amulets + incenses + aegisVeils
+        val alignmentLabel: String get() = when {
+            corruption <= -15 -> "🔥 Volonté ($corruption)"
+            corruption >= 20 -> "💜 Ombre (+$corruption)"
+            else -> "⚖️ Équilibre ($corruption)"
+        }
     }
 
     fun snapshot(): Snapshot = Snapshot(
@@ -89,7 +101,13 @@ class WitchRpgState(context: Context) {
         qteBreaks = prefs.getInt(KEY_QTE_BREAKS, 0),
         towerBestFloor = prefs.getInt(KEY_TOWER_BEST, 0),
         claimedQuests = HashSet(prefs.getStringSet(KEY_CLAIMED_QUESTS, emptySet()).orEmpty()),
-        geminiApiKey = prefs.getString(KEY_GEMINI_KEY, "").orEmpty()
+        geminiApiKey = prefs.getString(KEY_GEMINI_KEY, "").orEmpty(),
+        storyStep = prefs.getInt(KEY_STORY_STEP, 0).coerceIn(0, 15),
+        corruption = prefs.getInt(KEY_CORRUPTION, 0).coerceIn(-100, 100),
+        forcedFullscreen = prefs.getBoolean(KEY_FORCED_FS, true),
+        forcedOverlayBattle = prefs.getBoolean(KEY_FORCED_OV, false),
+        midBattleAppPowers = prefs.getBoolean(KEY_MID_APP_POWERS, true),
+        touchSabotageEnabled = prefs.getBoolean(KEY_TOUCH_SABOTAGE, true)
     )
 
     private fun readIntSet(key: String): Set<Int> =
@@ -253,6 +271,45 @@ class WitchRpgState(context: Context) {
         return true
     }
 
+    var forcedFullscreen: Boolean
+        get() = prefs.getBoolean(KEY_FORCED_FS, true)
+        set(v) = prefs.edit().putBoolean(KEY_FORCED_FS, v).apply()
+
+    var forcedOverlayBattle: Boolean
+        get() = prefs.getBoolean(KEY_FORCED_OV, false)
+        set(v) = prefs.edit().putBoolean(KEY_FORCED_OV, v).apply()
+
+    var midBattleAppPowers: Boolean
+        get() = prefs.getBoolean(KEY_MID_APP_POWERS, true)
+        set(v) = prefs.edit().putBoolean(KEY_MID_APP_POWERS, v).apply()
+
+    var touchSabotageEnabled: Boolean
+        get() = prefs.getBoolean(KEY_TOUCH_SABOTAGE, true)
+        set(v) = prefs.edit().putBoolean(KEY_TOUCH_SABOTAGE, v).apply()
+
+    fun advanceStoryIfAt(milestoneIndex: Int) {
+        if (milestoneIndex < 0) return
+        val cur = prefs.getInt(KEY_STORY_STEP, 0)
+        if (cur == milestoneIndex) {
+            prefs.edit().putInt(KEY_STORY_STEP, (cur + 1).coerceAtMost(15)).apply()
+        }
+    }
+
+    fun adjustCorruption(delta: Int) {
+        if (delta == 0) return
+        val cur = prefs.getInt(KEY_CORRUPTION, 0)
+        prefs.edit().putInt(KEY_CORRUPTION, (cur + delta).coerceIn(-100, 100)).apply()
+    }
+
+    fun grantReward(goldDelta: Int, itemKey: String? = null) {
+        val ed = prefs.edit()
+        if (goldDelta != 0) ed.putInt(KEY_GOLD, (prefs.getInt(KEY_GOLD, 0) + goldDelta).coerceAtLeast(0))
+        if (itemKey != null) {
+            itemPrefKey(itemKey)?.let { pk -> ed.putInt(pk, prefs.getInt(pk, 0) + 1) }
+        }
+        ed.apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "demonmom_rpg_save_v5"
         private const val KEY_XP = "xp"
@@ -279,5 +336,11 @@ class WitchRpgState(context: Context) {
         private const val KEY_TOWER_BEST = "tower_best_floor"
         private const val KEY_CLAIMED_QUESTS = "claimed_quests"
         private const val KEY_GEMINI_KEY = "gemini_api_key"
+        private const val KEY_STORY_STEP = "story_step_v7"
+        private const val KEY_CORRUPTION = "corruption_v7"
+        private const val KEY_FORCED_FS = "forced_fs_v7"
+        private const val KEY_FORCED_OV = "forced_ov_v7"
+        private const val KEY_MID_APP_POWERS = "mid_app_powers_v7"
+        private const val KEY_TOUCH_SABOTAGE = "touch_sabotage_v7"
     }
 }
