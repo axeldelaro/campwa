@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer glowing crimson eye contour -->
+    <path
+        android:fillColor="#E11D48"
+        android:pathData="M54,30 C35,30 20,44 16,54 C20,64 35,78 54,78 C73,78 88,64 92,54 C88,44 73,30 54,30 Z" />
+    <!-- Inner dark sclera -->
+    <path
+        android:fillColor="#160B26"
+        android:pathData="M54,36 C39,36 27,46 23,54 C27,62 39,72 54,72 C69,72 81,62 85,54 C81,46 69,36 54,36 Z" />
+    <!-- Violet iris -->
+    <path
+        android:fillColor="#A855F7"
+        android:pathData="M54,40 A14,14 0 1,0 54,68 A14,14 0 1,0 54,40 Z" />
+    <!-- Play triangle pupil inside iris -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M50,47 L62,54 L50,61 Z" />
+</vector>

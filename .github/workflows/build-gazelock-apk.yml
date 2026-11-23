@@ -1,0 +1,119 @@
+name: Build & Release GazeLock AI APK (Standalone)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'gazelock-android/**'
+      - '.github/workflows/build-gazelock-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-gazelock-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK (API 34)
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -z "$SDK_ROOT" ]; then
+            SDK_ROOT="$HOME/android-sdk"
+          fi
+          mkdir -p "$SDK_ROOT"
+          SDKMANAGER=$(find "$SDK_ROOT" -name sdkmanager -type f 2>/dev/null | head -n 1 || true)
+          if [ -z "$SDKMANAGER" ]; then
+            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdtools.zip
+            mkdir -p "$SDK_ROOT/cmdline-tools"
+            unzip -q /tmp/cmdtools.zip -d "$SDK_ROOT/cmdline-tools"
+            mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses > /dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Setup Gradle Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore or Persist GazeLock Signing Keystore Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gazelock-signing
+          key: gazelock-release-keystore-v1
+
+      - name: Prepare Release Keystore (V1 + V2 Signed APK)
+        run: |
+          mkdir -p ~/.gazelock-signing
+          KEYSTORE_FILE="$HOME/.gazelock-signing/gazelock-release.jks"
+          if [ ! -f "$KEYSTORE_FILE" ]; then
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_FILE" \
+              -storetype PKCS12 \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -alias gazelock \
+              -storepass gazelock2026 \
+              -keypass gazelock2026 \
+              -dname "CN=GazeLockAI, OU=Focus, O=GazeLockAI, L=Paris, S=IDF, C=FR"
+          fi
+          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASSWORD=gazelock2026" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=gazelock" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=gazelock2026" >> "$GITHUB_ENV"
+
+      - name: Compile Signed GazeLockAI Release APK
+        working-directory: ./gazelock-android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Package Ready-to-Install GazeLockAI.apk
+        run: |
+          APK_OUT="gazelock-android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK_OUT" ]; then
+            echo "GazeLockAI Release APK not found at $APK_OUT"
+            exit 1
+          fi
+          cp "$APK_OUT" ./GazeLockAI.apk
+          ls -lh ./GazeLockAI.apk
+
+      - name: Upload GazeLockAI.apk to Workflow Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GazeLockAI-APK
+          path: ./GazeLockAI.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish Signed GazeLockAI.apk to GitHub Releases
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: gazelock-v1.0.${{ github.run_number }}
+          name: "GazeLock AI v1.0.${{ github.run_number }} (Fil Vidéo Verrouillé en Overlay + Chrono Stoppé par IA Locale du Regard)"
+          body: |
+            ### 👁️ GazeLock AI v1.0 (`gazelock-v1.0.${{ github.run_number }}`)
+            - **Fil vidéo plein écran en overlay impossible à quitter** (`TYPE_ACCESSIBILITY_OVERLAY`) sur toute la durée choisie (`1 à 60 min`), lisant en continu les vidéos de ton dossier (dossiers masqués `.*` & `.nomedia` inclus !).
+            - **IA locale du regard 100 % hors ligne (CameraX + ML Kit Face Detection)** : le chronomètre s'arrête immédiatement (bordure rouge pulsante, pause vidéo optionnelle, alerte vocale française TTS hors ligne & pénalité `+3s/+5s/+10s`) dès que tu tournes la tête, détournes les yeux ou fermes les yeux !
+            - **Test & Calibration en direct** sur l'écran d'accueil (`Yaw / Pitch / Yeux %`), 3 niveaux de sévérité (*Doux / Strict / Impitoyable*), mode Embuscade Auto optionnel, statistiques d'attention et sortie d'urgence sécurisée (`20 taps sur la bulle chrono + PIN 100205`).
+          files: ./GazeLockAI.apk
+          draft: false
+          prerelease: false
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

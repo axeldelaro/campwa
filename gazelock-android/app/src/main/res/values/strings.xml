@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">GazeLock AI</string>
+    <string name="a11y_label">GazeLock AI — Fil Vidéo du Regard</string>
+    <string name="a11y_description">Affiche un fil vidéo plein écran en overlay impossible à quitter pendant la durée choisie, avec détection locale du regard (IA ML Kit hors ligne) qui met le chrono en pause dès que tu détournes les yeux.</string>
+</resources>

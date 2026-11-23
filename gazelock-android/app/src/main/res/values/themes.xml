@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.GazeLock" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#E11D48</item>
+        <item name="colorPrimaryVariant">#9F1239</item>
+        <item name="colorSecondary">#A855F7</item>
+        <item name="android:statusBarColor">#090712</item>
+        <item name="android:navigationBarColor">#090712</item>
+        <item name="android:windowBackground">#090712</item>
+    </style>
+</resources>
