@@ -16,20 +16,23 @@ import com.gazelock.app.config.GazeConfig
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
- * AccessibilityService Host for GazeLock AI:
- * - Mounts the fullscreen video feed directly on `TYPE_ACCESSIBILITY_OVERLAY` (impossible to exit casually,
- *   covers status bar, navigation bar & all apps cleanly!).
- * - Anti-Escape Watchdog during active sessions: auto-collapses Notification Shade / Quick Settings if pulled down!
- * - Optional Auto-Ambush timer: launches a GazeLock video session automatically every X minutes of screen use!
+ * AccessibilityService Host for GazeLock AI (v2.0):
+ * - Mounts the fullscreen video feed directly on `TYPE_ACCESSIBILITY_OVERLAY` (above status bar, nav bar & all apps!).
+ * - #13 TOTAL ANTI-ESCAPE WATCHDOG (while a session is actively running):
+ *   Blocks Android Settings, Force-Stop / App Info, Security Center, Recents / Task Switcher & Notification Shade,
+ *   ejects back immediately, re-raises the overlay, and triggers a +15s escape penalty!
+ * - Optional Auto-Ambush timer: launches a GazeLock session every X minutes of active screen use!
  */
 class GazeAccessibilityService : AccessibilityService() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var wm: WindowManager? = null
     private var mountedView: View? = null
+    private var mountedParams: WindowManager.LayoutParams? = null
     private var powerManager: PowerManager? = null
     private var activeScreenSec = 0
     private var lastShadeDismissMs = 0L
+    private var lastEscapeEjectMs = 0L
 
     private val autoAmbushTick = object : Runnable {
         override fun run() {
@@ -61,22 +64,51 @@ class GazeAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null || !GazeSessionService.isSessionRunning) return
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            val pkg = event.packageName?.toString()?.lowercase().orEmpty()
-            val cls = event.className?.toString()?.lowercase().orEmpty()
-            // Collapse Notification Shade / Control Center if user tries to pull it down mid-session!
-            if (pkg == "com.android.systemui" &&
-                (cls.contains("shade") || cls.contains("panel") || cls.contains("controlcenter") || cls.contains("quicksettings"))
-            ) {
-                val now = System.currentTimeMillis()
-                if (now - lastShadeDismissMs > 1_200L) {
-                    lastShadeDismissMs = now
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
-                    }
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+
+        val cfg = GazeConfig(applicationContext).snapshot()
+        val pkg = event.packageName?.toString()?.lowercase().orEmpty()
+        val cls = event.className?.toString()?.lowercase().orEmpty()
+        val now = System.currentTimeMillis()
+
+        // 1) Collapse Notification Shade / Quick Settings if pulled down mid-session!
+        if (pkg == "com.android.systemui" &&
+            (cls.contains("shade") || cls.contains("panel") || cls.contains("controlcenter") || cls.contains("quicksettings"))
+        ) {
+            if (now - lastShadeDismissMs > 1_200L) {
+                lastShadeDismissMs = now
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
                 }
             }
+            return
         }
+
+        // 2) #13 Total Anti-Escape Watchdog: block Settings, Force-Stop, Security Center, Recents / Task Switcher!
+        if (!cfg.antiEscapeLockEnabled) return
+        val isEscapeTarget = isBlockedSettingsOrSystem(pkg) ||
+            cls.contains("recents") || cls.contains("overview") || cls.contains("taskswitcher") ||
+            pkg.contains("recents") || pkg.contains("quickstep")
+
+        if (isEscapeTarget && now - lastEscapeEjectMs > 3_500L) {
+            lastEscapeEjectMs = now
+            try { performGlobalAction(GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
+            }
+            bringOverlayToFront()
+            GazeSessionService.triggerEscapeAttemptPenalty(applicationContext)
+        }
+    }
+
+    private fun isBlockedSettingsOrSystem(pkg: String): Boolean {
+        return pkg == "com.android.settings" ||
+            pkg.contains("packageinstaller") ||
+            pkg.contains("miui.securitycenter") ||
+            pkg.contains("samsung.lool") ||
+            pkg.contains("safecenter") ||
+            pkg.contains("systemmanager") ||
+            pkg.contains("permissioncontroller")
     }
 
     override fun onInterrupt() {}
@@ -111,15 +143,26 @@ class GazeAccessibilityService : AccessibilityService() {
             }
             winMgr.addView(view, lp)
             mountedView = view
+            mountedParams = lp
             true
         } catch (_: Throwable) {
             false
         }
     }
 
+    fun bringOverlayToFront() {
+        mainHandler.post {
+            val winMgr = wm ?: return@post
+            val v = mountedView ?: return@post
+            val lp = mountedParams ?: return@post
+            try { winMgr.updateViewLayout(v, lp) } catch (_: Throwable) {}
+        }
+    }
+
     fun removeMountedOverlay() {
         val v = mountedView ?: return
         mountedView = null
+        mountedParams = null
         try { wm?.removeViewImmediate(v) } catch (_: Throwable) {}
     }
 

@@ -27,6 +27,7 @@ import com.gazelock.app.ai.GazeTrackerEngine
 import com.gazelock.app.ai.GazeTrackerEngine.GazeReading
 import com.gazelock.app.config.GazeConfig
 import com.gazelock.app.config.GazeConfigSnapshot
+import com.gazelock.app.config.PenaltyMode
 import com.gazelock.app.media.VideoFeedRepository
 import com.gazelock.app.overlay.GazeVideoFeedOverlay
 import com.gazelock.app.ui.MainActivity
@@ -34,12 +35,11 @@ import java.util.Locale
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
- * Foreground Camera + Local AI Gaze Session Service (LifecycleService — Android 8 to 16 compliant!):
- * - Runs CameraX + ML Kit Face Detection in real time on the front camera.
- * - Mounts [GazeVideoFeedOverlay] via [GazeAccessibilityService] (`TYPE_ACCESSIBILITY_OVERLAY`) or
- *   falls back to `TYPE_APPLICATION_OVERLAY`.
- * - Precision 100ms timer loop: counts down ONLY while the user looks at the screen, freezes immediately
- *   when looking away, applies optional look-away time penalty, offline French TTS alert & vibration!
+ * Foreground Camera + Local AI Gaze Session Service (v2.0):
+ * - #2 Real Iris/Pupil + Head Pose AI Gaze Tracking via CameraX + ML Kit Contours.
+ * - #12 Fixed, Progressive (doubling +3s -> +6s -> +12s -> +24s...), and Sudden Death (full timer reset!) penalties!
+ * - #13 Anti-Escape +15s penalty hook called by [GazeAccessibilityService].
+ * - Dynamic Access Code issued ONLY after the imposed 3-minute 0.1s folder image-spam wait!
  */
 class GazeSessionService : LifecycleService() {
 
@@ -54,12 +54,14 @@ class GazeSessionService : LifecycleService() {
     private var ttsReady = false
 
     // Session Runtime State
+    private var initialDurationMs = 180_000L
     private var totalDurationMs = 180_000L
     private var remainingMs = 180_000L
     private var focusedMs = 0L
     private var currentStreakMs = 0L
     private var bestStreakMs = 0L
     private var lookAwayEpisodes = 0
+    private var progressiveStep = 0
     private var currentAwayMs = 0L
     private var penaltyAppliedForEpisode = false
     private var lastVoiceAlertMs = 0L
@@ -67,12 +69,27 @@ class GazeSessionService : LifecycleService() {
     private var lastNotifUpdateMs = 0L
     private var lockedVolumeTarget = -1
     private var sessionCompleted = false
+    private var lastPenaltyBanner: String = ""
+    private var lastPenaltyBannerUntilMs = 0L
 
     @Volatile
     private var latestGaze = GazeReading(
         faceDetected = true, yawDeg = 0f, pitchDeg = 0f, eyeOpenAvg = 0.9f,
+        irisOffsetPct = 0, irisMeasured = false,
         rawLooking = true, isLookingAtScreen = true, reason = "Initialisation IA…"
     )
+
+    private fun computeNextPenaltySec(cfg: GazeConfigSnapshot): Int {
+        return when (cfg.penaltyMode) {
+            PenaltyMode.FIXED -> cfg.lookAwayPenaltySec
+            PenaltyMode.PROGRESSIVE -> {
+                val base = cfg.lookAwayPenaltySec.coerceAtLeast(3)
+                val shift = progressiveStep.coerceAtMost(4)
+                (base shl shift).coerceAtMost(60)
+            }
+            PenaltyMode.SUDDEN_DEATH -> -1 // Special: FULL RESET!
+        }
+    }
 
     private val tickRunnable = object : Runnable {
         override fun run() {
@@ -80,10 +97,16 @@ class GazeSessionService : LifecycleService() {
             val ov = overlay ?: return
             if (sessionCompleted) return
 
+            // If user is currently inside the 3-minute 0.1s image-spam access-code wait, keep video timer frozen!
+            if (ov.isAccessWaitActive) {
+                mainHandler.postDelayed(this, 100L)
+                return
+            }
+
             val gaze = latestGaze
             val now = SystemClock.elapsedRealtime()
 
-            // Optional Volume Lock (prevents muting to 0 while locked!)
+            // Optional Volume Lock
             if (cfg.volumeLockEnabled && lockedVolumeTarget > 0) {
                 try {
                     val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -121,19 +144,47 @@ class GazeSessionService : LifecycleService() {
                         listOf("Regarde l'écran !", "Chronomètre en pause !", "Ne détourne pas les yeux !").random()
                     )
                 }
-                if (cfg.lookAwayPenaltySec > 0 && !penaltyAppliedForEpisode && currentAwayMs >= 2_500L) {
+
+                val triggerMs = if (cfg.penaltyMode == PenaltyMode.SUDDEN_DEATH) 2_200L else 2_500L
+                val nextPen = computeNextPenaltySec(cfg)
+                if (!penaltyAppliedForEpisode && currentAwayMs >= triggerMs && (nextPen > 0 || cfg.penaltyMode == PenaltyMode.SUDDEN_DEATH)) {
                     penaltyAppliedForEpisode = true
-                    remainingMs += cfg.lookAwayPenaltySec * 1000L
-                    totalDurationMs = maxOf(totalDurationMs, remainingMs)
-                    vibrateShort(130L)
-                    if (cfg.voiceAlertEnabled && ttsReady) {
-                        speakFrench("Pénalité ! Plus ${cfg.lookAwayPenaltySec} secondes !")
-                        lastVoiceAlertMs = now
+                    vibrateShort(150L)
+                    if (cfg.penaltyMode == PenaltyMode.SUDDEN_DEATH) {
+                        remainingMs = initialDurationMs
+                        totalDurationMs = initialDurationMs
+                        lastPenaltyBanner = "💀 MORT SUBITE ! Chrono remis à ${initialDurationMs / 1000L} s !"
+                        lastPenaltyBannerUntilMs = now + 5_000L
+                        if (cfg.voiceAlertEnabled && ttsReady) {
+                            speakFrench("Zéro faute échoué ! Chronomètre remis à zéro !")
+                            lastVoiceAlertMs = now
+                        }
+                    } else {
+                        remainingMs += nextPen * 1000L
+                        totalDurationMs = maxOf(totalDurationMs, remainingMs)
+                        progressiveStep++
+                        val modeTag = if (cfg.penaltyMode == PenaltyMode.PROGRESSIVE) "📈 Pénalité Progressive" else "🚨 Pénalité"
+                        lastPenaltyBanner = "$modeTag : +$nextPen s ajoutées !"
+                        lastPenaltyBannerUntilMs = now + 4_500L
+                        if (cfg.voiceAlertEnabled && ttsReady) {
+                            speakFrench("Pénalité ! Plus $nextPen secondes !")
+                            lastVoiceAlertMs = now
+                        }
                     }
                 }
             }
 
-            ov.updateHud(remainingMs, totalDurationMs, gaze, currentAwayMs, lookAwayEpisodes)
+            val bannerToShow = if (now < lastPenaltyBannerUntilMs) lastPenaltyBanner else ""
+            ov.updateHud(
+                remainingMs = remainingMs,
+                totalDurationMs = totalDurationMs,
+                gaze = gaze,
+                lookAwayDurationMs = currentAwayMs,
+                penaltyAppliedCount = lookAwayEpisodes,
+                nextPenaltySec = computeNextPenaltySec(cfg),
+                penaltyMode = cfg.penaltyMode,
+                flashBanner = bannerToShow
+            )
 
             if (now - lastNotifUpdateMs >= 2_000L) {
                 lastNotifUpdateMs = now
@@ -154,10 +205,7 @@ class GazeSessionService : LifecycleService() {
         fallbackWm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         tts = TextToSpeech(applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                try {
-                    tts?.language = Locale.FRENCH
-                    ttsReady = true
-                } catch (_: Throwable) {}
+                try { tts?.language = Locale.FRENCH; ttsReady = true } catch (_: Throwable) {}
             }
         }
     }
@@ -200,10 +248,12 @@ class GazeSessionService : LifecycleService() {
         }
 
         activeCfg = cfg
-        totalDurationMs = durSec * 1000L
-        remainingMs = totalDurationMs
+        initialDurationMs = durSec * 1000L
+        totalDurationMs = initialDurationMs
+        remainingMs = initialDurationMs
         focusedMs = 0L; currentStreakMs = 0L; bestStreakMs = 0L
-        lookAwayEpisodes = 0; currentAwayMs = 0L; penaltyAppliedForEpisode = false
+        lookAwayEpisodes = 0; progressiveStep = 0; currentAwayMs = 0L; penaltyAppliedForEpisode = false
+        lastPenaltyBanner = ""; lastPenaltyBannerUntilMs = 0L
         sessionCompleted = false
 
         if (cfg.volumeLockEnabled) {
@@ -222,7 +272,8 @@ class GazeSessionService : LifecycleService() {
             context = applicationContext,
             config = cfg,
             initialPlaylist = playlist,
-            onVerifyEmergencyPin = { pin -> gazeConfig.verifyEmergencyPin(pin) },
+            onIssueAccessCodeAfterWait = { gazeConfig.issueUnlockedAccessCode() },
+            onVerifyAccessCode = { code -> gazeConfig.verifyDynamicAccessCode(code) },
             onEmergencyExit = { stopSessionCleanly() },
             onSessionCompleteDismiss = { stopSessionCleanly() }
         )
@@ -238,10 +289,10 @@ class GazeSessionService : LifecycleService() {
         }
 
         overlay = ov
+        activeInstance = this
         isSessionRunning = true
         notifyListeners()
 
-        // Start Local AI CameraX + ML Kit Face/Eye Gaze Tracking bound to this LifecycleService!
         val tr = GazeTrackerEngine(
             context = applicationContext,
             onReading = { reading -> latestGaze = reading },
@@ -254,6 +305,23 @@ class GazeSessionService : LifecycleService() {
 
         mainHandler.postDelayed(tickRunnable, 200L)
         return START_STICKY
+    }
+
+    /** Called by #13 Anti-Escape Watchdog in GazeAccessibilityService when Settings / Recents escape is attempted! */
+    fun applyEscapeAttemptPenaltyInternal() {
+        mainHandler.post {
+            if (!isSessionRunning || sessionCompleted) return@post
+            gazeConfig.recordEscapeBlock()
+            remainingMs += 15_000L
+            totalDurationMs = maxOf(totalDurationMs, remainingMs)
+            lastPenaltyBanner = "🚨 TENTATIVE D'ÉVASION BLOQUÉE ! +15 s de pénalité !"
+            lastPenaltyBannerUntilMs = SystemClock.elapsedRealtime() + 5_500L
+            vibrateShort(180L)
+            if (activeCfg?.voiceAlertEnabled == true && ttsReady) {
+                speakFrench("Tentative de fuite bloquée ! Plus quinze secondes !")
+                lastVoiceAlertMs = SystemClock.elapsedRealtime()
+            }
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -307,6 +375,7 @@ class GazeSessionService : LifecycleService() {
     private fun stopSessionCleanly() {
         mainHandler.removeCallbacks(tickRunnable)
         isSessionRunning = false
+        if (activeInstance === this) activeInstance = null
         tracker?.shutdown(); tracker = null
         val ov = overlay
         overlay = null
@@ -326,6 +395,7 @@ class GazeSessionService : LifecycleService() {
     override fun onDestroy() {
         mainHandler.removeCallbacks(tickRunnable)
         isSessionRunning = false
+        if (activeInstance === this) activeInstance = null
         tracker?.shutdown(); tracker = null
         overlay?.release(); overlay = null
         try { tts?.stop(); tts?.shutdown() } catch (_: Throwable) {}
@@ -376,7 +446,7 @@ class GazeSessionService : LifecycleService() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val txt = customText ?: run {
             val s = ((remainingMs + 999L) / 1000L).coerceAtLeast(0L)
-            val status = if (latestGaze.isLookingAtScreen) "👁️ Regard fixe" else "⏸️ Pause (regard détourné)"
+            val status = if (latestGaze.isLookingAtScreen) "👁️ Regard & Iris fixés" else "⏸️ Pause (regard détourné)"
             String.format("%s — %02d:%02d restant(s)", status, s / 60, s % 60)
         }
         try { nm.notify(NOTIF_ID, buildNotification(txt)) } catch (_: Throwable) {}
@@ -392,10 +462,17 @@ class GazeSessionService : LifecycleService() {
         var isSessionRunning: Boolean = false
             private set
 
+        @Volatile
+        private var activeInstance: GazeSessionService? = null
+
         private val listeners = CopyOnWriteArraySet<() -> Unit>()
         fun addStateListener(l: () -> Unit) { listeners.add(l) }
         fun removeStateListener(l: () -> Unit) { listeners.remove(l) }
         private fun notifyListeners() { for (l in listeners) try { l() } catch (_: Throwable) {} }
+
+        fun triggerEscapeAttemptPenalty(context: Context) {
+            activeInstance?.applyEscapeAttemptPenaltyInternal()
+        }
 
         fun startSession(context: Context, overrideDurationSec: Int = -1) {
             val i = Intent(context.applicationContext, GazeSessionService::class.java).apply {
