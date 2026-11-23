@@ -113,22 +113,18 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demonmom-v7.0.${{ github.run_number }}
-          name: "DemonMom RPG v7.0.${{ github.run_number }} (Fix Éjection Scène Fin • Pleins Pouvoirs Applis & Tactile en Combat • Intrigue 5 Actes & Hasard • Plein Écran Forcé)"
+          tag_name: demonmom-v8.0.${{ github.run_number }}
+          name: "DemonMom RPG v8.0.${{ github.run_number }} (Combats Longs Posture/Break • 8 Logiques IA par Archétype • Lois d'Inquisition • Vidéo Forcée + Actions Arrière-Plan)"
           body: |
-            ### DemonMom RPG v7.0 (`demonmom-v7.0.${{ github.run_number }}`)
+            ### DemonMom RPG v8.0 (`demonmom-v8.0.${{ github.run_number }}`)
 
-            Correctif définitif de l'éjection des scènes de fin + mode **Pleins Pouvoirs des Sorcières, Intrigue Complète & Suspens** :
+            Refonte tactique majeure — **Vraies logiques de combat par Sorcière, Attaques Système Concrètes & Vidéo Forcée impossible à quitter pendant qu'elle agit en arrière-plan** :
 
-            - **Fix définitif de l'éjection des scènes de fin (2 causes trouvées & éliminées)** :
-              1. `MainActivity` déclare désormais `android:configChanges` complet ET le fond d'écran trophée est appliqué uniquement à la sortie de l'étape 5 (sur Android 12–16 Material You / HyperOS, `WallpaperManager.setBitmap()` déclenchait un rechargement de thème qui recréait l'Activity et éjectait la scène de fin !).
-              2. En mode Overlay, `presentFullscreenOverlay()` ne détruit plus `sessionActive` au montage du duel.
-            - **Attaques sur tes Applis & Sabotage Tactile LIVE *en plein combat* (évolutif selon ton Niveau NV)** :
-              - **Prise d'otage d'applis via Shizuku en cours de duel** : les Sorcières grisent ton appli la plus utilisée en plein combat (`🔒 OTAGE EN COURS`) — bats-la pour la libérer immédiatement !
-              - **6 Sabotages Tactiles évolutifs (`Dom.0/3 → Dom.3/3` de NV 25 à NV 1)** : *Boutons qui fuient ton doigt*, *Givre Tactile (2–3 taps)*, *Commandes mélangées*, *Bouton Piège Mimique*, *Brouillard d'Incertitude (`???`)* et *Verrou Tactile « À genoux »*.
-            - **Intrigue Complète en 5 Actes (15 scènes + 3 Fins) & Suspens/Hasard** :
-              - Scénario *Les Chroniques de l'Éclipse* avec jauge d'alignement (`🔥 Volonté` / `⚖️ Équilibre` / `💜 Ombre`), **Roue du Destin**, **3 Coffres Scellés (dont Sorcière Mimique !)**, **Marchande des Ombres**, **Raids Système imprévus**, **Faille d'Éclipse flottante (réflexe 2,8 s)**, **Bluff de Sorcière**, **Orage Runique ×1.5** et **Sursaut d'Adrénaline à 1 PV**.
-            - **Mode Plein Écran Forcé** : Plein Écran Immersif Sticky (masque les barres système) + option **Overlay Système Forcé** bloquant tout l'OS via Accessibilité jusqu'à l'issue du combat (ou `20 taps + 100205`).
+            - **Combats beaucoup plus longs & zéro spam (`🛡️ Posture / Break`)** : Résolution fortement augmentée (`281 → 985` sur les Boss) + **Jauge de Posture (`100–165`)** réduisant les frappes simples tant que la Posture n'est pas brisée (*Lame*, *Contre-Sceau*, *Parade Parfaite*, *QTE* → **💥 RUPTURE 2 tours ×2.0 dégâts**). Spammer la même attaque recharge la Posture de la Sorcière !
+            - **8 Cerveaux IA & Logiques Uniques par Archétype (`WitchCombatAi`)** :
+              - *Charmeuse* (Parfum : tes frappes charmées la soignent), *Enlaceuse* (Fils de Soie 0→3 = Capture auto), *Hypnotiseuse* (Vidéo Forcée + Silence Audio + Brouillard), *Vampirique* (Vol de Vie continu + Siphon SP + Inversion de Soin), *Inquisitrice* (**Lois Sacrées** interdisant Frappe / Magie / Sac / Garde avec Sentence punitive + Otage d'Appli), *Illusionniste* (Mirage + Mélange tactile), *Chrono* (Sablier 4→0 Arrêt du Temps + Givre ×3), *Souveraine* (3 Phases Royales complètes).
+            - **🎬 Transe Vidéo Forcée en Plein Combat (8–11 s impossible à quitter !)** : lance une vidéo de ton dossier (masqués `.*` inclus, ou montage photo si 0 vidéo) plein écran tandis que la Sorcière **agit en direct en arrière-plan** : baisse de luminosité système, flashs lampe torche LED, **grisement d'appli en otage via Shizuku**, drain PM/Emprise et mélange de tes commandes !
+            - **Attaques Concrètes sur le Téléphone (100 % réversibles)** : Double Otage d'applis Shizuku, Sceau Play Store / Caméra / Luminosité en plein combat, Sceau Silence Audio, Flash Torche LED, Vol temporaire de Relique, Chrono de Pression en Phase 2/3 — tout restauré automatiquement à la Victoire, par **🕊️ Tout restaurer** ou par **`20 taps + 100205`** !
           files: ./DemonMom.apk
           draft: false
           prerelease: false

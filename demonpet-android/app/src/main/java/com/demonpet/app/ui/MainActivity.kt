@@ -1105,7 +1105,7 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.rgb(208, 198, 232)); textSize = 11.2f; setPadding(0, dp(3), 0, dp(4))
             })
             card.addView(TextView(this).apply {
-                text = "Ultime : « ${w.ultimateName} »\n💡 ${w.weaknessTip}"
+                text = "Ultime : « ${w.ultimateName} »\n📌 ${com.demonpet.app.rpg.WitchCombatAi.archetypePassiveSummary(w.archetype)}\n💡 ${w.weaknessTip}"
                 setTextColor(Color.rgb(156, 156, 178)); textSize = 11.1f; setPadding(0, 0, 0, dp(8))
             })
             card.addView(makeAccentButton(

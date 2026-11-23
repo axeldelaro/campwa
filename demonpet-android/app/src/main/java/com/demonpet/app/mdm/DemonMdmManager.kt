@@ -6,9 +6,12 @@ import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.hardware.camera2.CameraManager
+import android.media.AudioManager
 import android.os.Build
 import android.os.Process
 import android.os.UserManager
+import android.provider.Settings
 import com.demonpet.app.config.DemonSettings
 import com.demonpet.app.media.MediaFolderHelper
 import com.demonpet.app.receiver.DemonDeviceAdminReceiver
@@ -26,6 +29,8 @@ object DemonMdmManager {
     private const val KEY_HIDDEN_PKGS = "mdm_hidden_pkgs"
     private const val KEY_CURSES = "mdm_active_curses"
     private const val KEY_CAM_SEALED_PKGS = "mdm_cam_sealed_pkgs"
+    private const val KEY_SAVED_VOLUME = "mdm_saved_media_vol"
+    private const val KEY_SAVED_BRIGHTNESS = "mdm_saved_sys_bright"
 
     data class AppUsageEntry(val packageName: String, val label: String, val foregroundMinutes: Long)
     data class MdmDamageReport(val applied: Boolean, val summary: String, val affectedAppLabel: String? = null)
@@ -415,6 +420,129 @@ object DemonMdmManager {
         return released
     }
 
+    /** Concrete Phone Attack: Drops real system screen brightness via Shizuku or WRITE_SETTINGS (saved & restored cleanly!). */
+    fun applyWitchBrightnessCurse(context: Context, brightness255: Int): Boolean {
+        val clamped = brightness255.coerceIn(14, 240)
+        val prefs = context.applicationContext.getSharedPreferences(MDM_PREFS, Context.MODE_PRIVATE)
+        if (!prefs.contains(KEY_SAVED_BRIGHTNESS)) {
+            val cur = try { Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, 145) } catch (_: Throwable) { 145 }
+            prefs.edit().putInt(KEY_SAVED_BRIGHTNESS, cur).apply()
+        }
+        if (isShizukuActive()) {
+            val r = DemonShizukuBridge.execShellSync("settings put system screen_brightness $clamped")
+            if (r.ok) return true
+        }
+        return try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.System.canWrite(context)) {
+                Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+                Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, clamped)
+                true
+            } else false
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** Concrete Phone Attack: Manipulates media audio volume (mute under Silence/Inquisition, or set audible for Video Trance). */
+    fun applyWitchAudioCurse(context: Context, targetFraction: Float): Boolean {
+        return try {
+            val am = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+            val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+            val prefs = context.applicationContext.getSharedPreferences(MDM_PREFS, Context.MODE_PRIVATE)
+            if (!prefs.contains(KEY_SAVED_VOLUME)) {
+                prefs.edit().putInt(KEY_SAVED_VOLUME, am.getStreamVolume(AudioManager.STREAM_MUSIC)).apply()
+            }
+            val target = (maxVol * targetFraction.coerceIn(0f, 0.7f)).toInt()
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** Concrete Phone Attack: Eerie camera LED torch pulse during Boss Phase 2/3 or Ultimate! */
+    fun triggerWitchTorchPulse(context: Context, pulses: Int = 2) {
+        Thread {
+            try {
+                val cm = context.applicationContext.getSystemService(Context.CAMERA_SERVICE) as? CameraManager ?: return@Thread
+                val camId = cm.cameraIdList.firstOrNull() ?: return@Thread
+                for (i in 0 until pulses.coerceIn(1, 3)) {
+                    cm.setTorchMode(camId, true)
+                    Thread.sleep(110L)
+                    cm.setTorchMode(camId, false)
+                    Thread.sleep(150L)
+                }
+            } catch (_: Throwable) {
+            }
+        }.start()
+    }
+
+    /** Concrete Mid-Battle System Seal (Play Store / Camera / Brightness) cast by Bosses & Inquisitors! */
+    fun applyWitchSystemSealMidBattle(context: Context): String? {
+        if (!isShizukuActive() && !isDeviceOwner(context)) return null
+        val prefs = context.applicationContext.getSharedPreferences(MDM_PREFS, Context.MODE_PRIVATE)
+        val curses = HashSet(prefs.getStringSet(KEY_CURSES, emptySet()) ?: emptySet())
+        val suspended = HashSet(prefs.getStringSet(KEY_SUSPENDED_PKGS, emptySet()) ?: emptySet())
+        val camSealed = HashSet(prefs.getStringSet(KEY_CAM_SEALED_PKGS, emptySet()) ?: emptySet())
+
+        val msg: String? = when {
+            !curses.contains("play_store") && isShizukuActive() -> {
+                val (ok, _) = suspendPackageViaShizuku("com.android.vending")
+                if (ok) {
+                    suspended.add("com.android.vending"); curses.add("play_store")
+                    "🛒 Sceau Play Store posé en plein combat !"
+                } else null
+            }
+            !curses.contains("camera") && isShizukuActive() -> {
+                val targets = getMostUsedUserApps(context, limit = 4).map { it.packageName }
+                for (p in targets) {
+                    if (DemonShizukuBridge.execShellSync("appops set $p CAMERA deny").ok) camSealed.add(p)
+                }
+                if (camSealed.isNotEmpty()) {
+                    curses.add("camera")
+                    "📷 Caméra scellée sur ${camSealed.size} applis principales !"
+                } else null
+            }
+            else -> {
+                if (applyWitchBrightnessCurse(context, 24)) "🌙 Luminosité système écrasée au minimum !" else null
+            }
+        }
+        prefs.edit()
+            .putStringSet(KEY_SUSPENDED_PKGS, suspended)
+            .putStringSet(KEY_CURSES, curses)
+            .putStringSet(KEY_CAM_SEALED_PKGS, camSealed)
+            .apply()
+        return msg
+    }
+
+    /** Restores temporary audio & brightness curses after a battle victory or full reset. */
+    fun restoreBattleTempCurses(context: Context) {
+        val prefs = context.applicationContext.getSharedPreferences(MDM_PREFS, Context.MODE_PRIVATE)
+        if (prefs.contains(KEY_SAVED_VOLUME)) {
+            val savedVol = prefs.getInt(KEY_SAVED_VOLUME, -1)
+            if (savedVol >= 0) {
+                try {
+                    val am = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                    am?.setStreamVolume(AudioManager.STREAM_MUSIC, savedVol, 0)
+                } catch (_: Throwable) {}
+            }
+            prefs.edit().remove(KEY_SAVED_VOLUME).apply()
+        }
+        if (prefs.contains(KEY_SAVED_BRIGHTNESS)) {
+            val savedBr = prefs.getInt(KEY_SAVED_BRIGHTNESS, 145).coerceIn(40, 240)
+            if (isShizukuActive()) {
+                DemonShizukuBridge.execShellSync("settings put system screen_brightness $savedBr")
+            } else {
+                try {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.System.canWrite(context)) {
+                        Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, savedBr)
+                    }
+                } catch (_: Throwable) {}
+            }
+            prefs.edit().remove(KEY_SAVED_BRIGHTNESS).apply()
+        }
+    }
+
     /** Winning a Witch RPG battle heals & un-greys 1 locked app! */
     fun healOneSuspendedApp(context: Context): String? {
         val prefs = context.applicationContext.getSharedPreferences(MDM_PREFS, Context.MODE_PRIVATE)
@@ -508,6 +636,7 @@ object DemonMdmManager {
             .remove(KEY_CAM_SEALED_PKGS)
             .apply()
 
+        restoreBattleTempCurses(context)
         Thread { MediaFolderHelper.restoreOriginalWallpaper(context.applicationContext) }.start()
         return if (restoredCount > 0) {
             "Tout restauré : $restoredCount appli(s) dégrisées & tous les sceaux levés ✅"
