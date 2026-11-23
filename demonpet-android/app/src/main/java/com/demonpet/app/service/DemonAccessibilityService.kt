@@ -31,6 +31,7 @@ import com.demonpet.app.ai.DemonVisionEngine
 import com.demonpet.app.config.DemonConfigSnapshot
 import com.demonpet.app.config.DemonSettings
 import com.demonpet.app.mdm.DemonMdmManager
+import com.demonpet.app.mdm.DemonShizukuBridge
 import com.demonpet.app.media.MediaFolderHelper
 import com.demonpet.app.overlay.DemonOverlayManager
 import com.demonpet.app.receiver.DemonDeviceAdminReceiver
@@ -149,24 +150,9 @@ class DemonAccessibilityService : AccessibilityService() {
                     val lvl = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
                     val sc = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
                     val st = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-                    val nowCharging = st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL
-                    val wasCharging = isCharging
-                    isCharging = nowCharging
+                    isCharging = st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL
                     if (lvl >= 0) batteryPct = (lvl * 100) / sc
-
-                    val cfg = config ?: return
-                    if (cfg.enabled && cfg.lowBatteryPanicEnabled) {
-                        if (!wasCharging && nowCharging && batteryPct <= 25) {
-                            overlayMgr?.say("Bravo, enfin branché ! 💖", 4_000L)
-                            settings.adjustMood(-8)
-                        } else if (!nowCharging && batteryPct <= 20) {
-                            val now = System.currentTimeMillis()
-                            if (now - lastLowBatWarnMs > 120_000L) {
-                                lastLowBatWarnMs = now
-                                overlayMgr?.triggerPanicMode("CHARGE-LE TOUT DE SUITE ($batteryPct%) ! 🔋😱", 5_500L)
-                            }
-                        }
-                    }
+                    // Calm battery tracking only — no noisy false panics!
                 }
             }
         }
@@ -319,10 +305,8 @@ class DemonAccessibilityService : AccessibilityService() {
         }
         if (pkg.isEmpty()) return
         val lower = pkg.lowercase()
-        if (lower == "com.android.systemui") {
-            maybeBlockSystemUiShade(cfg, lower, "")
-            return
-        }
+        // NEVER trigger shade/notification panic on 650ms polling (fixes false SystemUI notification triggers!)
+        if (lower == "com.android.systemui") return
         if (lower.contains("inputmethod") || lower.contains("gboard") || lower.contains("swiftkey")) return
 
         if (isProtectedSettingsPackage(lower) && (cfg.challengeLocked || cfg.strictSettingsLock)) {
@@ -354,8 +338,8 @@ class DemonAccessibilityService : AccessibilityService() {
         workerThread = ht
         workerHandler = Handler(ht.looper)
 
+        DemonShizukuBridge.init(applicationContext)
         registerReceivers()
-        registerPassiveLocation()
         DemonSettings.addListener(settingsListener)
         activeInstance = this
 
@@ -508,10 +492,8 @@ class DemonAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_CLICKED -> {
                 val pkgRaw = event.packageName?.toString()?.trim().orEmpty()
                 val pkgLower = pkgRaw.lowercase()
-                if (pkgLower == "com.android.systemui") {
-                    maybeBlockSystemUiShade(cfg, event.className?.toString()?.lowercase().orEmpty(), event.text.joinToString(" ").lowercase())
-                    return
-                }
+                // Ignore SystemUI content/clock/heads-up notification ticks completely so the Demon never panics for nothing!
+                if (pkgLower == "com.android.systemui") return
                 if (pkgRaw.isNotEmpty() && !pkgLower.contains("inputmethod") && !pkgLower.contains("gboard")) {
                     if (isProtectedSettingsPackage(pkgLower) && (cfg.challengeLocked || cfg.strictSettingsLock)) {
                         enforceStrictSettingsLock(pkgRaw, cfg)
@@ -567,18 +549,39 @@ class DemonAccessibilityService : AccessibilityService() {
 
     private fun maybeBlockSystemUiShade(cfg: DemonConfigSnapshot, cls: String, evText: String) {
         if (!cfg.closeNotifShadeEnabled && !cfg.blockQuickSettingsEnabled) return
+        if (currentPkg == packageName) return
         if (try { keyguardManager.isKeyguardLocked } catch (_: Throwable) { false }) return
-        if (cls.contains("volume") || cls.contains("toast")) return
+        // STRICT filter: ONLY react to an ACTUALLY EXPANDED Notification Shade or Control Center —
+        // NEVER heads-up notification popups, status bar icons, clock updates, volume panels, or toasts!
+        if (cls.contains("volume") || cls.contains("toast") || cls.contains("headsup") ||
+            cls.contains("statusbar") || cls.contains("keyguard") || cls.contains("navigation") ||
+            cls.contains("dialog") || cls.contains("pip")
+        ) return
+        val looksLikeExpandedShade = cls.contains("shade") || cls.contains("notificationpanel") ||
+            cls.contains("controlcenter") || cls.contains("quicksettings") || cls.contains("miuicontrol")
+        if (!looksLikeExpandedShade) return
+
+        // Verify the SystemUI window ACTUALLY covers >65% of screen height (full expanded shade, never a banner!)
+        val isFullExpanded = try {
+            val r = rootInActiveWindow
+            if (r != null) {
+                val b = Rect()
+                r.getBoundsInScreen(b)
+                try { r.recycle() } catch (_: Throwable) {}
+                b.height() > screenH * 0.65f
+            } else false
+        } catch (_: Throwable) { false }
+        if (!isFullExpanded) return
+
         val now = System.currentTimeMillis()
-        if (now - lastShadeDismissMs < 1_400L) return
+        if (now - lastShadeDismissMs < 5_000L) return
         lastShadeDismissMs = now
         dismissNotificationShadeSafely()
-        settings.adjustMood(+4)
         val isQs = cls.contains("qs") || cls.contains("quick") || cls.contains("control") ||
             evText.contains("wi-fi") || evText.contains("wifi") || evText.contains("avion")
         overlayMgr?.say(
-            if (isQs) "Pas touche aux Réglages Rapides ! 😈" else "Notifications interdites ! 😤",
-            2_800L
+            if (isQs) "Pas touche aux Réglages Rapides ! 😈" else "Panneau de notifications refermé ! 👀",
+            2_400L
         )
     }
 
@@ -590,22 +593,12 @@ class DemonAccessibilityService : AccessibilityService() {
     private fun dismissNotificationShadeSafely() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Clean native shade collapse on Android 12-16: NEVER sends spurious BACK or fake swipes into user apps!
                 performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
+            } else {
+                performGlobalAction(GLOBAL_ACTION_BACK)
             }
-            performGlobalAction(GLOBAL_ACTION_BACK)
         } catch (_: Throwable) {
-        }
-        // Fallback upward swipe from bottom of shade for OEM Control Centers (MIUI/HyperOS/OneUI)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            try {
-                val path = Path().apply {
-                    moveTo(screenW * 0.5f, screenH * 0.88f)
-                    lineTo(screenW * 0.5f, screenH * 0.12f)
-                }
-                val stroke = GestureDescription.StrokeDescription(path, 0L, 180L)
-                dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
-            } catch (_: Throwable) {
-            }
         }
     }
 
@@ -730,12 +723,13 @@ class DemonAccessibilityService : AccessibilityService() {
         val isWatched = cfg.watchedPackages.contains(pkg)
         val isGame = isGamePackage(pkg)
 
-        // #13 & Strict Settings Lock
+        // #13 & Strict Settings Lock (only panic on genuine Android Settings, never on MIUI security/permission banners!)
         if (isProtectedSettingsPackage(pkg.lowercase())) {
             if (cfg.challengeLocked || cfg.strictSettingsLock) {
                 enforceStrictSettingsLock(pkg, cfg)
-            } else if (cfg.settingsPanicEnabled) {
-                overlayMgr?.triggerPanicMode("HEIN ?! Tu vas pas me désactiver ?! 😱", 6_000L)
+            } else if (cfg.settingsPanicEnabled && pkg.lowercase() == "com.android.settings" && now - lastSettingsEjectMs > 15_000L) {
+                lastSettingsEjectMs = now
+                overlayMgr?.say("👀 Je t'observe dans les Paramètres…", 3_500L)
             }
             return
         }
@@ -753,10 +747,14 @@ class DemonAccessibilityService : AccessibilityService() {
             return
         }
 
-        // #44 Liste Noire Totale (Confiscation sans négociation!)
+        // #44 Liste Noire Totale (Shizuku Force-Stop + Recall + Confiscation!)
         if (cfg.blacklistEnabled && cfg.blacklistPackages.contains(pkg)) {
             settings.adjustMood(+10)
-            try { performGlobalAction(GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
+            if (DemonMdmManager.isShizukuActive()) {
+                Thread { DemonMdmManager.forceStopAndRecallToGame(pkg) }.start()
+            } else {
+                try { performGlobalAction(GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
+            }
             if (cfg.timeoutCornerEnabled) {
                 overlayMgr?.showTimeoutCornerWithVideo(
                     reason = "Appli sur Liste Noire ! Direction AU COIN ! 😈",
@@ -913,6 +911,31 @@ class DemonAccessibilityService : AccessibilityService() {
         }
         if (cfg.clickStealShieldEnabled || cfg.antiLikeFollowEnabled || cfg.blockStoreBuyEnabled) {
             actions.add { scanAndShieldSensitiveButton(cfg) }
+        }
+        // Shizuku-Powered Companion Demon Pranks (focused purely on Shizuku + Accessibility!)
+        if (DemonMdmManager.isShizukuActive()) {
+            actions.add {
+                overlayMgr?.say("⏳ Sort Chrono du Démon : ton téléphone passe au ralenti (15 s) ! 😈", 4_200L)
+                Thread {
+                    DemonMdmManager.applyChronoSlowMoCurse(applicationContext, true)
+                    try { Thread.sleep(15_000L) } catch (_: Throwable) {}
+                    DemonMdmManager.applyChronoSlowMoCurse(applicationContext, false)
+                }.start()
+            }
+            actions.add {
+                overlayMgr?.say("🔋 Illusion du Démon : batterie affichée à 3 % (15 s) ! 😈", 4_200L)
+                Thread {
+                    DemonMdmManager.applyFakeLowBatteryCurse(applicationContext, true, 3)
+                    try { Thread.sleep(15_000L) } catch (_: Throwable) {}
+                    DemonMdmManager.applyFakeLowBatteryCurse(applicationContext, false)
+                }.start()
+            }
+            if (cfg.chaosLevel >= 8) {
+                actions.add {
+                    overlayMgr?.say("😴 Claquement d'Éclipse : pause écran immédiate ! 😈", 2_400L)
+                    mainHandler.postDelayed({ Thread { DemonMdmManager.triggerScreenSleepSnap() }.start() }, 1_200L)
+                }
+            }
         }
         if (actions.isEmpty()) return
         actions.random().invoke()

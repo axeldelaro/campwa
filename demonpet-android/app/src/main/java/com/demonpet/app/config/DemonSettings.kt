@@ -219,9 +219,9 @@ class DemonSettings(context: Context) {
             fullscreenFlashEnabled = prefs.getBoolean(KEY_FULLSCREEN_FLASH, true),
             flashDurationMs = prefs.getInt(KEY_FLASH_DURATION, 1800).coerceIn(500, 5000),
             nightBrightnessEnabled = prefs.getBoolean(KEY_NIGHT_BRIGHTNESS, true),
-            lowBatteryPanicEnabled = prefs.getBoolean(KEY_LOW_BATTERY_PANIC, true),
+            lowBatteryPanicEnabled = prefs.getBoolean(KEY_LOW_BATTERY_PANIC, false),
             appCommentsEnabled = prefs.getBoolean(KEY_APP_COMMENTS, true),
-            speedWarningEnabled = prefs.getBoolean(KEY_SPEED_WARNING, true),
+            speedWarningEnabled = prefs.getBoolean(KEY_SPEED_WARNING, false),
             speedThresholdKmh = prefs.getInt(KEY_SPEED_THRESHOLD, 25).coerceIn(10, 90),
             customPhrases = prefs.getString(KEY_CUSTOM_PHRASES, "").orEmpty(),
             watchedPackages = HashSet(rawWatched),
@@ -230,8 +230,8 @@ class DemonSettings(context: Context) {
             forcePauseVideoEnabled = prefs.getBoolean(KEY_FORCE_PAUSE_VIDEO, true),
             clickStealShieldEnabled = prefs.getBoolean(KEY_CLICK_STEAL_SHIELD, true),
             keyboardSabotageEnabled = prefs.getBoolean(KEY_KEYBOARD_SABOTAGE, true),
-            closeNotifShadeEnabled = prefs.getBoolean(KEY_CLOSE_NOTIF_SHADE, true),
-            blockQuickSettingsEnabled = prefs.getBoolean(KEY_BLOCK_QS, true),
+            closeNotifShadeEnabled = prefs.getBoolean(KEY_CLOSE_NOTIF_SHADE, false),
+            blockQuickSettingsEnabled = prefs.getBoolean(KEY_BLOCK_QS, false),
             antiLikeFollowEnabled = prefs.getBoolean(KEY_ANTI_LIKE_FOLLOW, true),
             timeoutCornerEnabled = prefs.getBoolean(KEY_TIMEOUT_CORNER, true),
             timeoutCornerSec = prefs.getInt(KEY_TIMEOUT_CORNER_SEC, 40).coerceIn(10, 300),
@@ -287,7 +287,7 @@ class DemonSettings(context: Context) {
                     putBoolean(KEY_COUNTER_SCROLL, true); putBoolean(KEY_COMPULSIVE_BACK, false)
                     putBoolean(KEY_FORCE_PAUSE_VIDEO, true); putBoolean(KEY_CLICK_STEAL_SHIELD, false)
                     putBoolean(KEY_KEYBOARD_SABOTAGE, false); putBoolean(KEY_CLOSE_NOTIF_SHADE, false)
-                    putBoolean(KEY_BLOCK_QS, true); putBoolean(KEY_ANTI_LIKE_FOLLOW, true)
+                    putBoolean(KEY_BLOCK_QS, false); putBoolean(KEY_ANTI_LIKE_FOLLOW, true)
                     putBoolean(KEY_TIMEOUT_CORNER, true); putBoolean(KEY_PUNISHMENT_LINES, false)
                     putBoolean(KEY_DEAD_ZONE_KB, false); putBoolean(KEY_DODGE_FINGER, true)
                     putBoolean(KEY_SURPRISE_QUIZ, true); putBoolean(KEY_FORCED_SLIDESHOW, true)
@@ -301,8 +301,8 @@ class DemonSettings(context: Context) {
                     putInt(KEY_APP_QUOTA_MIN, 5); putInt(KEY_TIMEOUT_CORNER_SEC, 40); putInt(KEY_PUNISHMENT_LINES_COUNT, 4)
                     putBoolean(KEY_COUNTER_SCROLL, true); putBoolean(KEY_COMPULSIVE_BACK, true)
                     putBoolean(KEY_FORCE_PAUSE_VIDEO, true); putBoolean(KEY_CLICK_STEAL_SHIELD, true)
-                    putBoolean(KEY_KEYBOARD_SABOTAGE, true); putBoolean(KEY_CLOSE_NOTIF_SHADE, true)
-                    putBoolean(KEY_BLOCK_QS, true); putBoolean(KEY_ANTI_LIKE_FOLLOW, true)
+                    putBoolean(KEY_KEYBOARD_SABOTAGE, true); putBoolean(KEY_CLOSE_NOTIF_SHADE, false)
+                    putBoolean(KEY_BLOCK_QS, false); putBoolean(KEY_ANTI_LIKE_FOLLOW, true)
                     putBoolean(KEY_TIMEOUT_CORNER, true); putBoolean(KEY_PUNISHMENT_LINES, true)
                     putBoolean(KEY_DEAD_ZONE_KB, true); putBoolean(KEY_BLACKLIST_ENABLED, true)
                     putBoolean(KEY_DODGE_FINGER, true); putBoolean(KEY_SURPRISE_QUIZ, true)
@@ -548,11 +548,11 @@ class DemonSettings(context: Context) {
         set(v) = update { putBoolean(KEY_KEYBOARD_SABOTAGE, v) }
 
     var closeNotifShadeEnabled: Boolean
-        get() = prefs.getBoolean(KEY_CLOSE_NOTIF_SHADE, true)
+        get() = prefs.getBoolean(KEY_CLOSE_NOTIF_SHADE, false)
         set(v) = update { putBoolean(KEY_CLOSE_NOTIF_SHADE, v) }
 
     var blockQuickSettingsEnabled: Boolean
-        get() = prefs.getBoolean(KEY_BLOCK_QS, true)
+        get() = prefs.getBoolean(KEY_BLOCK_QS, false)
         set(v) = update { putBoolean(KEY_BLOCK_QS, v) }
 
     var antiLikeFollowEnabled: Boolean

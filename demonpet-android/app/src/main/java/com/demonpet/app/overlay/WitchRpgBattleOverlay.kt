@@ -226,6 +226,7 @@ class WitchRpgBattleOverlay(
         var confiscatedRelic: Pair<String, String>? = null    // Stolen relic returned on Victory!
         var videoTranceCount = 0
         var inVideoTrance = false
+        var pactOfferedThisBattle = false
 
         // Player Stances, Buffs & Statuses
         var captured = battleMods.startCaptured
@@ -322,6 +323,7 @@ class WitchRpgBattleOverlay(
             try { videoTranceHost.removeAllViews(); videoTranceHost.visibility = View.GONE } catch (_: Throwable) {}
             try { riftHost.removeAllViews() } catch (_: Throwable) {}
             try { stage.clearBitmaps() } catch (_: Throwable) {}
+            Thread { try { DemonMdmManager.setTaskPinningViaShizuku(0, false) } catch (_: Throwable) {} }.start()
             try { onDismissFullscreen() } catch (_: Throwable) {}
             activeStageRef = null
             activeWitch = null
@@ -1028,6 +1030,55 @@ class WitchRpgBattleOverlay(
             showSceneStep()
         }
 
+        // ==================== MID-BATTLE CURSED PACT (PHASE 2 DEVIL'S BARGAIN!) ====================
+        fun showMidBattleCursedPact(onDone: () -> Unit) {
+            if (!sessionActive || inEndScene) return
+            turnLocked = false
+            actionsBox.removeAllViews()
+            val canHostagePact = allowMidAppPowers && DemonMdmManager.hasPrivilegedControl(context)
+            typeDialogue(
+                "😈 PACTE MAUDIT DE PHASE 2 — ${curWitch.def.name}",
+                "« Avant ma vraie forme, un marché ! Que sacrifies-tu pour survivre ? »\nChoisis ton pacte ci-dessous :"
+            )
+
+            actionsBox.addView(makeActionBtn(
+                if (canHostagePact) "🔒 Offrir 1 Appli en Otage → 💥 RUPTURE IMMÉDIATE (Posture 0 !)"
+                else "🩸 Sacrifier -22 PV → 💥 RUPTURE IMMÉDIATE (Posture 0 !)",
+                Color.rgb(190, 24, 93)
+            ) {
+                rpgState.adjustCorruption(+4)
+                if (canHostagePact) {
+                    triggerMidBattleAppHostage("😈 PACTE D'OTAGE ACCEPTÉ :")
+                } else {
+                    hp = (hp - 22).coerceAtLeast(1)
+                }
+                witchShield = false
+                applyPostureDamage(witchMaxPosture + 50)
+                stage.triggerWitchHitShake(critical = true); onVibrate(75L)
+                typeDialogue("💥 PACTE D'OTAGE SCELLÉ !", "Sa Barrière & Posture explosent ! ${curWitch.def.name} est ÉTOURDIE 2 tours (×2.0 Dégâts !) 🔥")
+                refreshHud(); onDone()
+            })
+
+            actionsBox.addView(makeActionBtn("💜 +25 % Emprise → 💚 100 % PV & PM + Purifie Statuts !", Color.rgb(126, 34, 206)) {
+                rpgState.adjustCorruption(+5)
+                embrace = (embrace + 25).coerceAtMost(96)
+                hp = maxHp; mp = maxMp
+                charmedTurns = 0; hypnoTurns = 0; sealedTurns = 0; siphonTurns = 0; healInvertTurns = 0
+                onVibrate(55L)
+                typeDialogue("💜 PACTE D'ABONDANCE !", "PV & PM restaurés à 100 % et statuts purifiés, mais son Emprise grimpe à $embrace % ! 😈")
+                refreshHud(); onDone()
+            }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(5) } })
+
+            actionsBox.addView(makeActionBtn("🔥 REFUSER SON PACTE ! (+35 SP & -25 Posture Boss)", Color.rgb(217, 119, 6)) {
+                rpgState.adjustCorruption(-4)
+                sp = (sp + 35).coerceAtMost(100)
+                val broke = applyPostureDamage(25)
+                stage.triggerPerfectParryFlash(); onVibrate(45L)
+                typeDialogue("🔥 VOLONTÉ INDOMPTABLE !", "Tu rejettes le Pacte ! +35 SP & -25 Posture Boss${if (broke) " • 💥 RUPTURE !" else ""} !")
+                refreshHud(); onDone()
+            }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(5) } })
+        }
+
         // ==================== CHECK BOSS PHASE SHIFTS ====================
         fun checkBossPhaseShift(): Boolean {
             val ratio = witchResolve.toFloat() / witchMaxResolve.coerceAtLeast(1)
@@ -1040,14 +1091,24 @@ class WitchRpgBattleOverlay(
                 onVibrate(90L)
                 DemonMdmManager.triggerWitchTorchPulse(context, pulses = 2)
                 plannedIntent = buildAiIntent()
-                speakAi(
-                    "🔥 PHASE 2 — ${curWitch.profile.name} !", EventKind.BOSS_PHASE_2,
-                    extraFooter = "🔷 Barrière Runique + Posture restaurée ! Brise-la avec 🔥 Lame !"
-                )
                 if (curWitch.def.isBoss || battleMods.forcedAppRaid || dominanceTierFor(playerLv) >= 2) {
                     triggerMidBattleAppHostage("⚡ PHASE 2 — PLEINS POUVOIRS :")
                 }
                 refreshHud()
+                if (!pactOfferedThisBattle) {
+                    pactOfferedThisBattle = true
+                    showMidBattleCursedPact {
+                        rollTouchSabotageForNextTurn()
+                        turnLocked = false
+                        renderTurnControls()
+                    }
+                } else {
+                    speakAi(
+                        "🔥 PHASE 2 — ${curWitch.profile.name} !", EventKind.BOSS_PHASE_2,
+                        extraFooter = "🔷 Barrière Runique + Posture restaurée ! Brise-la avec 🔥 Lame !"
+                    )
+                    rollTouchSabotageForNextTurn(); turnLocked = false; renderTurnControls()
+                }
                 return true
             }
             if (bossPhase == 2 && ratio <= 0.28f && witchResolve > 0 && (curWitch.def.isBoss || curWitch.def.isMiniBoss)) {
@@ -1066,11 +1127,12 @@ class WitchRpgBattleOverlay(
                     speakAi("⚡ RENFORT DUO — ${curWitch.profile.name} !", EventKind.BOSS_PHASE_3, extraFooter = "2e Sorcière + Sort Ultime & Transe Vidéo imminents !")
                 } else {
                     witchMirage = true; fogBlindTurns = 1
-                    plannedIntent = WitchCombatAi.PlannedIntent(curWitch.profile.ultimateAttack, SpecialPhoneSpell.SEIZE_APP_HOSTAGE)
+                    plannedIntent = WitchCombatAi.PlannedIntent(curWitch.profile.ultimateAttack, SpecialPhoneSpell.CATEGORY_HOSTAGE_SWEEP)
                     stage.triggerWitchAttackLunge(intense = true); onVibrate(95L)
-                    speakAi("👑 PHASE 3 — FORME ULTIME !", EventKind.BOSS_PHASE_3, extraFooter = "🪞 Mirage + Brouillard + Ultime Souverain !")
+                    speakAi("👑 PHASE 3 — FORME ULTIME !", EventKind.BOSS_PHASE_3, extraFooter = "🪞 Mirage + Brouillard + Ultime Souverain + Double Otage !")
                 }
                 refreshHud()
+                rollTouchSabotageForNextTurn(); turnLocked = false; renderTurnControls()
                 return true
             }
             return false
@@ -1147,7 +1209,7 @@ class WitchRpgBattleOverlay(
             }
 
             if (checkBossPhaseShift()) {
-                rollTouchSabotageForNextTurn(); turnLocked = false; renderTurnControls(); return
+                return
             }
 
             val intent = plannedIntent
@@ -1215,6 +1277,24 @@ class WitchRpgBattleOverlay(
                     SpecialPhoneSpell.SEIZE_APP_HOSTAGE -> {
                         triggerMidBattleAppHostage("🔒 SORT CONFISCATION :")
                     }
+                    SpecialPhoneSpell.CATEGORY_HOSTAGE_SWEEP -> {
+                        if (allowMidAppPowers && DemonMdmManager.hasPrivilegedControl(context)) {
+                            Thread {
+                                val seizedList = DemonMdmManager.seizeCategoryHostagesMidBattle(context, count = 2)
+                                if (seizedList.isNotEmpty()) {
+                                    mainHandler.post {
+                                        if (!sessionActive) return@post
+                                        hostageApps.addAll(seizedList)
+                                        midBattleHostageCount += seizedList.size
+                                        onVibrate(140L)
+                                        refreshHud()
+                                        val names = seizedList.joinToString(", ") { it.second }
+                                        dialogueTv.text = "${dialogueTv.text}\n🔒🔒 DOUBLE OTAGE SHIZUKU : « $names » grisées !"
+                                    }
+                                }
+                            }.start()
+                        }
+                    }
                     SpecialPhoneSpell.SYSTEM_SEAL_RAID -> {
                         if (allowMidAppPowers) {
                             Thread {
@@ -1229,6 +1309,64 @@ class WitchRpgBattleOverlay(
                         Thread { DemonMdmManager.applyWitchAudioCurse(context, 0.0f) }.start()
                         sealedTurns = sealedTurns.coerceAtLeast(1)
                         extraFooterList.add("🔇 Volume coupé + Sorts scellés 1t !")
+                    }
+                    SpecialPhoneSpell.CHRONO_SLOWMO -> {
+                        frostButtonTaps = frostButtonTaps.coerceAtLeast(2)
+                        if (allowMidAppPowers && DemonMdmManager.isShizukuActive()) {
+                            Thread { DemonMdmManager.applyChronoSlowMoCurse(context, true) }.start()
+                            extraFooterList.add("⏳ Shizuku : animations Android ralenties ×3,5 + Touches givrées !")
+                        } else {
+                            extraFooterList.add("⏳ Distorsion temporelle : Touches givrées ×2 !")
+                        }
+                    }
+                    SpecialPhoneSpell.FAKE_LOW_BATTERY -> {
+                        if (allowMidAppPowers && DemonMdmManager.isShizukuActive()) {
+                            Thread { DemonMdmManager.applyFakeLowBatteryCurse(context, true, 3) }.start()
+                            extraFooterList.add("🔋 Shizuku : Illusion Batterie Critique 3 % injectée en barre d'état !")
+                        }
+                    }
+                    SpecialPhoneSpell.SCREEN_DENSITY_WARP -> {
+                        scrambleButtonsThisTurn = true
+                        if (allowMidAppPowers && DemonMdmManager.isShizukuActive()) {
+                            Thread { DemonMdmManager.applyScreenDensityDistortion(context, true) }.start()
+                            extraFooterList.add("🪞 Shizuku : Distorsion Zoom Écran activée jusqu'à ta victoire !")
+                        } else {
+                            extraFooterList.add("🪞 Illusion tactile : boutons mélangés !")
+                        }
+                    }
+                    SpecialPhoneSpell.ISOLATION_NOTIF_SEAL -> {
+                        if (allowMidAppPowers && DemonMdmManager.isShizukuActive()) {
+                            Thread {
+                                val isoMsg = DemonMdmManager.applyIsolationNotificationCurse(context)
+                                if (isoMsg != null) mainHandler.post {
+                                    if (sessionActive) dialogueTv.text = "${dialogueTv.text}\n$isoMsg"
+                                }
+                            }.start()
+                        }
+                    }
+                    SpecialPhoneSpell.MIC_CLIPBOARD_SEAL -> {
+                        if (allowMidAppPowers && DemonMdmManager.isShizukuActive()) {
+                            Thread {
+                                val sealMsg = DemonMdmManager.applyMicAndClipboardCurse(context)
+                                if (sealMsg != null) mainHandler.post {
+                                    if (sessionActive) dialogueTv.text = "${dialogueTv.text}\n$sealMsg"
+                                }
+                            }.start()
+                        }
+                    }
+                    SpecialPhoneSpell.ECLIPSE_DARK_POWER -> {
+                        if (allowMidAppPowers && DemonMdmManager.isShizukuActive()) {
+                            Thread { DemonMdmManager.applyEclipsePowerAndDarkCurse(context, true) }.start()
+                            extraFooterList.add("🌑 Shizuku : Mode Sombre + Économie d'Énergie forcés !")
+                        }
+                    }
+                    SpecialPhoneSpell.SCREEN_SLEEP_SNAP -> {
+                        if (allowMidAppPowers && DemonMdmManager.isShizukuActive()) {
+                            extraFooterList.add("😴 Shizuku : Claquement d'Écran — extinction forcée !")
+                            mainHandler.postDelayed({
+                                if (sessionActive) Thread { DemonMdmManager.triggerScreenSleepSnap() }.start()
+                            }, 850L)
+                        }
                     }
                     SpecialPhoneSpell.CONFISCATE_RELIC -> {
                         if (confiscatedRelic == null) {
@@ -1467,8 +1605,67 @@ class WitchRpgBattleOverlay(
             qteTickRunnable = tick; mainHandler.postDelayed(tick, 120L)
         }
 
+        fun startHypnoOrbHuntQte() {
+            actionsBox.removeAllViews(); turnTimerRunnable?.let { mainHandler.removeCallbacks(it) }
+            var hits = 0; val targetHits = 3
+            val endElapsed = SystemClock.elapsedRealtime() + 5_500L + (wardBonus - 1) * 180L
+            val hdrTv = TextView(context).apply {
+                text = "✨ CHASSE LE VRAI SCEAU DORÉ ! (0/$targetHits — évite 💜)"
+                setTextColor(Color.rgb(254, 240, 138)); textSize = 12.6f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+                setPadding(0, dp(2), 0, dp(5))
+            }
+            val gridBox = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+            actionsBox.addView(hdrTv); actionsBox.addView(gridBox)
+
+            lateinit var drawOrbs: () -> Unit
+            drawOrbs = {
+                gridBox.removeAllViews()
+                val trueIdx = Random.nextInt(4)
+                for (rowIdx in 0 until 2) {
+                    val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    for (colIdx in 0 until 2) {
+                        val idx = rowIdx * 2 + colIdx
+                        val isTrue = idx == trueIdx
+                        val btn = makeActionBtn(
+                            if (isTrue) "✨ VRAI SCEAU" else "💜 ILLUSION",
+                            if (isTrue) Color.rgb(217, 119, 6) else Color.rgb(107, 33, 168)
+                        ) {
+                            onVibrate(18L)
+                            if (isTrue) {
+                                hits++
+                                hdrTv.text = "✨ CHASSE LE VRAI SCEAU DORÉ ! ($hits/$targetHits)"
+                                if (hits >= targetHits) onQteSuccess(42) else drawOrbs()
+                            } else {
+                                onQteFailure()
+                            }
+                        }
+                        row.addView(btn, LinearLayout.LayoutParams(0, dp(40), 1f).apply {
+                            if (colIdx > 0) marginStart = dp(5)
+                            if (rowIdx > 0) topMargin = dp(5)
+                        })
+                    }
+                    gridBox.addView(row)
+                }
+            }
+            drawOrbs()
+
+            val tick = object : Runnable {
+                override fun run() {
+                    if (!sessionActive || inEndScene) return
+                    val rem = endElapsed - SystemClock.elapsedRealtime()
+                    if (rem <= 0L) onQteFailure() else mainHandler.postDelayed(this, 120L)
+                }
+            }
+            qteTickRunnable = tick; mainHandler.postDelayed(tick, 120L)
+        }
+
         fun startNextVariedQte() {
-            when (qteVarietyCounter++ % 3) { 0 -> startTimingQte(); 1 -> startRuneSequenceQte(); else -> startMashQte() }
+            when (qteVarietyCounter++ % 4) {
+                0 -> startTimingQte()
+                1 -> startRuneSequenceQte()
+                2 -> startHypnoOrbHuntQte()
+                else -> startMashQte()
+            }
         }
 
         // ==================== SKILLS, RELICS & RP SUB-MENUS ====================
@@ -1727,8 +1924,8 @@ class WitchRpgBattleOverlay(
 
                 if (captured) {
                     val r1 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-                    val qteLabel = when (qteVarietyCounter % 3) {
-                        0 -> "🎯 Briser (Timing)"; 1 -> "🔮 Briser (Runes)"; else -> "⚡ Se débattre (QTE)"
+                    val qteLabel = when (qteVarietyCounter % 4) {
+                        0 -> "🎯 Briser (Timing)"; 1 -> "🔮 Briser (Runes)"; 2 -> "✨ Briser (Orbes)"; else -> "⚡ Se débattre (QTE)"
                     }
                     r1.addView(makeActionBtn(qteLabel, Color.rgb(234, 88, 12)) { if (!turnLocked) startNextVariedQte() },
                         LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(4) })
@@ -1867,6 +2064,7 @@ class WitchRpgBattleOverlay(
 
         val introExtra = buildString {
             append("📌 ${WitchCombatAi.archetypePassiveSummary(curWitch.def.archetype)}")
+            append("\n${WitchCombatAi.tacticalWeaknessLabel(curWitch.def.archetype)}")
             if (battleMods.introContextLine.isNotBlank()) append("\n${battleMods.introContextLine}")
             if (battleMods.surpriseBossDmg > 0) append("\n⚡ Attaque surprise : -${battleMods.surpriseBossDmg} Résolution !")
             if (initialThreatApp != null && allowMidAppPowers && DemonMdmManager.hasPrivilegedControl(context)) {

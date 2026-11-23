@@ -216,11 +216,13 @@ object DemonShizukuBridge {
         return synchronized(lock) { shellService }
     }
 
-    /** Automatically grants UsageStats & WriteSettings via Shizuku so real app usage ranking works with 0 manual steps! */
+    /** Automatically grants all 4 special Android permissions via Shizuku so zero manual setup is needed! */
     fun autoGrantSafeAppOps() {
         if (!hasShizukuPermission()) return
         execShellSync("appops set com.demonpet.app GET_USAGE_STATS allow")
         execShellSync("appops set com.demonpet.app WRITE_SETTINGS allow")
+        execShellSync("appops set com.demonpet.app SYSTEM_ALERT_WINDOW allow")
+        execShellSync("appops set com.demonpet.app MANAGE_EXTERNAL_STORAGE allow")
     }
 
     data class ShellResult(val ok: Boolean, val exitCode: Int, val output: String)

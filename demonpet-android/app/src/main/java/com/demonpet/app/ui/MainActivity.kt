@@ -218,7 +218,7 @@ class MainActivity : AppCompatActivity() {
                     FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                 )
                 battleHostFrame.visibility = View.VISIBLE
-                if (rpgState.forcedFullscreen) setImmersiveFullscreen(true)
+                if (rpgState.forcedFullscreen || rpgState.shizukuTaskPinning) setImmersiveFullscreen(true)
             },
             onDismissFullscreen = {
                 battleHostFrame.removeAllViews()
@@ -289,6 +289,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         inAppBattle.forceCleanup()
+        Thread { try { DemonMdmManager.setTaskPinningViaShizuku(0, false) } catch (_: Throwable) {} }.start()
         super.onDestroy()
     }
 
@@ -343,7 +344,12 @@ class MainActivity : AppCompatActivity() {
                             View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                         )
                 }
+                if (rpgState.shizukuTaskPinning && DemonMdmManager.isShizukuActive()) {
+                    val tid = taskId
+                    Thread { try { DemonMdmManager.setTaskPinningViaShizuku(tid, true) } catch (_: Throwable) {} }.start()
+                }
             } else {
+                Thread { try { DemonMdmManager.setTaskPinningViaShizuku(0, false) } catch (_: Throwable) {} }.start()
                 window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     window.insetsController?.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
@@ -1234,10 +1240,16 @@ class MainActivity : AppCompatActivity() {
 
         // 3. Witch Full Powers & Forced Fullscreen Controls Card
         val fullPowCard = makeCard(accentStroke = Color.argb(150, 217, 70, 239))
-        fullPowCard.addView(sectionTitle("👑 Pleins Pouvoirs des Sorcières & Plein Écran"))
-        fullPowCard.addView(sectionSub("Contrôle jusqu'où les Sorcières peuvent influencer ton téléphone et ton écran tactile selon ton Niveau !"))
+        fullPowCard.addView(sectionTitle("👑 Pleins Pouvoirs des Sorcières & Plein Écran (Shizuku)"))
+        fullPowCard.addView(sectionSub("Contrôle les pouvoirs système Shizuku et tactiles des 50 Sorcières pendant les duels !"))
         fullPowCard.addView(makeSwitchRow("🔒 Plein Écran Immersif Forcé en combat (masque barres système)", rSnap.forcedFullscreen) {
             rpgState.forcedFullscreen = it
+        })
+        fullPowCard.addView(makeSwitchRow("📌 Épinglage Système Shizuku (am task lock — bloque Accueil/Récents)", rSnap.shizukuTaskPinning) {
+            rpgState.shizukuTaskPinning = it
+            if (it && !DemonMdmManager.isShizukuActive()) {
+                Toast.makeText(this, "Autorise Shizuku dans ⚙️ Dossier & IA pour l'épinglage système !", Toast.LENGTH_LONG).show()
+            }
         })
         fullPowCard.addView(makeSwitchRow("🖥️ Forcer le combat en Overlay Système (bloque tout l'OS via Accessibilité)", rSnap.forcedOverlayBattle) {
             rpgState.forcedOverlayBattle = it
@@ -1245,7 +1257,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Active l'Accessibilité dans ⚙️ Dossier & IA pour le mode Overlay Système !", Toast.LENGTH_LONG).show()
             }
         })
-        fullPowCard.addView(makeSwitchRow("⚡ Attaques sur tes Applis EN PLEIN COMBAT (Otage Shizuku)", rSnap.midBattleAppPowers) {
+        fullPowCard.addView(makeSwitchRow("⚡ Malédictions Shizuku EN PLEIN COMBAT (Otages, Ralenti ×3.5, Batterie 3%, Zoom, DND)", rSnap.midBattleAppPowers) {
             rpgState.midBattleAppPowers = it
         })
         fullPowCard.addView(makeSwitchRow("🖐️ Sabotage Tactile en combat (boutons fuyants, givre, leurres, brouillard)", rSnap.touchSabotageEnabled) {
@@ -1253,15 +1265,16 @@ class MainActivity : AppCompatActivity() {
         })
         root.addView(fullPowCard)
 
-        // 4. Living Demon Companion & System Ambushes Card
+        // 4. Living Demon Companion (100% Shizuku + Accessibility!)
         val demonCard = makeCard(accentStroke = Color.argb(120, 244, 63, 94))
-        demonCard.addView(sectionTitle("😈 Compagnon Démon & Embuscades Système"))
+        demonCard.addView(sectionTitle("😈 Petit Démon (100 % Shizuku & Accessibilité)"))
+        demonCard.addView(sectionSub("Notifications réparées (zéro panique sur les alertes, horloge ou batterie !). Concentré uniquement sur Shizuku & Accessibilité."))
         val sw = Switch(this).apply {
             isChecked = snap.enabled
-            text = if (snap.enabled) "Compagnon Démon & Embuscades ACTIFS" else "Activer le Compagnon flottant"
+            text = if (snap.enabled) "Compagnon Démon (Shizuku + Accessibilité) ACTIF" else "Activer le Petit Démon flottant"
             setTextColor(Color.WHITE); textSize = 13.4f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(4), 0, dp(8))
             setOnCheckedChangeListener { _, checked ->
-                text = if (checked) "Compagnon Démon & Embuscades ACTIFS" else "Activer le Compagnon flottant"
+                text = if (checked) "Compagnon Démon (Shizuku + Accessibilité) ACTIF" else "Activer le Petit Démon flottant"
                 settings.enabled = checked
                 if (checked) DemonCompanionService.start(applicationContext) else DemonCompanionService.stop(applicationContext)
             }
@@ -1269,7 +1282,7 @@ class MainActivity : AppCompatActivity() {
         masterSwitch = sw
         demonCard.addView(sw)
 
-        demonCard.addView(smallLabel("Sévérité des embuscades & punitions :"))
+        demonCard.addView(smallLabel("Sévérité des embuscades & farces (Shizuku + Accessibilité) :"))
         val presetRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         SeverityPreset.values().forEachIndexed { idx, preset ->
             val active = snap.severityPreset == preset
@@ -1292,12 +1305,26 @@ class MainActivity : AppCompatActivity() {
         }
         demonCard.addView(presetRow)
 
-        demonCard.addView(makeSwitchRow("Embuscades Sorcières surprise hors de l'app", snap.rpgSeductionEnabled) { settings.rpgSeductionEnabled = it })
-        demonCard.addView(makeSwitchRow("Drainage de luminosité en combat / défaite", snap.drainBrightnessEnabled) { settings.drainBrightnessEnabled = it })
-        demonCard.addView(makeSwitchRow("Drainage qualité visuelle / transe hypnotique", snap.drainQualityEnabled) { settings.drainQualityEnabled = it })
-        demonCard.addView(makeSwitchRow("Autel Photo Piégé (#87) après défaite", snap.unremovableAltarEnabled) { settings.unremovableAltarEnabled = it })
-        demonCard.addView(makeSwitchRow("Fond d'écran trophée de la Sorcière gagnante", snap.wallpaperPrankEnabled) { settings.wallpaperPrankEnabled = it })
-        demonCard.addView(makeSwitchRow("Au Coin Vidéo (#38) & Lignes (#39)", snap.timeoutCornerEnabled) {
+        demonCard.addView(makeSwitchRow("⚔️ Embuscades Sorcières surprise hors de l'app (Accessibilité)", snap.rpgSeductionEnabled) { settings.rpgSeductionEnabled = it })
+        demonCard.addView(makeSwitchRow("📜 Contre-Scroll & Anti-Doomscroll (Accessibilité)", snap.counterScrollEnabled) {
+            settings.counterScrollEnabled = it; settings.antiDoomscrollEnabled = it
+        })
+        demonCard.addView(makeSwitchRow("⌨️ Sabotage Clavier & Zone Morte (Accessibilité)", snap.keyboardSabotageEnabled) {
+            settings.keyboardSabotageEnabled = it; settings.deadZoneKeyboardEnabled = it
+        })
+        demonCard.addView(makeSwitchRow("🛡️ Anti-Like, Anti-Boutique & Vol de Clic (Accessibilité)", snap.antiLikeFollowEnabled) {
+            settings.antiLikeFollowEnabled = it; settings.clickStealShieldEnabled = it; settings.blockStoreBuyEnabled = it
+        })
+        demonCard.addView(makeSwitchRow("🔕 Fermer le Panneau de Contrôle (uniquement ouvert en grand, réparé !)", snap.closeNotifShadeEnabled) {
+            settings.closeNotifShadeEnabled = it; settings.blockQuickSettingsEnabled = it
+        })
+        demonCard.addView(makeSwitchRow("🌙 Drainage de luminosité & transe visuelle", snap.drainBrightnessEnabled) {
+            settings.drainBrightnessEnabled = it; settings.drainQualityEnabled = it
+        })
+        demonCard.addView(makeSwitchRow("🕯️ Autel Photo Piégé (#87) & Fond d'écran trophée", snap.unremovableAltarEnabled) {
+            settings.unremovableAltarEnabled = it; settings.wallpaperPrankEnabled = it
+        })
+        demonCard.addView(makeSwitchRow("🎬 Au Coin Vidéo (#38) & Lignes de Punition (#39)", snap.timeoutCornerEnabled) {
             settings.timeoutCornerEnabled = it; settings.punishmentLinesEnabled = it
         })
 
@@ -1544,9 +1571,6 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) req.add(Manifest.permission.POST_NOTIFICATIONS)
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            req.add(Manifest.permission.ACCESS_COARSE_LOCATION)
-        }
         if (req.isNotEmpty()) ActivityCompat.requestPermissions(this, req.toTypedArray(), 201)
     }
 

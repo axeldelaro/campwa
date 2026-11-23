@@ -60,6 +60,7 @@ class WitchRpgState(context: Context) {
         val storyStep: Int,                    // 0..15 (3 scenes per chapter!)
         val corruption: Int,                   // -100 (Volonté) .. +100 (Ombre/Fascination)
         val forcedFullscreen: Boolean,         // Immersive sticky fullscreen during battles
+        val shizukuTaskPinning: Boolean,       // True Android system pinning (am task lock) via Shizuku!
         val forcedOverlayBattle: Boolean,      // Lock battle above entire OS via Accessibility Overlay when available
         val midBattleAppPowers: Boolean,       // Witches seize/grey real apps LIVE mid-combat!
         val touchSabotageEnabled: Boolean      // Witches hijack buttons, dodge fingers, frost/scramble touch!
@@ -105,6 +106,7 @@ class WitchRpgState(context: Context) {
         storyStep = prefs.getInt(KEY_STORY_STEP, 0).coerceIn(0, 15),
         corruption = prefs.getInt(KEY_CORRUPTION, 0).coerceIn(-100, 100),
         forcedFullscreen = prefs.getBoolean(KEY_FORCED_FS, true),
+        shizukuTaskPinning = prefs.getBoolean(KEY_SHIZUKU_PIN, false),
         forcedOverlayBattle = prefs.getBoolean(KEY_FORCED_OV, false),
         midBattleAppPowers = prefs.getBoolean(KEY_MID_APP_POWERS, true),
         touchSabotageEnabled = prefs.getBoolean(KEY_TOUCH_SABOTAGE, true)
@@ -275,6 +277,10 @@ class WitchRpgState(context: Context) {
         get() = prefs.getBoolean(KEY_FORCED_FS, true)
         set(v) = prefs.edit().putBoolean(KEY_FORCED_FS, v).apply()
 
+    var shizukuTaskPinning: Boolean
+        get() = prefs.getBoolean(KEY_SHIZUKU_PIN, false)
+        set(v) = prefs.edit().putBoolean(KEY_SHIZUKU_PIN, v).apply()
+
     var forcedOverlayBattle: Boolean
         get() = prefs.getBoolean(KEY_FORCED_OV, false)
         set(v) = prefs.edit().putBoolean(KEY_FORCED_OV, v).apply()
@@ -339,6 +345,7 @@ class WitchRpgState(context: Context) {
         private const val KEY_STORY_STEP = "story_step_v7"
         private const val KEY_CORRUPTION = "corruption_v7"
         private const val KEY_FORCED_FS = "forced_fs_v7"
+        private const val KEY_SHIZUKU_PIN = "shizuku_pin_v9"
         private const val KEY_FORCED_OV = "forced_ov_v7"
         private const val KEY_MID_APP_POWERS = "mid_app_powers_v7"
         private const val KEY_TOUCH_SABOTAGE = "touch_sabotage_v7"
