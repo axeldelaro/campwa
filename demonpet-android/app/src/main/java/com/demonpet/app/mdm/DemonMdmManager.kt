@@ -41,10 +41,12 @@ object DemonMdmManager {
     private const val KEY_CAM_SEALED_PKGS = "mdm_cam_sealed_pkgs"
     private const val KEY_SILENCED_PKGS = "mdm_silenced_pkgs"
     private const val KEY_MIC_CLIP_PKGS = "mdm_mic_clip_pkgs"
+    private const val KEY_FOCUS_PKGS = "mdm_focus_pkgs_v10"
     private const val KEY_SAVED_VOLUME = "mdm_saved_media_vol"
     private const val KEY_SAVED_BRIGHTNESS = "mdm_saved_sys_bright"
 
     data class AppUsageEntry(val packageName: String, val label: String, val foregroundMinutes: Long)
+    data class AppThreatInfo(val packageName: String, val label: String, val isHostage: Boolean)
     data class MdmDamageReport(val applied: Boolean, val summary: String, val affectedAppLabel: String? = null)
 
     private val PROTECTED_KEYWORDS = listOf(
@@ -624,7 +626,8 @@ object DemonMdmManager {
         }
 
         if (isShizukuActive()) {
-            val allPkgs = HashSet<String>().apply { addAll(suspended); addAll(hidden) }
+            val focusPkgs = HashSet(prefs.getStringSet(KEY_FOCUS_PKGS, emptySet()) ?: emptySet())
+            val allPkgs = HashSet<String>().apply { addAll(suspended); addAll(hidden); addAll(focusPkgs) }
             for (pkg in allPkgs) if (unsuspendPackageViaShizuku(pkg)) restoredCount++
             for (pkg in camSealed) DemonShizukuBridge.execShellSync("appops set $pkg CAMERA allow")
             for (pkg in silenced) {
@@ -650,7 +653,9 @@ object DemonMdmManager {
         prefs.edit()
             .remove(KEY_SUSPENDED_PKGS).remove(KEY_HIDDEN_PKGS).remove(KEY_CURSES)
             .remove(KEY_CAM_SEALED_PKGS).remove(KEY_SILENCED_PKGS).remove(KEY_MIC_CLIP_PKGS)
+            .remove(KEY_FOCUS_PKGS)
             .apply()
+        com.demonpet.app.rpg.WitchRpgState(context).setActiveFocusUntil(0L)
 
         restoreBattleTempCurses(context)
         Thread { MediaFolderHelper.restoreOriginalWallpaper(context.applicationContext) }.start()
@@ -658,6 +663,55 @@ object DemonMdmManager {
             "Tout restauré : $restoredCount appli(s) dégrisées/réactivées + Chrono, Batterie, Densité, Notifs, Micro & Sceaux réinitialisés ✅"
         } else {
             "Tous les sceaux Shizuku (Chrono, Batterie, Densité, Notifs, Micro, Luminosité, Volume, Fond d'écran) ont été restaurés ✅"
+        }
+    }
+
+    /** Live Top-8 Most Used Apps Threat Radar (shows which apps are currently hostage or next in danger!) */
+    fun getTopUsedAppsWithStatus(context: Context, limit: Int = 8): List<AppThreatInfo> {
+        val susp = getSuspendedPackages(context)
+        val hid = getHiddenPackages(context)
+        return getMostUsedUserApps(context, limit = limit).map {
+            AppThreatInfo(it.packageName, it.label, susp.contains(it.packageName) || hid.contains(it.packageName))
+        }
+    }
+
+    /** Shizuku Focus / Study Contract: suspends top distracting apps cleanly for [minutes] min & awards Gold/XP! */
+    fun startShizukuFocusContract(context: Context, minutes: Int): String {
+        if (!isShizukuActive()) return "⚠️ Autorise Shizuku d'abord pour activer le Mode Focus !"
+        val prefs = context.applicationContext.getSharedPreferences(MDM_PREFS, Context.MODE_PRIVATE)
+        val focusSet = HashSet(prefs.getStringSet(KEY_FOCUS_PKGS, emptySet()) ?: emptySet())
+        val targets = getMostUsedUserApps(context, limit = 6)
+        var locked = 0
+        for (t in targets) {
+            if (suspendPackageViaShizuku(t.packageName).first) {
+                focusSet.add(t.packageName)
+                locked++
+            }
+        }
+        prefs.edit().putStringSet(KEY_FOCUS_PKGS, focusSet).apply()
+        val untilMs = System.currentTimeMillis() + minutes.coerceIn(1, 120) * 60_000L
+        com.demonpet.app.rpg.WitchRpgState(context).setActiveFocusUntil(untilMs)
+        return "🎯 Contrat Focus Shizuku ($minutes min) activé : $locked appli(s) mise(s) en pause ! Récompense +150 💎 à la fin !"
+    }
+
+    /** Releases all Shizuku Focus Contract apps cleanly and grants rewards! */
+    fun finishShizukuFocusContract(context: Context, awardRewards: Boolean = true): String {
+        val prefs = context.applicationContext.getSharedPreferences(MDM_PREFS, Context.MODE_PRIVATE)
+        val focusSet = HashSet(prefs.getStringSet(KEY_FOCUS_PKGS, emptySet()) ?: emptySet())
+        var freed = 0
+        if (isShizukuActive()) {
+            for (pkg in focusSet) {
+                if (unsuspendPackageViaShizuku(pkg)) freed++
+            }
+        }
+        prefs.edit().remove(KEY_FOCUS_PKGS).apply()
+        val rpg = com.demonpet.app.rpg.WitchRpgState(context)
+        return if (awardRewards) {
+            val (gold, total) = rpg.completeFocusSession()
+            "🏆 Contrat Focus réussi ! $freed appli(s) libérées · +$gold 💎 & +Affection Démon (Total : $total) !"
+        } else {
+            rpg.setActiveFocusUntil(0L)
+            "🕊️ Mode Focus arrêté : $freed appli(s) réactivées."
         }
     }
 

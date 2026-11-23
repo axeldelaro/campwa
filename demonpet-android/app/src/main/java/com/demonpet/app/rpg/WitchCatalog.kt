@@ -26,8 +26,8 @@ object WitchCatalog {
     )
 
     data class WitchDef(
-        val id: Int,                  // 1..50
-        val chapter: Int,             // 1..5
+        val id: Int,                  // 1..50 Campaign, 51..55 Secret Eclipse Superbosses
+        val chapter: Int,             // 1..5 (6 = Secret Eclipse Sanctum)
         val name: String,
         val title: String,
         val archetype: Archetype,
@@ -40,10 +40,12 @@ object WitchCatalog {
         val rewardXp: Int,
         val skillNames: List<String>,
         val ultimateName: String,
-        val weaknessTip: String
+        val weaknessTip: String,
+        val isSuperboss: Boolean = false
     ) {
         val displayTitle: String
             get() = when {
+                isSuperboss -> "🌑 SUPERBOSS · $name, $title"
                 isBoss -> "👑 BOSS · $name, $title"
                 isMiniBoss -> "⚔️ ÉLITE · $name, $title"
                 else -> "$name, $title"
@@ -238,19 +240,19 @@ object WitchCatalog {
         val isBoss = posInChap == 10
         val lv = id
         val resolve = when {
-            isBoss -> 560 + chapter * 85
-            isMiniBoss -> 390 + chapter * 52
-            else -> 245 + chapter * 36
+            isBoss -> 680 + chapter * 110
+            isMiniBoss -> 460 + chapter * 68
+            else -> 310 + chapter * 46
         }
         val gold = when {
-            isBoss -> 210 + chapter * 75
-            isMiniBoss -> 115 + chapter * 40
-            else -> 52 + chapter * 18
+            isBoss -> 240 + chapter * 85
+            isMiniBoss -> 130 + chapter * 45
+            else -> 60 + chapter * 20
         }
         val xp = when {
-            isBoss -> 220 + chapter * 65
-            isMiniBoss -> 130 + chapter * 40
-            else -> 62 + chapter * 18
+            isBoss -> 240 + chapter * 70
+            isMiniBoss -> 140 + chapter * 42
+            else -> 68 + chapter * 20
         }
         WitchDef(
             id = id,
@@ -271,7 +273,58 @@ object WitchCatalog {
         )
     }
 
-    fun getById(id: Int): WitchDef = ALL_WITCHES.firstOrNull { it.id == id } ?: ALL_WITCHES.first()
+    /** 5 Secret Post-Chapter / Endgame Eclipse Superbosses (IDs 51..55) for true 15+ hour RPG mastery! */
+    val SUPERBOSSES: List<WitchDef> = listOf(
+        WitchDef(
+            id = 51, chapter = 5, name = "Morgane Éveillée", title = "Matriarche du Crépuscule Primordial",
+            archetype = Archetype.BINDER, element = "Forêt 🌲", level = 55,
+            isMiniBoss = false, isBoss = true, maxResolve = 1320, rewardGold = 720, rewardXp = 620,
+            skillNames = listOf("Lianes Millénaires", "Étau des Anciens", "Sève Corrompue"),
+            ultimateName = "GENÈSE DE LA FORÊT CAPTIVE",
+            weaknessTip = "SUPERBOSS I : Faible face à 🔥 Ignis ! Brise sa Posture avant que ses Fils n'atteignent 3/3.",
+            isSuperboss = true
+        ),
+        WitchDef(
+            id = 52, chapter = 5, name = "Séraphina Sanglante", title = "Impératrice Écarlate du Manoir",
+            archetype = Archetype.DRAINER, element = "Pourpre 🦇", level = 60,
+            isMiniBoss = false, isBoss = true, maxResolve = 1460, rewardGold = 820, rewardXp = 700,
+            skillNames = listOf("Bal des Ombres", "Siphon Royal", "Valse d'Éclipse"),
+            ultimateName = "CRÉPUSCULE DE SANG POURPRE",
+            weaknessTip = "SUPERBOSS II : Enflamme-la avec 🔥 Ignis pour bloquer son Vol de Vie et utilise 💧 Ondine contre son Charme.",
+            isSuperboss = true
+        ),
+        WitchDef(
+            id = 53, chapter = 5, name = "Vespera Prismatique", title = "Architecte des Mille Miroirs",
+            archetype = Archetype.ILLUSIONIST, element = "Miroir 🪞", level = 65,
+            isMiniBoss = false, isBoss = true, maxResolve = 1580, rewardGold = 940, rewardXp = 800,
+            skillNames = listOf("Fracture du Réel", "Labyrinthe Infini", "Reflet Volé"),
+            ultimateName = "SINGULARITÉ DES MIRAGES",
+            weaknessTip = "SUPERBOSS III : 🌬️ Zéphyr perce ses Mirages et annule sa Distorsion d'écran !",
+            isSuperboss = true
+        ),
+        WitchDef(
+            id = 54, chapter = 5, name = "Lilith Inquisitrice", title = "Juge Suprême d'Obsidienne",
+            archetype = Archetype.INQUISITOR, element = "Obsidienne 🖤", level = 70,
+            isMiniBoss = false, isBoss = true, maxResolve = 1720, rewardGold = 1080, rewardXp = 920,
+            skillNames = listOf("Édit Absolu", "Tribunal de Cendre", "Sceau d'Anathème"),
+            ultimateName = "VERDICT DE L'INQUISITION ÉTERNELLE",
+            weaknessTip = "SUPERBOSS IV : Utilise Brise-Sort pour annuler ses Lois Sacrées et 🪨 Gaïa pour absorber ses coups lourds !",
+            isSuperboss = true
+        ),
+        WitchDef(
+            id = 55, chapter = 5, name = "Élara Omnisciente", title = "Origine Absolue de l'Éclipse",
+            archetype = Archetype.SOVEREIGN, element = "Éclipse Totale 🌑👑", level = 80,
+            isMiniBoss = false, isBoss = true, maxResolve = 1980, rewardGold = 1500, rewardXp = 1200,
+            skillNames = listOf("Aube Noire", "Chaînes Stellaires", "Siphon du Néant"),
+            ultimateName = "APOCALYPSE DE L'ÉCLIPSE INFINIE",
+            weaknessTip = "SUPERBOSS ULTIME (55/55) : Alterne les 4 Esprits (Zéphyr, Gaïa, Ondine, Ignis), varie tes Arts de l'Épée et libère Surcharge Quadri-Élémentaire !",
+            isSuperboss = true
+        )
+    )
+
+    val ALL_INCLUDING_SUPERBOSSES: List<WitchDef> = ALL_WITCHES + SUPERBOSSES
+
+    fun getById(id: Int): WitchDef = ALL_INCLUDING_SUPERBOSSES.firstOrNull { it.id == id } ?: ALL_WITCHES.first()
 
     fun witchesInChapter(chapter: Int): List<WitchDef> = ALL_WITCHES.filter { it.chapter == chapter }
 

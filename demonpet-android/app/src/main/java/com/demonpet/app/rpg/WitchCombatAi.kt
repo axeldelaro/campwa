@@ -93,6 +93,30 @@ object WitchCombatAi {
         fun byKind(k: AttackKind): WitchSpriteEngine.WitchAttack =
             attacks.firstOrNull { it.kind == k } ?: attacks.first()
 
+        if (s.playerCaptured) {
+            return PlannedIntent(
+                attack = byKind(AttackKind.BIND_ESCALATE),
+                phoneSpell = if (s.bossPhase >= 2 && Random.nextFloat() < 0.40f) SpecialPhoneSpell.SEIZE_APP_HOSTAGE else SpecialPhoneSpell.NONE,
+                telegraphLine = "⛓️⛓️ ÉTREINTE PROFONDE ! Libère-toi par QTE ou 📜 Talisman avant l'Emprise Totale !"
+            )
+        }
+
+        // Bosses & Phase 2+ Witches weave Thorn Counter Traps and Weather Shifts!
+        if (s.bossPhase >= 2 && s.turnNumber % 4 == 3 && Random.nextFloat() < 0.55f) {
+            return PlannedIntent(
+                attack = byKind(AttackKind.THORN_COUNTER),
+                phoneSpell = SpecialPhoneSpell.NONE,
+                telegraphLine = "🌹 Posture de RIPOSTE ÉPINEUSE ! Ne frappe pas direct — utilise 🌀 Brise-Sort ou 🛡️ Garde !"
+            )
+        }
+        if (s.turnNumber == 3 || (s.bossPhase >= 2 && s.turnNumber % 6 == 2)) {
+            return PlannedIntent(
+                attack = byKind(AttackKind.WEATHER_SHIFT),
+                phoneSpell = if (s.witchDef.isSuperboss) SpecialPhoneSpell.ECLIPSE_DARK_POWER else SpecialPhoneSpell.NONE,
+                telegraphLine = "🌑 ALTÉRATION DE DOMAINE ! La météo du champ de bataille va basculer !"
+            )
+        }
+
         if (!s.playerCaptured && s.turnNumber >= 4 && s.turnNumber % 5 == 0) {
             val spPhone = when {
                 s.bossPhase >= 2 && s.videoTranceCount < 2 && Random.nextFloat() < 0.50f -> SpecialPhoneSpell.FORCED_VIDEO_TRANCE

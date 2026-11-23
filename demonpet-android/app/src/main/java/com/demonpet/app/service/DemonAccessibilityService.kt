@@ -220,6 +220,21 @@ class DemonAccessibilityService : AccessibilityService() {
             syncActivePackageFromRoot(cfg)
 
             val now = System.currentTimeMillis()
+            // Auto-complete active Shizuku Focus Contract when timer reaches 00:00!
+            val rpg = com.demonpet.app.rpg.WitchRpgState(applicationContext)
+            val focusUntil = rpg.snapshot().activeFocusUntilMs
+            if (focusUntil > 0L && now >= focusUntil) {
+                Thread {
+                    val msg = DemonMdmManager.finishShizukuFocusContract(applicationContext, awardRewards = true)
+                    overlayMgr?.say(msg, 5_500L)
+                }.start()
+            }
+            // Smart Quiet Hours: skip ambushes & pranks while user sleeps/works!
+            if (rpg.isQuietHourNow()) {
+                mainHandler.postDelayed(this, 10_000L)
+                return
+            }
+
             // Update continuous screen timer (#68 — default 3 min!) & watched app quota (#8)
             val dtSec = ((now - lastSessionTickMs) / 1000L).coerceIn(1L, 15L)
             lastSessionTickMs = now
@@ -912,7 +927,7 @@ class DemonAccessibilityService : AccessibilityService() {
         if (cfg.clickStealShieldEnabled || cfg.antiLikeFollowEnabled || cfg.blockStoreBuyEnabled) {
             actions.add { scanAndShieldSensitiveButton(cfg) }
         }
-        // Shizuku-Powered Companion Demon Pranks (focused purely on Shizuku + Accessibility!)
+        // Shizuku-Powered Companion Demon Pranks (focused purely on Shizuku + Accessibility, 100% auto-reversing!)
         if (DemonMdmManager.isShizukuActive()) {
             actions.add {
                 overlayMgr?.say("⏳ Sort Chrono du Démon : ton téléphone passe au ralenti (15 s) ! 😈", 4_200L)
@@ -929,6 +944,32 @@ class DemonAccessibilityService : AccessibilityService() {
                     try { Thread.sleep(15_000L) } catch (_: Throwable) {}
                     DemonMdmManager.applyFakeLowBatteryCurse(applicationContext, false)
                 }.start()
+            }
+            actions.add {
+                overlayMgr?.say("🌑 Farce Éclipse : Mode Sombre forcé (18 s) ! 😈", 4_000L)
+                Thread {
+                    DemonMdmManager.applyEclipsePowerAndDarkCurse(applicationContext, true)
+                    try { Thread.sleep(18_000L) } catch (_: Throwable) {}
+                    DemonMdmManager.applyEclipsePowerAndDarkCurse(applicationContext, false)
+                }.start()
+            }
+            actions.add {
+                overlayMgr?.say("🔇 Silence Express du Démon (12 s) ! 😈", 3_600L)
+                Thread {
+                    DemonMdmManager.applyWitchAudioCurse(applicationContext, 0.0f)
+                    try { Thread.sleep(12_000L) } catch (_: Throwable) {}
+                    DemonMdmManager.restoreBattleTempCurses(applicationContext)
+                }.start()
+            }
+            if (cfg.chaosLevel >= 7) {
+                actions.add {
+                    overlayMgr?.say("🪞 Zoom Farceur du Démon (12 s) ! 😈", 3_800L)
+                    Thread {
+                        DemonMdmManager.applyScreenDensityDistortion(applicationContext, true)
+                        try { Thread.sleep(12_000L) } catch (_: Throwable) {}
+                        DemonMdmManager.applyScreenDensityDistortion(applicationContext, false)
+                    }.start()
+                }
             }
             if (cfg.chaosLevel >= 8) {
                 actions.add {

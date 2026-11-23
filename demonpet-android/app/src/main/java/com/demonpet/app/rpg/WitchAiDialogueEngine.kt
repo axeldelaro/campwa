@@ -21,7 +21,9 @@ object WitchAiDialogueEngine {
 
     enum class EventKind {
         INTRO, ATTACK, ENCHANT_CHARM, ENCHANT_HYPNO, SIPHON_MARK, SHIELD_UP, MIRAGE_CAST, TIME_DOUBLE,
-        CAPTURE, ULTIMATE_WARN, GUARDED, PERFECT_PARRY, COUNTER_HIT, SHIELD_BREAK, SPAM_READ,
+        CAPTURE, BIND_STAGE_2, THORN_COUNTER_UP, THORN_REFLECT, WEATHER_CHANGE,
+        SPIRIT_SUMMON, DEMON_ASSIST, ADAPT_COUNTER, OVERDRIVE_ULT,
+        ULTIMATE_WARN, GUARDED, PERFECT_PARRY, COUNTER_HIT, SHIELD_BREAK, SPAM_READ,
         QTE_BREAK, QTE_FAIL, BOSS_PHASE_2, BOSS_PHASE_3, EXORCISM_HIT, JUDGMENT_ULT,
         RP_DEFY, RP_BARGAIN, RP_SUBMIT,
         DRAIN_STAGE_1, DRAIN_STAGE_2, DRAIN_STAGE_3, DRAIN_STAGE_4, VICTORY
@@ -105,8 +107,40 @@ object WitchAiDialogueEngine {
                 "⏳ Le sablier d'ombre accélère : $n frappe deux fois avant que tu puisses reprendre ton souffle !"
             )
             EventKind.CAPTURE -> listOf(
-                "$op ENTRAVÉ ! $n se rapproche tout près : « Voyons quel réflexe te sortira de mes liens ! ⛓️😈 »",
-                "$op Pris au piège ! L'emprise de $n se referme — réussis l'épreuve d'évasion ou utilise un 📜 Talisman !"
+                "$op ENTRAVÉ (Stade 1) ! $n se rapproche tout près : « Voyons quel réflexe te sortira de mes liens de ${witch.element} ! ⛓️😈 »",
+                "$op Pris au piège ! L'emprise de $n se referme — réussis l'épreuve d'évasion, invoque 💧 Ondine ou utilise un 📜 Talisman !"
+            )
+            EventKind.BIND_STAGE_2 -> listOf(
+                "$op ÉTREINTE PROFONDE (Stade 2) ! $n resserre son emprise : « Tu n'as pas rompu mes liens à temps… ton énergie coule librement vers moi ! 💜⛓️ »",
+                "$op « Plus tu attends, plus mon emprise devient absolue… » $n intensifie « $skillName » tandis que ta barre d'Emprise s'emballe !"
+            )
+            EventKind.THORN_COUNTER_UP -> listOf(
+                "🌹 $n croise les bras dans un sourire perfide : « Touche-moi avec une attaque directe et tu goûteras à ma Riposte Épineuse ! »",
+                "🌹 Une aura d'épines runiques entoure $n ! Utilise 🌀 Brise-Sort, 🌟 Exorcisme ou 🛡️ Garde pour ne pas te blesser !"
+            )
+            EventKind.THORN_REFLECT -> listOf(
+                "🌹💥 PIÈGE DÉCLENCHÉ ! « Hihi, je t'avais prévenu ! » Les épines de $n renvoient la moitié de ton propre coup contre toi !",
+                "🌹💥 Ta lame heurte la Riposte Épineuse de $n — l'onde de choc te repousse brutalement !"
+            )
+            EventKind.WEATHER_CHANGE -> listOf(
+                "🌑 $n lève les mains vers le ciel : « Que le Sanctuaire entier plie sous mon Domaine de ${witch.element} ! »",
+                "🌑 L'atmosphère du duel bascule sous l'incantation de $n — adapte tes Esprits Élémentaires à la nouvelle météo !"
+            )
+            EventKind.SPIRIT_SUMMON -> listOf(
+                "🌀 Tu invoques $skillName ! $n recule d'un pas : « Un Esprit Élémentaire ?! Intéressant… voyons si tu sais vraiment t'en servir ! »",
+                "✨ L'aura de $skillName illumine tout l'écran ! Les yeux de $n s'écarquillent devant ton pacte spirituel !"
+            )
+            EventKind.DEMON_ASSIST -> listOf(
+                "😈 Ton Petit Démon bondit au milieu du combat ! $n fronce les sourcils : « Rappelle ton familier effronté ! »",
+                "😈 Intervention du Petit Démon ! « Personne ne touche à mon humain sans ma permission ! 🔥 »"
+            )
+            EventKind.ADAPT_COUNTER -> listOf(
+                "🧠 « Encore la même technique ?! J'ai mémorisé chaque millimètre de ton geste ! » $n absorbe ton coup et riposte aussitôt !",
+                "🧠 ADAPTATION PARFAITE ! $n ricane : « Le spam ne marche pas dans le Coven — change d'Art ou utilise 💧 Eau Bénite ! »"
+            )
+            EventKind.OVERDRIVE_ULT -> listOf(
+                "⚡🌟 SURCHARGE QUADRI-ÉLÉMENTAIRE !! Les Esprits convergent dans ta lame et fendent le ciel du Sanctuaire — $n vacille violemment !",
+                "🔥🌊🌬️🪨 FUSION DES ESPRITS ! Une déflagration prismatique pulvérise les défenses de $n dans un tonnerre absolu !"
             )
             EventKind.ULTIMATE_WARN -> listOf(
                 "⚠️ $n concentre une magie immense : « ${witch.ultimateName} » va frapper ! Utilise 🛡️ GARDE pour une PARADE PARFAITE !",

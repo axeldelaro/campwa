@@ -56,6 +56,8 @@ import com.demonpet.app.overlay.DemonPetView
 import com.demonpet.app.overlay.WitchRpgBattleOverlay
 import com.demonpet.app.receiver.DemonDeviceAdminReceiver
 import com.demonpet.app.rpg.WitchCatalog
+import com.demonpet.app.rpg.WitchCombatSystem
+import com.demonpet.app.rpg.WitchLoreAndCampaign
 import com.demonpet.app.rpg.WitchRpgState
 import com.demonpet.app.rpg.WitchStoryEngine
 import com.demonpet.app.service.DemonAccessibilityService
@@ -528,6 +530,207 @@ class MainActivity : AppCompatActivity() {
         inAppBattle.launchTowerRun(settings.snapshot(), floor = 1)
     }
 
+    // ==================== 5-ROOM LINKED DUNGEON EXPEDITION ENGINE ====================
+    private fun startChapterDungeonExpedition(chapter: Int) {
+        if (inAppBattle.isBattleActive()) return
+        val rooms = WitchLoreAndCampaign.generateChapterDungeon(chapter)
+        val rSnap = rpgState.snapshot()
+        runDungeonRoomStep(chapter, rooms, 0, rSnap.maxHp, rSnap.maxMp, 30, 0)
+    }
+
+    private fun runDungeonRoomStep(
+        chapter: Int,
+        rooms: List<WitchLoreAndCampaign.DungeonRoom>,
+        roomIdx: Int,
+        carryHp: Int,
+        carryMp: Int,
+        carrySp: Int,
+        carryEmbrace: Int
+    ) {
+        if (roomIdx >= rooms.size) {
+            rpgState.recordDungeonComplete()
+            val bonusGold = 260 + chapter * 50
+            val rareRelic = listOf("posture_bomb" to "💣 Bombe Brise-Posture", "holy_water" to "💧 Eau Bénite", "ether_elixir" to "⚡ Élixir d'Éther", "hourglass" to "⏳ Sablier de Répit").random()
+            rpgState.grantReward(bonusGold, rareRelic.first)
+            AlertDialog.Builder(this)
+                .setTitle("🏆 EXPÉDITION 5/5 TRIOMPHANTE !")
+                .setMessage("Tu as traversé toutes les salles du donjon Chapitre $chapter !\n\n🎁 Coffre Légendaire : +$bonusGold 💎 + 1 ${rareRelic.second} + Affection Démon !")
+                .setPositiveButton("Incroyable !") { _, _ -> renderActiveTab(settings.snapshot()) }
+                .show()
+            return
+        }
+
+        val room = rooms[roomIdx]
+        val rSnap = rpgState.snapshot()
+        val statusBar = "❤️ PV $carryHp/${rSnap.maxHp} • 💙 PM $carryMp/${rSnap.maxMp} • ⚡ SP $carrySp • 💜 Emprise $carryEmbrace%"
+
+        when (room.kind) {
+            WitchLoreAndCampaign.RoomKind.AMBUSH,
+            WitchLoreAndCampaign.RoomKind.ELITE_GUARD,
+            WitchLoreAndCampaign.RoomKind.DUNGEON_BOSS -> {
+                val witch = WitchCatalog.getById(room.witchId ?: 1)
+                AlertDialog.Builder(this)
+                    .setTitle("${room.kind.icon} ${room.title}")
+                    .setMessage("${room.narration}\n\n$statusBar\nAdversaire : ${witch.displayTitle} (NV ${witch.level})")
+                    .setPositiveButton("⚔️ Combattre !") { _, _ ->
+                        inAppBattle.launchBattleForWitch(
+                            cfg = settings.snapshot(),
+                            witchDef = witch,
+                            carryHp = carryHp,
+                            carryMp = carryMp,
+                            carrySp = carrySp,
+                            carryEmbrace = carryEmbrace,
+                            onExpeditionVictory = { nHp, nMp, nSp, nEmb ->
+                                mainHandler.postDelayed({
+                                    runDungeonRoomStep(chapter, rooms, roomIdx + 1, nHp, nMp, nSp, nEmb)
+                                }, 260L)
+                            }
+                        )
+                    }
+                    .setNegativeButton("Battre en retraite", null)
+                    .show()
+            }
+            WitchLoreAndCampaign.RoomKind.SPIRIT_ALTAR -> {
+                AlertDialog.Builder(this)
+                    .setTitle("🌀 ${room.title}")
+                    .setMessage("${room.narration}\n\n$statusBar")
+                    .setPositiveButton("💚 Restaurer 100 % PV & PM") { _, _ ->
+                        runDungeonRoomStep(chapter, rooms, roomIdx + 1, rSnap.maxHp, rSnap.maxMp, (carrySp + 25).coerceAtMost(100), (carryEmbrace - 25).coerceAtLeast(0))
+                    }
+                    .setNeutralButton("⚡ Charger 100 SP + 1 Eau Bénite") { _, _ ->
+                        rpgState.grantReward(40, "holy_water")
+                        runDungeonRoomStep(chapter, rooms, roomIdx + 1, carryHp, carryMp, 100, carryEmbrace)
+                    }
+                    .show()
+            }
+            WitchLoreAndCampaign.RoomKind.TREASURE_VAULT -> {
+                AlertDialog.Builder(this)
+                    .setTitle("📦 ${room.title}")
+                    .setMessage("${room.narration}\n\n$statusBar")
+                    .setPositiveButton("📦 Ouvrir le Coffre Doré (Risque Mimique)") { _, _ ->
+                        if (Random.nextInt(3) == 0) {
+                            val trapW = WitchCatalog.randomWitchForChapter(chapter, includeBoss = false)
+                            Toast.makeText(this, "📦 PIÈGE ! ${trapW.name} surgit du coffre !", Toast.LENGTH_SHORT).show()
+                            inAppBattle.launchBattleForWitch(
+                                cfg = settings.snapshot(), witchDef = trapW,
+                                carryHp = carryHp, carryMp = carryMp, carrySp = carrySp, carryEmbrace = (carryEmbrace + 15).coerceAtMost(80),
+                                onExpeditionVictory = { nHp, nMp, nSp, nEmb ->
+                                    rpgState.grantReward(120, "posture_bomb")
+                                    mainHandler.postDelayed({ runDungeonRoomStep(chapter, rooms, roomIdx + 1, nHp, nMp, nSp, nEmb) }, 260L)
+                                }
+                            )
+                        } else {
+                            rpgState.grantReward(110, "aegis")
+                            Toast.makeText(this, "🎁 Trésor ! +110 💎 + 1 🛡️ Voile d'Égide !", Toast.LENGTH_LONG).show()
+                            runDungeonRoomStep(chapter, rooms, roomIdx + 1, (carryHp + 35).coerceAtMost(rSnap.maxHp), carryMp, carrySp, carryEmbrace)
+                        }
+                    }
+                    .setNeutralButton("🚶 Passer prudemment (+35 PV)") { _, _ ->
+                        runDungeonRoomStep(chapter, rooms, roomIdx + 1, (carryHp + 35).coerceAtMost(rSnap.maxHp), (carryMp + 20).coerceAtMost(rSnap.maxMp), carrySp, carryEmbrace)
+                    }
+                    .show()
+            }
+            WitchLoreAndCampaign.RoomKind.DARK_MERCHANT -> {
+                AlertDialog.Builder(this)
+                    .setTitle("🕯️ ${room.title}")
+                    .setMessage("${room.narration}\n\n$statusBar • Ton or : ${rSnap.gold} 💎")
+                    .setPositiveButton("🧪 Soin complet (40 💎)") { _, _ ->
+                        if (rSnap.gold >= 40) {
+                            rpgState.grantReward(-40)
+                            runDungeonRoomStep(chapter, rooms, roomIdx + 1, rSnap.maxHp, rSnap.maxMp, (carrySp + 35).coerceAtMost(100), 0)
+                        } else {
+                            Toast.makeText(this, "Pas assez d'or (40 💎) !", Toast.LENGTH_SHORT).show()
+                            runDungeonRoomStep(chapter, rooms, roomIdx + 1, carryHp, carryMp, carrySp, carryEmbrace)
+                        }
+                    }
+                    .setNeutralButton("💣 Acheter Bombe Posture (55 💎)") { _, _ ->
+                        if (rpgState.buyItem("posture_bomb", 55)) Toast.makeText(this, "💣 Bombe Brise-Posture achetée !", Toast.LENGTH_SHORT).show()
+                        runDungeonRoomStep(chapter, rooms, roomIdx + 1, (carryHp + 25).coerceAtMost(rSnap.maxHp), carryMp, carrySp, carryEmbrace)
+                    }
+                    .setNegativeButton("Continuer vers le Boss ▶") { _, _ ->
+                        runDungeonRoomStep(chapter, rooms, roomIdx + 1, (carryHp + 20).coerceAtMost(rSnap.maxHp), (carryMp + 15).coerceAtMost(rSnap.maxMp), carrySp, carryEmbrace)
+                    }
+                    .show()
+            }
+        }
+    }
+
+    // ==================== LITTLE DEMON MINI-GAMES: GRIMOIRE QUIZ & RPS ====================
+    private fun showGrimoireQuizDialog() {
+        val q = WitchLoreAndCampaign.pickRandomQuizQuestion()
+        AlertDialog.Builder(this)
+            .setTitle("🧠 Quiz du Grimoire (50 Questions)")
+            .setMessage(q.question)
+            .setItems(q.options.toTypedArray()) { _, which ->
+                if (which == q.correctIndex) {
+                    rpgState.recordQuizCorrect()
+                    rpgState.grantReward(55)
+                    AlertDialog.Builder(this)
+                        .setTitle("✅ BONNE RÉPONSE ! (+55 💎)")
+                        .setMessage("${q.explanation}\n\nTon Petit Démon t'applaudit (+Affection & +15 XP Démon) !")
+                        .setPositiveButton("Question suivante ▶") { _, _ -> showGrimoireQuizDialog() }
+                        .setNegativeButton("Fermer") { _, _ -> renderActiveTab(settings.snapshot()) }
+                        .show()
+                } else {
+                    AlertDialog.Builder(this)
+                        .setTitle("❌ RATÉ ! 😈")
+                        .setMessage("La bonne réponse était : ${q.options[q.correctIndex]}\n\n${q.explanation}")
+                        .setPositiveButton("Réessayer ▶") { _, _ -> showGrimoireQuizDialog() }
+                        .setNegativeButton("Fermer") { _, _ -> renderActiveTab(settings.snapshot()) }
+                        .show()
+                }
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
+    }
+
+    private fun showDemonRpsMiniGame() {
+        val choices = arrayOf("🪨 Pierre", "📄 Feuille", "✂️ Ciseaux")
+        AlertDialog.Builder(this)
+            .setTitle("🎲 Pierre-Feuille-Ciseaux Démoniaque")
+            .setItems(choices) { _, p ->
+                val d = Random.nextInt(3)
+                val win = (p == 0 && d == 2) || (p == 1 && d == 0) || (p == 2 && d == 1)
+                val msg = when {
+                    p == d -> "Égalité (${choices[d]}) ! +15 💎 & +3 Affection."
+                    win -> "Gagné contre ${choices[d]} ! 🎉 +50 💎, -10 Colère & +6 Affection !"
+                    else -> "Le Petit Démon gagne avec ${choices[d]} ! 😈 +10 💎 de consolation."
+                }
+                if (win) {
+                    rpgState.grantReward(50); settings.adjustMood(-10); rpgState.addDemonCare(+6, +4, +14)
+                } else {
+                    rpgState.grantReward(if (p == d) 15 else 10); rpgState.addDemonCare(+3, 0, +6)
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                renderActiveTab(settings.snapshot())
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
+    }
+
+    private fun showWitchLoreDialog(w: WitchCatalog.WitchDef) {
+        val bond = rpgState.getBondLevel(w.id)
+        val bio = WitchLoreAndCampaign.getBiography(w)
+        val recSpirit = WitchCombatSystem.recommendedSpiritFor(w)
+        val body = buildString {
+            append("📖 ORIGINE\n${bio.originStory}\n\n")
+            append("🌀 ESPRIT CONSEILLÉ : ${recSpirit.displayName}\n")
+            append("💡 TACTIQUE : ${bio.secretWeaknessLore}\n\n")
+            append("⚔️ SORTS CLÉS : ${w.skillNames.joinToString(", ")} + Ultime « ${w.ultimateName} »\n\n")
+            append("♥ LIEN D'ÂME (Nv.$bond/5) :\n")
+            for (i in 0 until 5) {
+                if (i < bond) append("• ${bio.bondLines[i]}\n")
+                else append("• 🔒 Lien ${i + 1} : Vaincs ${w.name} ${i + 1}× pour débloquer ce souvenir.\n")
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("#${w.id} ${w.displayTitle}")
+            .setMessage(body)
+            .setPositiveButton("⚔️ Combattre") { _, _ -> startInAppDuel(w) }
+            .setNegativeButton("Fermer", null)
+            .show()
+    }
+
     private fun runShizukuSuspendTest() {
         Toast.makeText(this, "🧪 Test Shizuku en cours (grise 1 appli 2.5s puis restaure)…", Toast.LENGTH_SHORT).show()
         Thread {
@@ -775,18 +978,18 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(12), dp(2), dp(12), dp(10))
         }
         tabButtons.clear()
-        val titles = listOf("🗺️ Aventure", "📖 Grimoire", "⚒️ Forge & Sac", "⚙️ Dossier & IA")
+        val titles = listOf("🗺️ Aventure", "📖 Grimoire", "⚒️ Forge", "😈 Démon", "⚙️ Syst.")
         titles.forEachIndexed { idx, label ->
             val b = Button(this).apply {
-                text = label; isAllCaps = false; textSize = 10.8f; typeface = Typeface.DEFAULT_BOLD
-                minHeight = 0; minimumHeight = 0; setPadding(dp(3), dp(8), dp(3), dp(8))
+                text = label; isAllCaps = false; textSize = 10.0f; typeface = Typeface.DEFAULT_BOLD
+                minHeight = 0; minimumHeight = 0; setPadding(dp(2), dp(8), dp(2), dp(8))
                 setOnClickListener {
                     activeTab = idx; updateTabBarStyles(); renderActiveTab(settings.snapshot())
                 }
             }
             tabButtons.add(b)
             tabBar.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                if (idx > 0) marginStart = dp(5)
+                if (idx > 0) marginStart = dp(4)
             })
         }
         shell.addView(tabBar)
@@ -827,8 +1030,9 @@ class MainActivity : AppCompatActivity() {
         when (activeTab) {
             0 -> populateAdventureTab(inner, snap)
             1 -> populateGrimoireTab(inner)
-            2 -> populateForgeAndDemonTab(inner, snap)
-            3 -> populateFolderAndAiTab(inner, snap)
+            2 -> populateForgeTab(inner, snap)
+            3 -> populateDemonSanctumTab(inner, snap)
+            4 -> populateFolderAndAiTab(inner, snap)
         }
         box.addView(scroll)
         if (previewPetView != null) mainHandler.post(animTick)
@@ -853,8 +1057,8 @@ class MainActivity : AppCompatActivity() {
 
         val pv = DemonPetView(
             context = this, onDragMove = { _, _ -> }, onDragRelease = { _, _, _ -> },
-            onGentlePet = { settings.adjustMood(-5) }, onSecretTwentyTaps = {}
-        ).apply { updateConfig(snap); pose = DemonPetView.PetPose.WALKING }
+            onGentlePet = { settings.adjustMood(-5); rpgState.addDemonCare(+3, 0, +4) }, onSecretTwentyTaps = {}
+        ).apply { evolutionTier = rSnap.demonForm.index; updateConfig(snap); pose = DemonPetView.PetPose.WALKING }
         previewPetView = pv
         heroRow.addView(pv, LinearLayout.LayoutParams(dp(94), dp(114)))
 
@@ -865,7 +1069,7 @@ class MainActivity : AppCompatActivity() {
         })
         statsCol.addView(TextView(this).apply {
             text = "PV ${rSnap.maxHp} • PM ${rSnap.maxMp} • ATK ×${String.format("%.2f", rSnap.attackMultiplier)} • 💎 ${rSnap.gold}"
-            setTextColor(Color.rgb(240, 171, 252)); textSize = 11.4f; typeface = Typeface.MONOSPACE; setPadding(0, dp(3), 0, dp(4))
+            setTextColor(Color.rgb(240, 171, 252)); textSize = 11.2f; typeface = Typeface.MONOSPACE; setPadding(0, dp(3), 0, dp(4))
         })
 
         val xpBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -875,19 +1079,31 @@ class MainActivity : AppCompatActivity() {
         }
         statsCol.addView(xpBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(7)).apply { bottomMargin = dp(5) })
 
-        val aiBadge = if (rSnap.geminiApiKey.isNotBlank()) "✨ Gemini + Locale" else "⚡ IA Locale 0 ms"
         statsCol.addView(TextView(this).apply {
-            text = "📜 Intrigue : ${rSnap.storyStep}/15 • ${rSnap.alignmentLabel}\n📖 ${rSnap.defeatedIds.size}/50 • 🗼 Tour #${rSnap.towerBestFloor} • $aiBadge"
-            setTextColor(Color.rgb(180, 180, 202)); textSize = 11.1f
+            text = "🌀 Esprits ${rSnap.unlockedSpirits.size}/4 • 🏅 Titres ${rSnap.unlockedTitleIds.size}/24 • ${rSnap.alignmentLabel}\n" +
+                "📖 ${rSnap.defeatedIds.count { it in 1..50 }}/50 • 🌑 Superboss ${rSnap.defeatedSuperbossIds.size}/5 • 🏰 Donjons ${rSnap.dungeonsCompleted}"
+            setTextColor(Color.rgb(180, 180, 202)); textSize = 10.9f
         })
         heroRow.addView(statsCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         hero.addView(heroRow)
 
-        if (snap.mediaFolderPath.isBlank() && snap.mediaTreeUri.isBlank()) {
-            hero.addView(makeAccentButton("📂 Choisir ton dossier photos pour les 50 Sorcières →", Color.rgb(126, 34, 206)) {
-                activeTab = 3; updateTabBarStyles(); renderActiveTab(settings.snapshot())
+        if (rSnap.canClaimDailyToday) {
+            hero.addView(makeAccentButton("🎁 Réclamer Pacte Quotidien (Jour ${(rSnap.dailyStreak % 7) + 1}/7 · Or + Relique !)", Color.rgb(217, 119, 6)) {
+                val res = rpgState.claimDailyGift()
+                if (res != null) {
+                    Toast.makeText(this, res, Toast.LENGTH_LONG).show()
+                    renderActiveTab(settings.snapshot())
+                }
             }.apply {
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
+            })
+        }
+
+        if (snap.mediaFolderPath.isBlank() && snap.mediaTreeUri.isBlank()) {
+            hero.addView(makeAccentButton("📂 Choisir ton dossier photos pour les 55 Sorcières →", Color.rgb(126, 34, 206)) {
+                activeTab = 4; updateTabBarStyles(); renderActiveTab(settings.snapshot())
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
             })
         }
         root.addView(hero)
@@ -956,10 +1172,17 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
         })
 
+        chCard.addView(makeAccentButton("🏰 EXPÉDITION DONJON 5 SALLES (Ch.$curCh · Coffre Légendaire)", Color.rgb(14, 116, 144)) {
+            startChapterDungeonExpedition(curCh)
+        }.apply {
+            textSize = 12.6f; setPadding(dp(12), dp(11), dp(12), dp(11))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
+        })
+
         chCard.addView(makeAccentButton("👑 DÉFIER LE BOSS : ${chBoss.name} (NV ${chBoss.level})", Color.rgb(162, 28, 175)) {
             startInAppDuel(chBoss)
         }.apply {
-            textSize = 12.8f; setPadding(dp(12), dp(11), dp(12), dp(11))
+            textSize = 12.6f; setPadding(dp(12), dp(11), dp(12), dp(11))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
         })
 
@@ -972,6 +1195,75 @@ class MainActivity : AppCompatActivity() {
         }, gridLp(startMargin = dp(5)))
         chCard.addView(modeRow)
         root.addView(chCard)
+
+        // 2.5. Secret Endgame: 5 Awakened Eclipse Superbosses (#51-55)
+        val superCard = makeCard(accentStroke = Color.argb(165, 250, 204, 21))
+        superCard.addView(sectionTitle("🌑 Épreuves Secrètes — Les 5 Superboss (${rSnap.defeatedSuperbossIds.size}/5)"))
+        superCard.addView(sectionSub("Combats légendaires très longs (1320–1980 Résolution) nécessitant les 4 Esprits & la Forge !"))
+        for (sb in WitchCatalog.SUPERBOSSES) {
+            val beat = rSnap.defeatedSuperbossIds.contains(sb.id)
+            val sRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                background = roundedBg(Color.rgb(28, 18, 42), 11); setPadding(dp(9), dp(7), dp(9), dp(7))
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(5) }
+            }
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            col.addView(TextView(this).apply {
+                text = "${if (beat) "✅" else "🌑"} ${sb.name} (NV ${sb.level} · ${sb.element})"
+                setTextColor(Color.rgb(254, 240, 138)); textSize = 12f; typeface = Typeface.DEFAULT_BOLD
+            })
+            col.addView(TextView(this).apply {
+                text = "Résol. ${sb.maxResolve} • +${sb.rewardGold} 💎 • Ultime : ${sb.ultimateName}"
+                setTextColor(Color.rgb(185, 175, 205)); textSize = 10.4f
+            })
+            sRow.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            sRow.addView(Button(this).apply {
+                text = "⚔️ Défier"; isAllCaps = false; textSize = 10.8f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+                background = roundedBg(Color.rgb(159, 18, 57), 9); minHeight = 0; minimumHeight = 0; setPadding(dp(10), dp(6), dp(10), dp(6))
+                setOnClickListener { startInAppDuel(sb) }
+            })
+            superCard.addView(sRow)
+        }
+        root.addView(superCard)
+
+        // 2.8. 12 Tactical Bounties Card
+        val openBounties = WitchLoreAndCampaign.BOUNTIES.filter { !rSnap.claimedBounties.contains(it.id) }
+        if (openBounties.isNotEmpty()) {
+            val bCard = makeCard(accentStroke = Color.argb(135, 14, 165, 233))
+            bCard.addView(sectionTitle("🎯 Contrats Tactiques du Coven (${rSnap.claimedBounties.size}/12)"))
+            for (b in openBounties.take(4)) {
+                val ready = rSnap.completedBounties.contains(b.id)
+                val bRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    background = roundedBg(Color.rgb(24, 22, 42), 11); setPadding(dp(9), dp(7), dp(9), dp(7))
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(5) }
+                }
+                val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                col.addView(TextView(this).apply {
+                    text = "${if (ready) "✅" else "🎯"} ${b.title}"
+                    setTextColor(Color.WHITE); textSize = 12f; typeface = Typeface.DEFAULT_BOLD
+                })
+                col.addView(TextView(this).apply {
+                    text = "${b.objective}\n🎁 +${b.rewardGold} 💎 + ${b.rewardRelicName}"
+                    setTextColor(Color.rgb(180, 210, 235)); textSize = 10.5f
+                })
+                bRow.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                if (ready) {
+                    bRow.addView(Button(this).apply {
+                        text = "🎁 Réclamer"; isAllCaps = false; textSize = 10.6f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+                        background = roundedBg(Color.rgb(16, 128, 96), 9); minHeight = 0; minimumHeight = 0; setPadding(dp(9), dp(6), dp(9), dp(6))
+                        setOnClickListener {
+                            if (rpgState.claimBounty(b.id)) {
+                                Toast.makeText(this@MainActivity, "🎁 Contrat validé : +${b.rewardGold} 💎 + ${b.rewardRelicName} !", Toast.LENGTH_LONG).show()
+                                renderActiveTab(settings.snapshot())
+                            }
+                        }
+                    })
+                }
+                bCard.addView(bRow)
+            }
+            root.addView(bCard)
+        }
 
         // 3. Claimable RPG Quests Card
         val quests = rpgState.getQuests().filter { !it.claimed }
@@ -1045,46 +1337,71 @@ class MainActivity : AppCompatActivity() {
         root.addView(sysCard)
     }
 
-    // ==================== TAB 1 : 📖 GRIMOIRE (ALL 50 WITCHES BESTIARY) ====================
+    // ==================== TAB 1 : 📖 GRIMOIRE (55 WITCHES, BONDS, LORE & 24 TITLES!) ====================
     private fun populateGrimoireTab(root: LinearLayout) {
         val rSnap = rpgState.snapshot()
 
         val headCard = makeCard(accentStroke = Color.argb(120, 217, 70, 239))
-        headCard.addView(sectionTitle("📖 Grimoire des 50 Sorcières"))
+        headCard.addView(sectionTitle("📖 Grimoire des 55 Sorcières & 24 Titres"))
         headCard.addView(sectionSub(
-            "${rSnap.defeatedIds.size}/50 vaincues  •  ${rSnap.encounteredIds.size}/50 rencontrées  •  ${rSnap.lostToIds.size} défaite(s)\n" +
-                "6 attaques spéciales & envoûtements uniques par Sorcière + portrait HD détouré depuis ton dossier !"
+            "${rSnap.defeatedIds.count { it in 1..50 }}/50 Sorcières • ${rSnap.defeatedSuperbossIds.size}/5 Superboss • ♥ ${rSnap.totalBondLevels} Liens d'Âme • 🏅 ${rSnap.unlockedTitleIds.size}/24 Titres\n" +
+                "10 attaques MGQ par Sorcière + Histoire complète & 5 chapitres de Lien d'Âme déblocables !"
         ))
 
         val filterRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, dp(5)) }
-        listOf(1 to "Ch.1", 2 to "Ch.2", 3 to "Ch.3").forEachIndexed { idx, (code, label) ->
+        listOf(1 to "Ch.1", 2 to "Ch.2", 3 to "Ch.3", 4 to "Ch.4").forEachIndexed { idx, (code, label) ->
             filterRow1.addView(makeFilterChip(label, grimoireFilter == code) {
                 grimoireFilter = code; renderActiveTab(settings.snapshot())
-            }, gridLp(startMargin = if (idx > 0) dp(4) else 0, endMargin = if (idx < 2) dp(4) else 0))
+            }, gridLp(startMargin = if (idx > 0) dp(3) else 0, endMargin = if (idx < 3) dp(3) else 0))
         }
         headCard.addView(filterRow1)
 
         val filterRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf(4 to "Ch.4", 5 to "Ch.5", 0 to "👑 Boss (10)").forEachIndexed { idx, (code, label) ->
+        listOf(5 to "Ch.5", 0 to "👑 Boss", 6 to "🌑 Super", 7 to "🏅 Titres").forEachIndexed { idx, (code, label) ->
             filterRow2.addView(makeFilterChip(label, grimoireFilter == code) {
                 grimoireFilter = code; renderActiveTab(settings.snapshot())
-            }, gridLp(startMargin = if (idx > 0) dp(4) else 0, endMargin = if (idx < 2) dp(4) else 0))
+            }, gridLp(startMargin = if (idx > 0) dp(3) else 0, endMargin = if (idx < 3) dp(3) else 0))
         }
         headCard.addView(filterRow2)
         root.addView(headCard)
 
-        val list = if (grimoireFilter == 0) {
-            WitchCatalog.ALL_WITCHES.filter { it.isBoss || it.isMiniBoss }
-        } else {
-            WitchCatalog.witchesInChapter(grimoireFilter)
+        if (grimoireFilter == 7) {
+            val tSummary = makeCard(accentStroke = Color.argb(150, 245, 158, 11))
+            tSummary.addView(sectionTitle("🏅 Bonus Cumulés de tes Titres (${rSnap.unlockedTitleIds.size}/24)"))
+            tSummary.addView(sectionSub("+${rSnap.titleAtkPct} % ATK • +${rSnap.titleHpBonus} PV • +${rSnap.titleMpBonus} PM • +${rSnap.titlePostureBonus} Posture • +${rSnap.titleGoldPct} % 💎"))
+            root.addView(tSummary)
+            for (t in WitchLoreAndCampaign.TITLES) {
+                val ok = rSnap.unlockedTitleIds.contains(t.id)
+                val c = makeCard(accentStroke = if (ok) Color.argb(140, 16, 185, 129) else Color.argb(35, 255, 255, 255))
+                c.addView(TextView(this).apply {
+                    text = "${if (ok) "✅" else "🔒"} ${t.name}  —  ${t.bonusDesc}"
+                    setTextColor(if (ok) Color.rgb(167, 243, 208) else Color.rgb(165, 165, 185))
+                    textSize = 12.6f; typeface = Typeface.DEFAULT_BOLD
+                })
+                c.addView(TextView(this).apply {
+                    text = "Condition : ${t.requirement}"
+                    setTextColor(Color.rgb(145, 145, 168)); textSize = 11f
+                })
+                root.addView(c)
+            }
+            return
+        }
+
+        val list = when (grimoireFilter) {
+            0 -> WitchCatalog.ALL_WITCHES.filter { it.isBoss || it.isMiniBoss }
+            6 -> WitchCatalog.SUPERBOSSES
+            else -> WitchCatalog.witchesInChapter(grimoireFilter)
         }
 
         for (w in list) {
             val defeated = rSnap.defeatedIds.contains(w.id)
             val lostTo = rSnap.lostToIds.contains(w.id)
             val seen = rSnap.encounteredIds.contains(w.id)
+            val bondLv = rpgState.getBondLevel(w.id)
+            val recSp = WitchCombatSystem.recommendedSpiritFor(w)
 
             val stroke = when {
+                w.isSuperboss -> Color.argb(215, 250, 204, 21)
                 w.isBoss -> Color.argb(190, 245, 158, 11)
                 w.isMiniBoss -> Color.argb(165, 244, 63, 94)
                 defeated -> Color.argb(120, 16, 185, 129)
@@ -1093,10 +1410,10 @@ class MainActivity : AppCompatActivity() {
             val card = makeCard(accentStroke = stroke)
 
             val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            val statusIcon = when { defeated -> "✅ Vaincue"; lostTo -> "💋 Défaite"; seen -> "👁️ Vue"; else -> "❓ Nouvelle" }
+            val statusIcon = when { defeated -> "✅ ♥$bondLv/5"; lostTo -> "💋 ♥$bondLv/5"; seen -> "👁️ Vue"; else -> "❓" }
             topRow.addView(TextView(this).apply {
                 text = "#${w.id} ${w.displayTitle}"
-                setTextColor(if (w.isBoss) Color.rgb(253, 224, 71) else Color.WHITE); textSize = 13.6f; typeface = Typeface.DEFAULT_BOLD
+                setTextColor(if (w.isBoss || w.isSuperboss) Color.rgb(253, 224, 71) else Color.WHITE); textSize = 13.4f; typeface = Typeface.DEFAULT_BOLD
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
             topRow.addView(TextView(this).apply {
@@ -1107,19 +1424,25 @@ class MainActivity : AppCompatActivity() {
             card.addView(topRow)
 
             card.addView(TextView(this).apply {
-                text = "NV ${w.level} • ${w.archetype.label} • ${w.element} • Résol. ${w.maxResolve} • +${w.rewardXp} XP • +${w.rewardGold} 💎"
-                setTextColor(Color.rgb(208, 198, 232)); textSize = 11.2f; setPadding(0, dp(3), 0, dp(4))
+                text = "NV ${w.level} • ${w.archetype.label} • ${w.element} • Esprit : ${recSp.shortBadge} • Résol. ${w.maxResolve}"
+                setTextColor(Color.rgb(208, 198, 232)); textSize = 11f; setPadding(0, dp(3), 0, dp(4))
             })
             card.addView(TextView(this).apply {
-                text = "Ultime : « ${w.ultimateName} »\n📌 ${com.demonpet.app.rpg.WitchCombatAi.archetypePassiveSummary(w.archetype)}\n💡 ${w.weaknessTip}"
-                setTextColor(Color.rgb(156, 156, 178)); textSize = 11.1f; setPadding(0, 0, 0, dp(8))
+                text = "Ultime : « ${w.ultimateName} »\n💡 ${w.weaknessTip}"
+                setTextColor(Color.rgb(156, 156, 178)); textSize = 10.9f; setPadding(0, 0, 0, dp(8))
             })
-            card.addView(makeAccentButton(
-                if (w.isBoss) "👑 Combattre le Boss ${w.name}" else "⚔️ Affronter ${w.name}",
-                if (w.isBoss) Color.rgb(180, 83, 9) else if (w.isMiniBoss) Color.rgb(190, 24, 93) else Color.rgb(126, 34, 206)
+
+            val actRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            actRow.addView(makeGridTestBtn("📖 Histoire & Liens") {
+                showWitchLoreDialog(w)
+            }, gridLp(endMargin = dp(4)))
+            actRow.addView(makeAccentButton(
+                if (w.isBoss || w.isSuperboss) "👑 Défier" else "⚔️ Combattre",
+                if (w.isSuperboss) Color.rgb(159, 18, 57) else if (w.isBoss) Color.rgb(180, 83, 9) else Color.rgb(126, 34, 206)
             ) {
                 startInAppDuel(w)
-            })
+            }, gridLp(startMargin = dp(4)))
+            card.addView(actRow)
             root.addView(card)
         }
     }
@@ -1135,26 +1458,74 @@ class MainActivity : AppCompatActivity() {
         setOnClickListener { onClick() }
     }
 
-    // ==================== TAB 2 : ⚒️ FORGE D'ÂME, BOUTIQUE 6 RELIQUES & COMPAGNON DÉMON ====================
-    private fun populateForgeAndDemonTab(root: LinearLayout, snap: DemonConfigSnapshot) {
+    // ==================== TAB 2 : ⚒️ 4 ESPRITS ÉLÉMENTAIRES, FORGE 6 SLOTS (Nv.1-15) & 10 RELIQUES ====================
+    private fun populateForgeTab(root: LinearLayout, snap: DemonConfigSnapshot) {
         val rSnap = rpgState.snapshot()
 
-        // 1. Permanent Soul Forge Upgrades (Rank 1..10!)
+        // 0. MGQ-Style 4 Elemental Spirits Sanctuary
+        val spCard = makeCard(accentStroke = Color.argb(155, 14, 165, 233))
+        spCard.addView(sectionTitle("🌀 Sanctuaire des 4 Esprits Élémentaires (${rSnap.unlockedSpirits.size}/4)"))
+        spCard.addView(sectionSub("Invoquables en plein duel (menu 🌀 Esprits & Magie) : passifs continus, faiblesses ×1.55 et Surcharge 100 SP !"))
+        val allSpirits = listOf(
+            WitchCombatSystem.ElementalSpirit.ZEPHYR,
+            WitchCombatSystem.ElementalSpirit.GAIA,
+            WitchCombatSystem.ElementalSpirit.ONDINE,
+            WitchCombatSystem.ElementalSpirit.IGNIS
+        )
+        for (sp in allSpirits) {
+            val unlocked = rSnap.unlockedSpirits.contains(sp.id)
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                background = roundedBg(Color.rgb(24, 22, 42), 12); setPadding(dp(10), dp(7), dp(10), dp(7))
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(5) }
+            }
+            val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            info.addView(TextView(this).apply {
+                text = "${if (unlocked) "✅" else "🔒"} ${sp.displayName}  (-${(sp.mpCost - rSnap.spiritMpDiscount).coerceAtLeast(6)} PM)"
+                setTextColor(Color.WHITE); textSize = 12.6f; typeface = Typeface.DEFAULT_BOLD
+            })
+            info.addView(TextView(this).apply {
+                text = if (unlocked) sp.passiveDesc else "${sp.passiveDesc}\n${sp.unlockHint}"
+                setTextColor(Color.rgb(175, 195, 220)); textSize = 10.6f
+            })
+            row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (!unlocked) {
+                row.addView(Button(this).apply {
+                    text = "Éveiller 260 💎"; isAllCaps = false; textSize = 10.6f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+                    background = roundedBg(if (rSnap.gold >= 260) sp.colorHex else Color.rgb(52, 48, 64), 10)
+                    minHeight = 0; minimumHeight = 0; setPadding(dp(9), dp(7), dp(9), dp(7))
+                    setOnClickListener {
+                        if (rpgState.unlockSpirit(sp.id, goldCost = 260)) {
+                            Toast.makeText(this@MainActivity, "🌀 ${sp.displayName} éveillé !", Toast.LENGTH_LONG).show()
+                            renderActiveTab(settings.snapshot())
+                        } else {
+                            Toast.makeText(this@MainActivity, "Besoin de 260 💎 (ou bats le Boss correspondant) !", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                })
+            }
+            spCard.addView(row)
+        }
+        root.addView(spCard)
+
+        // 1. 6 Permanent Soul Forge Upgrades (Rank 1..15!)
         val forgeCard = makeCard(accentStroke = Color.argb(145, 234, 88, 12))
-        forgeCard.addView(sectionTitle("⚒️ Forge d'Âme — Améliorations Permanentes (💎 ${rSnap.gold})"))
-        forgeCard.addView(sectionSub("Renforce définitivement ton héros pour vaincre les Archisorcières et grimper dans la Tour Infinie !"))
+        forgeCard.addView(sectionTitle("⚒️ Forge d'Âme — 6 Équipements Permanents (💎 ${rSnap.gold})"))
+        forgeCard.addView(sectionSub("Renforce définitivement ton héros jusqu'au Nv.15 pour triompher des 5 Superboss & de la Tour !"))
 
         data class ForgeSlot(val key: String, val name: String, val desc: String, val rank: Int, val color: Int)
         val slots = listOf(
             ForgeSlot("blade", "🗡️ Lame de Volonté", "+12 % Dégâts (actuel ×${String.format("%.2f", rSnap.attackMultiplier)})", rSnap.bladeRank, Color.rgb(225, 29, 72)),
-            ForgeSlot("cloak", "🛡️ Manteau Runique", "+14 PV Max & -4 % Emprise (PV Max ${rSnap.maxHp})", rSnap.cloakRank, Color.rgb(16, 128, 96)),
-            ForgeSlot("grimoire", "🔮 Grimoire Intérieur", "+10 PM Max & +2 SP/tour (PM Max ${rSnap.maxMp})", rSnap.grimoireRank, Color.rgb(37, 99, 235)),
-            ForgeSlot("ward", "🧿 Sceau Anti-Charme", "Résistance Envoûtements & fenêtre QTE", rSnap.wardRank, Color.rgb(126, 34, 206))
+            ForgeSlot("cloak", "🛡️ Manteau Runique", "+16 PV Max & -3,5 % Emprise (PV Max ${rSnap.maxHp})", rSnap.cloakRank, Color.rgb(16, 128, 96)),
+            ForgeSlot("grimoire", "🔮 Grimoire Intérieur", "+11 PM Max & +2 SP/tour (PM Max ${rSnap.maxMp})", rSnap.grimoireRank, Color.rgb(37, 99, 235)),
+            ForgeSlot("ward", "🧿 Sceau Anti-Charme", "Résistance Envoûtements & fenêtre QTE", rSnap.wardRank, Color.rgb(126, 34, 206)),
+            ForgeSlot("spirit_ring", "🌀 Anneau des Esprits", "+8 % puissance Esprits & -PM invocation (×${String.format("%.2f", rSnap.spiritPowerMult)})", rSnap.spiritRingRank, Color.rgb(2, 132, 199)),
+            ForgeSlot("demon_heart", "😈 Cœur du Démon", "+Aide combat du Petit Démon (${(rSnap.demonAssistChance * 100).toInt()} %) & +20 💎 Focus", rSnap.demonHeartRank, Color.rgb(190, 24, 93))
         )
 
         for (slot in slots) {
             val cost = rpgState.forgeUpgradeCost(slot.rank)
-            val isMax = slot.rank >= 10
+            val isMax = slot.rank >= 15
             val canAfford = !isMax && rSnap.gold >= cost
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
@@ -1163,23 +1534,23 @@ class MainActivity : AppCompatActivity() {
             }
             val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             info.addView(TextView(this).apply {
-                text = "${slot.name}  [Nv.${slot.rank}/10]"
-                setTextColor(Color.WHITE); textSize = 12.8f; typeface = Typeface.DEFAULT_BOLD
+                text = "${slot.name}  [Nv.${slot.rank}/15]"
+                setTextColor(Color.WHITE); textSize = 12.6f; typeface = Typeface.DEFAULT_BOLD
             })
             info.addView(TextView(this).apply {
-                text = slot.desc; setTextColor(Color.rgb(175, 175, 198)); textSize = 11f
+                text = slot.desc; setTextColor(Color.rgb(175, 175, 198)); textSize = 10.8f
             })
             row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
             row.addView(Button(this).apply {
                 text = if (isMax) "MAX ✅" else "Forger $cost 💎"
-                isAllCaps = false; textSize = 11f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+                isAllCaps = false; textSize = 10.8f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
                 background = roundedBg(if (canAfford) slot.color else Color.rgb(52, 48, 64), 10)
                 minHeight = 0; minimumHeight = 0; setPadding(dp(10), dp(7), dp(10), dp(7))
                 setOnClickListener {
                     if (isMax) return@setOnClickListener
                     if (rpgState.upgradeForge(slot.key)) {
-                        Toast.makeText(this@MainActivity, "⚒️ ${slot.name} améliorée au Nv.${slot.rank + 1} !", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "⚒️ ${slot.name} amélioré au Nv.${slot.rank + 1} !", Toast.LENGTH_SHORT).show()
                         renderActiveTab(settings.snapshot())
                     } else {
                         Toast.makeText(this@MainActivity, "Besoin de $cost 💎 !", Toast.LENGTH_SHORT).show()
@@ -1190,17 +1561,21 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(forgeCard)
 
-        // 2. 6 Consumable Relics Shop
+        // 2. 10 Consumable Relics Shop
         val shopCard = makeCard(accentStroke = Color.argb(135, 245, 158, 11))
-        shopCard.addView(sectionTitle("🎒 Sac & Boutique des 6 Reliques"))
+        shopCard.addView(sectionTitle("🎒 Sac & Boutique des 10 Reliques"))
         data class ShopItem(val key: String, val title: String, val desc: String, val count: Int, val cost: Int, val color: Int)
         val items = listOf(
-            ShopItem("elixir", "🧪 Élixir de Volonté", "+65 PV en combat", rSnap.elixirs, 35, Color.rgb(16, 128, 96)),
-            ShopItem("crystal", "💎 Cristal de Mana", "+45 PM et +25 SP", rSnap.crystals, 30, Color.rgb(37, 99, 235)),
+            ShopItem("elixir", "🧪 Élixir de Volonté", "+74 PV en combat", rSnap.elixirs, 35, Color.rgb(16, 128, 96)),
+            ShopItem("crystal", "💎 Cristal de Mana", "+48 PM et +25 SP", rSnap.crystals, 30, Color.rgb(37, 99, 235)),
             ShopItem("talisman", "📜 Talisman de Rupture", "Brise instantanément Capture + -50 % Emprise", rSnap.talismans, 55, Color.rgb(180, 83, 9)),
             ShopItem("amulet", "🔮 Amulette de Clarté", "Purifie Charme, Hypnose, Siphon & Drain", rSnap.amulets, 45, Color.rgb(126, 34, 206)),
             ShopItem("incense", "🕯️ Encens de Furie", "Attaques ×1.6 pendant 3 tours", rSnap.incenses, 60, Color.rgb(190, 24, 93)),
-            ShopItem("aegis", "🛡️ Voile d'Égide", "Absorbe 100 % de la prochaine attaque/capture", rSnap.aegisVeils, 75, Color.rgb(14, 116, 144))
+            ShopItem("aegis", "🛡️ Voile d'Égide", "Absorbe 100 % du prochain assaut & sort système", rSnap.aegisVeils, 75, Color.rgb(14, 116, 144)),
+            ShopItem("posture_bomb", "💣 Bombe Brise-Posture", "-75 Posture Boss + détruit Barrière & Épines", rSnap.postureBombs, 65, Color.rgb(234, 88, 12)),
+            ShopItem("holy_water", "💧 Eau Bénite", "Remet l'Adaptation ennemie à 0 % & dissipe Météo", rSnap.holyWaters, 55, Color.rgb(2, 132, 199)),
+            ShopItem("ether_elixir", "⚡ Élixir d'Éther", "Charge 100 SP instantanément (Surcharge !)", rSnap.etherElixirs, 110, Color.rgb(192, 38, 211)),
+            ShopItem("hourglass", "⏳ Sablier de Répit", "Fige la Sorcière 1 tour + -35 % Emprise", rSnap.hourglasses, 95, Color.rgb(180, 83, 9))
         )
 
         for (shopItem in items) {
@@ -1212,17 +1587,17 @@ class MainActivity : AppCompatActivity() {
             val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             info.addView(TextView(this).apply {
                 text = "${shopItem.title}  (x${shopItem.count})"
-                setTextColor(Color.WHITE); textSize = 12.6f; typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE); textSize = 12.4f; typeface = Typeface.DEFAULT_BOLD
             })
             info.addView(TextView(this).apply {
-                text = shopItem.desc; setTextColor(Color.rgb(175, 175, 196)); textSize = 11f
+                text = shopItem.desc; setTextColor(Color.rgb(175, 175, 196)); textSize = 10.8f
             })
             row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
             val canBuy = rSnap.gold >= shopItem.cost
             row.addView(Button(this).apply {
                 text = "${shopItem.cost} 💎"
-                isAllCaps = false; textSize = 11.2f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+                isAllCaps = false; textSize = 11f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
                 background = roundedBg(if (canBuy) shopItem.color else Color.rgb(52, 48, 64), 10)
                 minHeight = 0; minimumHeight = 0; setPadding(dp(12), dp(7), dp(12), dp(7))
                 setOnClickListener {
@@ -1237,24 +1612,156 @@ class MainActivity : AppCompatActivity() {
             shopCard.addView(row)
         }
         root.addView(shopCard)
+    }
 
-        // 3. Witch Full Powers & Forced Fullscreen Controls Card
+    // ==================== TAB 3 : 😈 SANCTUAIRE DU PETIT DÉMON (100% SHIZUKU + ACCESSIBILITÉ!) ====================
+    private fun populateDemonSanctumTab(root: LinearLayout, snap: DemonConfigSnapshot) {
+        val rSnap = rpgState.snapshot()
+
+        // 1. Demon Evolution, Affection/Hunger Care & Mini-Games Card
+        val evoCard = makeCard(accentStroke = Color.argb(175, 244, 63, 94))
+        val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val pv = DemonPetView(
+            context = this, onDragMove = { _, _ -> }, onDragRelease = { _, _, _ -> },
+            onGentlePet = {
+                settings.adjustMood(-6); rpgState.addDemonCare(+4, 0, +6)
+                Toast.makeText(this, "💜 Affection +4 % !", Toast.LENGTH_SHORT).show()
+            },
+            onSecretTwentyTaps = {}
+        ).apply { evolutionTier = rSnap.demonForm.index; updateConfig(snap); pose = DemonPetView.PetPose.WALKING }
+        previewPetView = pv
+        topRow.addView(pv, LinearLayout.LayoutParams(dp(92), dp(112)))
+
+        val dCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
+        dCol.addView(TextView(this).apply {
+            text = "${rSnap.demonForm.badge} ${snap.avatarName} — ${rSnap.demonForm.name}"
+            setTextColor(Color.WHITE); textSize = 14.5f; typeface = Typeface.DEFAULT_BOLD
+        })
+        dCol.addView(TextView(this).apply {
+            text = "Forme ${rSnap.demonForm.index + 1}/4 • XP Démon : ${rSnap.demonXp}\n" +
+                "💖 Affection : ${rSnap.demonAffection}% • 🍖 Faim : ${rSnap.demonHunger}% • 😈 Furie : ${snap.moodScore}%\n" +
+                "⚡ Aide en duel : ${(rSnap.demonAssistChance * 100).toInt()} % — ${rSnap.demonForm.perkDesc}"
+            setTextColor(Color.rgb(225, 200, 240)); textSize = 10.8f; setPadding(0, dp(3), 0, 0)
+        })
+        topRow.addView(dCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        evoCard.addView(topRow)
+
+        val careRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
+        careRow.addView(makeAccentButton("💖 Caresser", Color.rgb(190, 24, 93)) {
+            settings.adjustMood(-10); rpgState.addDemonCare(+6, 0, +10)
+            Toast.makeText(this, "💜 ${snap.avatarName} ronronne ! Affection +6 %, Colère -10 % !", Toast.LENGTH_SHORT).show()
+            renderActiveTab(settings.snapshot())
+        }, gridLp(endMargin = dp(4)))
+        careRow.addView(makeAccentButton("🍖 Nourrir (20💎)", Color.rgb(16, 128, 96)) {
+            if (rSnap.gold >= 20) {
+                rpgState.grantReward(-20); rpgState.addDemonCare(+8, +25, +24)
+                Toast.makeText(this, "🍖 Miam ! +25 % Faim, +8 % Affection, +24 XP Démon !", Toast.LENGTH_SHORT).show()
+                renderActiveTab(settings.snapshot())
+            } else Toast.makeText(this, "Besoin de 20 💎 !", Toast.LENGTH_SHORT).show()
+        }, gridLp(startMargin = dp(4)))
+        evoCard.addView(careRow)
+
+        val miniRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, 0) }
+        miniRow.addView(makeGridTestBtn("🎲 Pierre-Feuille-Ciseaux") { showDemonRpsMiniGame() }, gridLp(endMargin = dp(4)))
+        miniRow.addView(makeGridTestBtn("🧠 Quiz Grimoire (${rSnap.quizCorrectCount}✅)") { showGrimoireQuizDialog() }, gridLp(startMargin = dp(4)))
+        evoCard.addView(miniRow)
+        root.addView(evoCard)
+
+        // 2. Shizuku Focus / Study Contract Card!
+        val focusCard = makeCard(accentStroke = Color.argb(145, 2, 132, 199))
+        focusCard.addView(sectionTitle("🎯 Mode Focus / Travail Shizuku (${rSnap.focusSessionsDone} réussi(s))"))
+        val remFocusMs = rSnap.activeFocusUntilMs - System.currentTimeMillis()
+        if (remFocusMs > 0L) {
+            val remMin = ((remFocusMs + 59_999L) / 60_000L).toInt()
+            focusCard.addView(sectionSub("⏳ Contrat Focus ACTIF : encore ~$remMin min ! Tes applis distrayantes sont grisées via Shizuku — +150 💎 à la fin !"))
+            focusCard.addView(makeAccentButton("🕊️ Arrêter Focus maintenant (sans récompense)", Color.rgb(180, 83, 9)) {
+                Thread {
+                    val m = DemonMdmManager.finishShizukuFocusContract(applicationContext, awardRewards = false)
+                    mainHandler.post { Toast.makeText(this, m, Toast.LENGTH_LONG).show(); renderActiveTab(settings.snapshot()) }
+                }.start()
+            })
+        } else {
+            focusCard.addView(sectionSub("Met en pause tes 6 applis les plus chronophages via Shizuku et t'offre +150 💎 + XP Démon dès que le chrono termine !"))
+            val fRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            listOf(15, 30, 60).forEachIndexed { idx, mins ->
+                fRow.addView(makeAccentButton("⏱️ $mins min", Color.rgb(2, 132, 199)) {
+                    Thread {
+                        val m = DemonMdmManager.startShizukuFocusContract(applicationContext, mins)
+                        mainHandler.post { Toast.makeText(this, m, Toast.LENGTH_LONG).show(); renderActiveTab(settings.snapshot()) }
+                    }.start()
+                }, gridLp(startMargin = if (idx > 0) dp(4) else 0, endMargin = if (idx < 2) dp(4) else 0))
+            }
+            focusCard.addView(fRow)
+        }
+        root.addView(focusCard)
+
+        // 3. Live Top-8 Most Used Apps Threat Radar (Shizuku UsageStats!)
+        val radarCard = makeCard(accentStroke = Color.argb(135, 234, 88, 12))
+        radarCard.addView(sectionTitle("📡 Radar des 8 Applis les Plus Utilisées (Shizuku)"))
+        radarCard.addView(sectionSub("Ordre exact des cibles potentielles des Sorcières. Tu peux libérer un otage en 1 clic tant que le verrou Défi est OFF :"))
+        val radarListBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        radarListBox.addView(TextView(this).apply {
+            text = "⏳ Analyse UsageStats en cours…"; setTextColor(Color.rgb(180, 180, 200)); textSize = 11.2f
+        })
+        radarCard.addView(radarListBox)
+        root.addView(radarCard)
+
+        Thread {
+            val threats = DemonMdmManager.getTopUsedAppsWithStatus(applicationContext, limit = 8)
+            mainHandler.post {
+                radarListBox.removeAllViews()
+                if (threats.isEmpty()) {
+                    radarListBox.addView(TextView(this).apply {
+                        text = "Autorise Shizuku ou UsageStats dans ⚙️ Syst. pour voir ton top 8 !"; setTextColor(Color.rgb(253, 186, 116)); textSize = 11.2f
+                    })
+                } else {
+                    threats.forEachIndexed { idx, app ->
+                        val row = LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                            background = roundedBg(if (app.isHostage) Color.rgb(55, 18, 34) else Color.rgb(26, 22, 40), 10)
+                            setPadding(dp(9), dp(6), dp(9), dp(6))
+                            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) }
+                        }
+                        row.addView(TextView(this).apply {
+                            text = "#${idx + 1} ${app.label}  ${if (app.isHostage) "🔒 OTAGE GRISÉE" else if (idx == 0) "🎯 Cible #1" else "✅ Libre"}"
+                            setTextColor(if (app.isHostage) Color.rgb(254, 202, 202) else Color.WHITE)
+                            textSize = 11.5f; typeface = if (app.isHostage || idx == 0) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                        if (app.isHostage) {
+                            row.addView(Button(this).apply {
+                                text = "🕊️ Libérer"; isAllCaps = false; textSize = 10.2f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+                                background = roundedBg(Color.rgb(16, 128, 96), 8); minHeight = 0; minimumHeight = 0; setPadding(dp(8), dp(4), dp(8), dp(4))
+                                setOnClickListener {
+                                    Thread {
+                                        DemonMdmManager.releaseSpecificHostageApp(applicationContext, app.packageName)
+                                        mainHandler.post { renderActiveTab(settings.snapshot()) }
+                                    }.start()
+                                }
+                            })
+                        }
+                        radarListBox.addView(row)
+                    }
+                }
+            }
+        }.start()
+
+        // 4. Witch Full Powers & Forced Fullscreen Controls Card
         val fullPowCard = makeCard(accentStroke = Color.argb(150, 217, 70, 239))
         fullPowCard.addView(sectionTitle("👑 Pleins Pouvoirs des Sorcières & Plein Écran (Shizuku)"))
-        fullPowCard.addView(sectionSub("Contrôle les pouvoirs système Shizuku et tactiles des 50 Sorcières pendant les duels !"))
+        fullPowCard.addView(sectionSub("Contrôle les pouvoirs système Shizuku et tactiles des 55 Sorcières pendant les duels !"))
         fullPowCard.addView(makeSwitchRow("🔒 Plein Écran Immersif Forcé en combat (masque barres système)", rSnap.forcedFullscreen) {
             rpgState.forcedFullscreen = it
         })
         fullPowCard.addView(makeSwitchRow("📌 Épinglage Système Shizuku (am task lock — bloque Accueil/Récents)", rSnap.shizukuTaskPinning) {
             rpgState.shizukuTaskPinning = it
             if (it && !DemonMdmManager.isShizukuActive()) {
-                Toast.makeText(this, "Autorise Shizuku dans ⚙️ Dossier & IA pour l'épinglage système !", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Autorise Shizuku dans ⚙️ Syst. pour l'épinglage système !", Toast.LENGTH_LONG).show()
             }
         })
         fullPowCard.addView(makeSwitchRow("🖥️ Forcer le combat en Overlay Système (bloque tout l'OS via Accessibilité)", rSnap.forcedOverlayBattle) {
             rpgState.forcedOverlayBattle = it
             if (it && !DemonAccessibilityService.isServiceActive()) {
-                Toast.makeText(this, "Active l'Accessibilité dans ⚙️ Dossier & IA pour le mode Overlay Système !", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Active l'Accessibilité dans ⚙️ Syst. pour le mode Overlay Système !", Toast.LENGTH_LONG).show()
             }
         })
         fullPowCard.addView(makeSwitchRow("⚡ Malédictions Shizuku EN PLEIN COMBAT (Otages, Ralenti ×3.5, Batterie 3%, Zoom, DND)", rSnap.midBattleAppPowers) {
@@ -1265,10 +1772,10 @@ class MainActivity : AppCompatActivity() {
         })
         root.addView(fullPowCard)
 
-        // 4. Living Demon Companion (100% Shizuku + Accessibility!)
+        // 5. Living Demon Companion Controls (100% Shizuku + Accessibility!)
         val demonCard = makeCard(accentStroke = Color.argb(120, 244, 63, 94))
-        demonCard.addView(sectionTitle("😈 Petit Démon (100 % Shizuku & Accessibilité)"))
-        demonCard.addView(sectionSub("Notifications réparées (zéro panique sur les alertes, horloge ou batterie !). Concentré uniquement sur Shizuku & Accessibilité."))
+        demonCard.addView(sectionTitle("😈 Petit Démon Flottant (100 % Shizuku & Accessibilité)"))
+        demonCard.addView(sectionSub("Double-tap sur le Petit Démon dans n'importe quelle appli pour son menu rapide ! Notifications réparées (zéro faux positifs)."))
         val sw = Switch(this).apply {
             isChecked = snap.enabled
             text = if (snap.enabled) "Compagnon Démon (Shizuku + Accessibilité) ACTIF" else "Activer le Petit Démon flottant"
@@ -1305,6 +1812,9 @@ class MainActivity : AppCompatActivity() {
         }
         demonCard.addView(presetRow)
 
+        demonCard.addView(makeSwitchRow("🌙 Heures Calmes (23h–7h : zéro embuscade/farce la nuit)", rSnap.quietHoursEnabled) {
+            rpgState.quietHoursEnabled = it
+        })
         demonCard.addView(makeSwitchRow("⚔️ Embuscades Sorcières surprise hors de l'app (Accessibilité)", snap.rpgSeductionEnabled) { settings.rpgSeductionEnabled = it })
         demonCard.addView(makeSwitchRow("📜 Contre-Scroll & Anti-Doomscroll (Accessibilité)", snap.counterScrollEnabled) {
             settings.counterScrollEnabled = it; settings.antiDoomscrollEnabled = it
@@ -1468,6 +1978,9 @@ class MainActivity : AppCompatActivity() {
             pickAvatarLauncher.launch(arrayOf("image/*"))
         }.apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
+        })
+        avCard.addView(makeSwitchRow("🔊 Effets Sonores Combat (Parade, Rupture, Esprits)", rSnap.combatSfxEnabled) {
+            rpgState.combatSfxEnabled = it
         })
         avCard.addView(makeSwitchRow("Inclure cheveux & buste HD", snap.cutoutIncludeHair) { checked ->
             settings.cutoutIncludeHair = checked

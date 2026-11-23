@@ -29,6 +29,10 @@ import com.demonpet.app.rpg.WitchCatalog
 import com.demonpet.app.rpg.WitchCombatAi
 import com.demonpet.app.rpg.WitchCombatAi.InquisitionLaw
 import com.demonpet.app.rpg.WitchCombatAi.SpecialPhoneSpell
+import com.demonpet.app.rpg.WitchCombatSystem
+import com.demonpet.app.rpg.WitchCombatSystem.BattleWeather
+import com.demonpet.app.rpg.WitchCombatSystem.ElementalSpirit
+import com.demonpet.app.rpg.WitchLoreAndCampaign
 import com.demonpet.app.rpg.WitchRpgState
 import com.demonpet.app.rpg.WitchStoryEngine
 import java.io.File
@@ -101,7 +105,8 @@ class WitchRpgBattleOverlay(
         carrySp: Int = 25,
         carryEmbrace: Int = 0,
         battleMods: WitchStoryEngine.BattleModifiers = WitchStoryEngine.BattleModifiers(),
-        storyMilestoneIndex: Int = -1
+        storyMilestoneIndex: Int = -1,
+        onExpeditionVictory: ((hp: Int, mp: Int, sp: Int, embrace: Int) -> Unit)? = null
     ) {
         if (sessionActive) return
         sessionActive = true
@@ -123,7 +128,7 @@ class WitchRpgBattleOverlay(
                     if (!sessionActive) return@post
                     activeWitch = witch1
                     secondWitch = witch2
-                    mountBattleUi(witch1, witch2, cfg, towerFloor, carryHp, carryMp, carrySp, carryEmbrace, battleMods, storyMilestoneIndex, threatenedAppName)
+                    mountBattleUi(witch1, witch2, cfg, towerFloor, carryHp, carryMp, carrySp, carryEmbrace, battleMods, storyMilestoneIndex, threatenedAppName, onExpeditionVictory)
                 }
             } catch (_: Throwable) {
                 sessionActive = false
@@ -177,7 +182,8 @@ class WitchRpgBattleOverlay(
         carryEmbrace: Int,
         battleMods: WitchStoryEngine.BattleModifiers,
         storyMilestoneIndex: Int,
-        initialThreatApp: String?
+        initialThreatApp: String?,
+        onExpeditionVictory: ((hp: Int, mp: Int, sp: Int, embrace: Int) -> Unit)? = null
     ) {
         var curWitch = initialWitch
         var duoSpawned = false
@@ -186,8 +192,15 @@ class WitchRpgBattleOverlay(
         val apiKey = rSnap0.geminiApiKey
         val allowTouchSabotage = rSnap0.touchSabotageEnabled
         val allowMidAppPowers = rSnap0.midBattleAppPowers
+        val sfxOn = rSnap0.combatSfxEnabled
+        val titlePostureBonus = rSnap0.titlePostureBonus
+        val spiritPowerMult = rSnap0.spiritPowerMult
+        val spiritMpDiscount = rSnap0.spiritMpDiscount
+        val demonAssistChance = rSnap0.demonAssistChance
+        val demonFormBadge = rSnap0.demonForm.badge
+        val unlockedSpirits = rSnap0.unlockedSpirits
 
-        // Player Gauges scaled by Soul Forge
+        // Player Gauges scaled by Soul Forge + Titles
         val maxHp = rSnap0.maxHp
         val maxMp = rSnap0.maxMp
         val forgeAtkMul = rSnap0.attackMultiplier
@@ -201,21 +214,40 @@ class WitchRpgBattleOverlay(
         var sp = (if (battleMods.startSp != 25) battleMods.startSp else carrySp).coerceIn(0, 100)
         var embrace = (carryEmbrace + battleMods.startEmbrace).coerceIn(0, 82)
 
-        // Witch Resolve + POSTURE / STAGGER BAR (Prevents spam, rewards tactical breaks!)
+        // Witch Resolve + POSTURE / STAGGER BAR + MGQ v10.0 Mechanics!
         val towerScale = if (towerFloor > 1) 1f + (towerFloor - 1) * 0.14f else 1f
-        var witchMaxResolve = (curWitch.profile.maxResolve * towerScale).toInt().coerceAtLeast(240)
-        var witchResolve = (witchMaxResolve - battleMods.surpriseBossDmg).coerceAtLeast(80)
+        var witchMaxResolve = (curWitch.profile.maxResolve * towerScale).toInt().coerceAtLeast(280)
+        var witchResolve = (witchMaxResolve - battleMods.surpriseBossDmg).coerceAtLeast(100)
         var witchMaxPosture = when {
-            curWitch.def.isBoss -> 165
-            curWitch.def.isMiniBoss -> 130
-            else -> 100
+            curWitch.def.isSuperboss -> 220
+            curWitch.def.isBoss -> 175
+            curWitch.def.isMiniBoss -> 140
+            else -> 110
         }
         var witchPosture = witchMaxPosture
         var bossPhase = 1
         var witchStunTurns = 0
         var witchShield = false
         var witchMirage = false
+        var witchThornCounter = false
+        var witchBurnTurns = 0
         var dominationAura = false
+
+        // MGQ 4 Elemental Spirits, Weather, Adaptive Anti-Spam & 2-Stage Capture!
+        var activeSpirit = ElementalSpirit.NONE
+        var battleWeather = BattleWeather.CLEAR
+        val adaptiveBrain = WitchCombatSystem.AdaptiveBrain()
+        var focusCharged = false
+        var playerRegenTurns = 0
+        var captureStage = if (battleMods.startCaptured) 1 else 0
+
+        // Live Bounty Trackers
+        var relicsUsedThisFight = 0
+        var parriesThisFight = 0
+        var breaksThisFight = 0
+        var qteWinsThisFight = 0
+        var usedSpiritThisFight = false
+        var refusedPactThisFight = false
 
         // 8-Archetype Stateful Mechanics & Real Restrictions!
         var silkThreads = 0                                   // Binder: 0..3 -> Auto-Capture!
@@ -459,6 +491,9 @@ class WitchRpgBattleOverlay(
 
         fun buildStatusSummary(): String {
             val parts = ArrayList<String>()
+            if (activeSpirit != ElementalSpirit.NONE) parts.add(activeSpirit.shortBadge)
+            if (focusCharged) parts.add("🎯Focus×2")
+            if (playerRegenTurns > 0) parts.add("💚Régén($playerRegenTurns)")
             if (charmedTurns > 0) parts.add("💖Charmé($charmedTurns)")
             if (hypnoTurns > 0) parts.add("🌀Hypno($hypnoTurns)")
             if (sealedTurns > 0) parts.add("🔒Scellé($sealedTurns)")
@@ -480,9 +515,10 @@ class WitchRpgBattleOverlay(
                 else -> ""
             }
             val phaseStr = if (bossPhase > 1) " [P$bossPhase]" else ""
-            bossTitleTv.text = "$towerTag#${curWitch.def.id}/50 ${curWitch.profile.name}$phaseStr (${curWitch.def.archetype.label})$privTag"
+            val weatherTag = if (battleWeather != BattleWeather.CLEAR) " • ${battleWeather.shortBadge}" else ""
+            bossTitleTv.text = "$towerTag#${curWitch.def.id} ${curWitch.profile.name}$phaseStr (${curWitch.def.archetype.label})$weatherTag$privTag"
 
-            val comboTag = if (comboMult > 1.05f) String.format(" • 🔥×%.1f", comboMult) else ""
+            val comboTag = if (adaptiveBrain.chainMultiplier > 1.05f) String.format(" • 🔥×%.1f", adaptiveBrain.chainMultiplier) else ""
             val domTag = if (domTier > 0) " • 😈Dom.$domTier/3" else ""
             playerStatsTv.text = "NV $playerLv (${obedienceRankFor(playerLv)})$domTag | PV $hp/$maxHp | PM $mp/$maxMp | SP $sp$comboTag${buildStatusSummary()}"
 
@@ -492,14 +528,18 @@ class WitchRpgBattleOverlay(
             else wTags.add("🛡️Posture $witchPosture/$witchMaxPosture")
             if (witchShield) wTags.add("🔷BARRIÈRE")
             if (witchMirage) wTags.add("🪞MIRAGE")
+            if (witchThornCounter) wTags.add("🌹RIPOSTE")
+            if (witchBurnTurns > 0) wTags.add("🔥Brûlé($witchBurnTurns)")
             if (curWitch.def.archetype == WitchCatalog.Archetype.BINDER) wTags.add("🕸️Fils $silkThreads/3")
             if (curWitch.def.archetype == WitchCatalog.Archetype.CHRONO) wTags.add("⏳Sablier $chronoHourglass")
+            adaptiveBrain.highestAdaptationTag()?.let { wTags.add(it) }
             bossBarTv.text = "T$turnNumber | Boss $witchResolve/$witchMaxResolve ($bossPct%) | Emprise $embrace% | ${wTags.joinToString(" ")}"
 
-            // Active Restriction Banner (Inquisition Law / Confiscated Relic)
+            // Active Restriction, Weather & Confiscated Relic Banner
             val restList = ArrayList<String>()
             if (activeLaw != InquisitionLaw.NONE && lawTurns > 0) restList.add("${activeLaw.label} (${lawTurns}t)")
-            confiscatedRelic?.let { restList.add("🎒 Relique confisquée : ${it.second}") }
+            if (battleWeather != BattleWeather.CLEAR) restList.add("${battleWeather.label}: ${battleWeather.effectSummary}")
+            confiscatedRelic?.let { restList.add("🎒 Confisqué : ${it.second}") }
             if (restList.isNotEmpty()) {
                 restrictionBannerTv.text = restList.joinToString(" • ")
                 restrictionBannerTv.visibility = View.VISIBLE
@@ -549,18 +589,25 @@ class WitchRpgBattleOverlay(
         }
 
         // ==================== POSTURE DAMAGE & BREAK (STAGGER) SYSTEM ====================
-        fun applyPostureDamage(amount: Int): Boolean {
-            if (witchStunTurns > 0 || amount <= 0) return false
+        fun applyPostureDamage(rawAmount: Int): Boolean {
+            if (witchStunTurns > 0 || rawAmount <= 0) return false
+            val gaiaMul = if (activeSpirit == ElementalSpirit.GAIA) 1.40f else 1.0f
+            val gravMul = if (battleWeather == BattleWeather.HEAVY_GRAVITY) 1.35f else 1.0f
+            val focusMul = if (focusCharged) 1.55f else 1.0f
+            val amount = ((rawAmount + titlePostureBonus) * gaiaMul * gravMul * focusMul).toInt().coerceAtLeast(1)
             witchPosture = (witchPosture - amount).coerceAtLeast(0)
             if (witchPosture <= 0) {
+                breaksThisFight++
                 witchStunTurns = 2
                 witchShield = false
                 witchMirage = false
+                witchThornCounter = false
                 activeLaw = InquisitionLaw.NONE
                 lawTurns = 0
                 if (curWitch.def.archetype == WitchCatalog.Archetype.BINDER) silkThreads = 0
                 if (curWitch.def.archetype == WitchCatalog.Archetype.CHRONO) chronoHourglass = (chronoHourglass + 2).coerceAtMost(4)
                 stage.triggerPerfectParryFlash()
+                WitchCombatSystem.SoundFx.play(sfxOn, "break")
                 onVibrate(80L)
                 return true
             }
@@ -805,28 +852,36 @@ class WitchRpgBattleOverlay(
 
         lateinit var renderTurnControls: () -> Unit
 
-        // Strict Anti-Spam: repeating same attack 2x+ weakens damage & RECHARGES Witch Posture!
-        fun evaluateActionVariety(actionKey: String): Pair<Float, Boolean> {
-            if (actionKey == lastActionKey) repeatCount++ else {
-                lastActionKey = actionKey; repeatCount = 1
-                comboMult = (comboMult + 0.24f).coerceAtMost(2.0f)
+        // True MGQ-Grade Adaptive Anti-Spam: repeating same category builds 35%->65%->80% Resistance + Counter!
+        fun evaluateActionVariety(actionKey: String, isOffensive: Boolean = true): Pair<Float, Boolean> {
+            val res = adaptiveBrain.evaluate(actionKey, isOffensive)
+            comboMult = adaptiveBrain.chainMultiplier
+            if (res.triggeredPunish) {
+                spamPenaltyCount++
+                witchPosture = (witchPosture + 24).coerceAtMost(witchMaxPosture)
             }
-            val spammed = repeatCount >= 3 && (actionKey == "STRIKE" || actionKey == "BLADE")
-            if (spammed) {
-                comboMult = 1.0f; spamPenaltyCount++
-                witchPosture = (witchPosture + 22).coerceAtMost(witchMaxPosture)
-                return 0.55f to true
-            }
-            return comboMult to false
+            return res.damageMult to res.triggeredPunish
         }
 
-        // ==================== VICTORY (RESCUES HOSTAGES + CONFISCATED RELIC + TEMP CURSES!) ====================
+        // ==================== VICTORY (RESCUES HOSTAGES + CONFISCATED RELIC + BOUNTIES + EPILOGUE!) ====================
         fun finishBattleVictory() {
             if (inEndScene) return
             inEndScene = true; turnLocked = true
             cancelAllCallbacks()
+            WitchCombatSystem.SoundFx.play(sfxOn, "victory")
             try { riftHost.removeAllViews() } catch (_: Throwable) {}
             try { videoTranceHost.removeAllViews(); videoTranceHost.visibility = View.GONE } catch (_: Throwable) {}
+
+            // Evaluate Live Tactical Bounties!
+            if (relicsUsedThisFight == 0) rpgState.markBountyCompleted("b_no_relic")
+            if (parriesThisFight >= 2) rpgState.markBountyCompleted("b_parry_2")
+            if (breaksThisFight >= 2) rpgState.markBountyCompleted("b_break_2")
+            if (usedSpiritThisFight) rpgState.markBountyCompleted("b_spirit_win")
+            if (lawViolations == 0 && (curWitch.def.archetype == WitchCatalog.Archetype.INQUISITOR || curWitch.def.isBoss)) {
+                rpgState.markBountyCompleted("b_law_clean")
+            }
+            if (refusedPactThisFight) rpgState.markBountyCompleted("b_pact_defy")
+            if (qteWinsThisFight >= 2) rpgState.markBountyCompleted("b_qte_master")
 
             // Return any relic confiscated mid-battle!
             confiscatedRelic?.let { (key, _) -> rpgState.grantReward(0, key) }
@@ -837,7 +892,9 @@ class WitchRpgBattleOverlay(
             val towerMult = if (towerFloor > 0) 1.0f + towerFloor * 0.25f else 1.0f
             if (towerFloor > 0) rpgState.recordTowerFloor(towerFloor)
             val (levelUps, unlockedNewCh, droppedRelic) = rpgState.recordVictory(curWitch.def, bonusMultiplier = towerMult)
-            val totalLvGain = (if (curWitch.def.isBoss) 2 else 1) + levelUps
+            val newBondLv = rpgState.getBondLevel(curWitch.def.id)
+            val bio = WitchLoreAndCampaign.getBiography(curWitch.def)
+            val totalLvGain = (if (curWitch.def.isSuperboss) 4 else if (curWitch.def.isBoss) 2 else 1) + levelUps
             settings.adjustPlayerStats(levelDelta = totalLvGain, hpDelta = 100, drainDelta = -100)
             settings.adjustMood(-20)
             try { onClearVisualDrain() } catch (_: Throwable) {}
@@ -845,22 +902,35 @@ class WitchRpgBattleOverlay(
             val rewardParts = ArrayList<String>().apply {
                 add("+$totalLvGain NV")
                 add("+${(curWitch.def.rewardXp * towerMult).toInt()} XP")
-                add("+${(curWitch.def.rewardGold * towerMult).toInt()} 💎")
-                if (droppedRelic != null) add("🎁 +1 $droppedRelic")
+                add("+${(curWitch.def.rewardGold * towerMult * rSnap0.goldBonusMult).toInt()} 💎")
+                add("♥ Lien Nv.$newBondLv/5")
+                if (droppedRelic != null) add("🎁 $droppedRelic")
                 if (returnedRelicName != null) add("🎒 $returnedRelicName récupéré")
                 if (unlockedNewCh) add("🗺️ Chapitre ${curWitch.def.chapter + 1} DÉBLOQUÉ !")
             }
-            val rewardFooter = "🏆 Récompenses : ${rewardParts.joinToString(" • ")}"
+            val rewardFooter = "🏆 ${rewardParts.joinToString(" • ")}\n📖 ${bio.victoryEpilogue}"
 
-            if (curWitch.def.id == 50) {
-                val ending = WitchStoryEngine.getCampaignEnding(rpgState.snapshot().corruption, playerLv)
+            if (curWitch.def.id == 50 || curWitch.def.id == 55) {
+                val postSnap = rpgState.snapshot()
+                val ending = WitchLoreAndCampaign.evaluateFiveEndings(
+                    postSnap.corruption, playerLv, postSnap.defeatedSuperbossIds.size, postSnap.totalBondLevels
+                )
                 typeDialogue(ending.title, "${ending.body}\n\n$rewardFooter")
             } else {
-                speakAi("✨ VICTOIRE — #${curWitch.def.id}/50 VAINCUE !", EventKind.VICTORY, extraFooter = rewardFooter)
+                speakAi("✨ VICTOIRE — #${curWitch.def.id} VAINCUE !", EventKind.VICTORY, extraFooter = rewardFooter)
             }
 
             actionsBox.removeAllViews()
-            if (towerFloor > 0) {
+            if (onExpeditionVictory != null) {
+                val carryH = (hp + 25).coerceAtMost(maxHp)
+                val carryM = (mp + 20).coerceAtMost(maxMp)
+                val carryS = sp.coerceAtLeast(25)
+                val carryE = (embrace - 25).coerceAtLeast(0)
+                actionsBox.addView(makeActionBtn("🗺️ Salle suivante de l'Expédition ▶", Color.rgb(16, 185, 129)) {
+                    closeBattleAndDismiss()
+                    onExpeditionVictory.invoke(carryH, carryM, carryS, carryE)
+                })
+            } else if (towerFloor > 0) {
                 val nextFloor = towerFloor + 1
                 val nextHp = (hp + 35).coerceAtMost(maxHp)
                 val nextMp = (mp + 28).coerceAtMost(maxMp)
@@ -1070,6 +1140,7 @@ class WitchRpgBattleOverlay(
             }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(5) } })
 
             actionsBox.addView(makeActionBtn("🔥 REFUSER SON PACTE ! (+35 SP & -25 Posture Boss)", Color.rgb(217, 119, 6)) {
+                refusedPactThisFight = true
                 rpgState.adjustCorruption(-4)
                 sp = (sp + 35).coerceAtMost(100)
                 val broke = applyPostureDamage(25)
@@ -1157,6 +1228,38 @@ class WitchRpgBattleOverlay(
 
             val passiveNotes = ArrayList<String>()
             if (lawViolationNote != null) passiveNotes.add(lawViolationNote)
+            if (witchThornCounter) witchThornCounter = false
+
+            // Active Spirit & Weather Per-Turn Passives!
+            if (activeSpirit == ElementalSpirit.ONDINE) {
+                mp = (mp + 14).coerceAtMost(maxMp)
+                charmedTurns = 0; hypnoTurns = 0
+                passiveNotes.add("💧 Ondine +14 PM · Anti-Charme")
+            }
+            if (playerRegenTurns > 0) {
+                playerRegenTurns--
+                val reg = if (healInvertTurns > 0) 9 else 18
+                hp = (hp + reg).coerceAtMost(maxHp)
+                passiveNotes.add("💚 Régén +$reg PV")
+            }
+            if (witchBurnTurns > 0) {
+                witchBurnTurns--
+                val burnDmg = (24 * spiritPowerMult).toInt()
+                witchResolve = (witchResolve - burnDmg).coerceAtLeast(0)
+                passiveNotes.add("🔥 Brûlure Ignis -$burnDmg Boss")
+                if (witchResolve <= 0) { finishBattleVictory(); return }
+            }
+            when (battleWeather) {
+                BattleWeather.MIND_FOG -> {
+                    embrace = (embrace + 7).coerceAtMost(98)
+                    passiveNotes.add("🌫️ Brume Mentale +7 % Emprise")
+                }
+                BattleWeather.ETHER_STORM -> {
+                    mp = (mp + 12).coerceAtMost(maxMp)
+                    passiveNotes.add("⚡ Tempête d'Éther +12 PM")
+                }
+                else -> {}
+            }
 
             // Archetype Passives ticking each turn!
             if (curWitch.def.archetype == WitchCatalog.Archetype.CHARMER && charmedTurns > 0) {
@@ -1225,40 +1328,72 @@ class WitchRpgBattleOverlay(
                 rollTouchSabotageForNextTurn(); refreshHud(); turnLocked = false; renderTurnControls(); return
             }
 
-            // 2) Counter-Seal intercepts Capture / Strike / Double!
-            if (wasCountering && (attack.kind == AttackKind.BIND_CAPTURE || attack.kind == AttackKind.STRIKE || attack.kind == AttackKind.TIME_DOUBLE)) {
-                val cDmg = ((46 + playerLv) * forgeAtkMul * comboMult).toInt()
+            // 1.5) Zéphyr Wind Dodge (35% physical evasion) & Ondine Auto-Counter vs Capture!
+            if (!wasGuarding && activeSpirit == ElementalSpirit.ZEPHYR && battleWeather != BattleWeather.HEAVY_GRAVITY &&
+                (attack.kind == AttackKind.STRIKE || attack.kind == AttackKind.ARMOR_BREAK) && Random.nextFloat() < 0.35f
+            ) {
+                sp = (sp + 18 + forgeSpBonus).coerceAtMost(100)
+                stage.triggerPerfectParryFlash(); WitchCombatSystem.SoundFx.play(sfxOn, "spirit"); onVibrate(35L)
+                plannedIntent = buildAiIntent()
+                typeDialogue("🌬️ ESQUIVE DE ZÉPHYR !", "Le vent te dérobe à « ${attack.name} » ! 0 dégât & +18 SP !")
+                rollTouchSabotageForNextTurn(); refreshHud(); turnLocked = false; renderTurnControls(); return
+            }
+            if (activeSpirit == ElementalSpirit.ONDINE && (attack.kind == AttackKind.BIND_CAPTURE || attack.kind == AttackKind.BIND_ESCALATE)) {
+                captured = false; captureStage = 0; silkThreads = 0
+                val cDmg = ((38 + playerLv) * forgeAtkMul * spiritPowerMult).toInt()
                 witchResolve = (witchResolve - cDmg).coerceAtLeast(0)
-                if (curWitch.def.archetype == WitchCatalog.Archetype.BINDER) silkThreads = (silkThreads - 2).coerceAtLeast(0)
-                val broke = applyPostureDamage(48)
-                sp = (sp + 24 + forgeSpBonus).coerceAtMost(100)
-                stage.triggerPerfectParryFlash(); onVibrate(60L)
+                val broke = applyPostureDamage(40)
+                stage.triggerPerfectParryFlash(); WitchCombatSystem.SoundFx.play(sfxOn, "parry"); onVibrate(55L)
                 if (witchResolve <= 0) { finishBattleVictory(); return }
                 plannedIntent = buildAiIntent()
-                speakAi("⚡ CONTRE-SCEAU PARFAIT !", EventKind.COUNTER_HIT, attack.name, "💥 -$cDmg Boss • -48 Posture${if (broke) " • 💥 RUPTURE !" else ""}")
+                speakAi("💧 CONTRE FLUIDE D'ONDINE !", EventKind.COUNTER_HIT, attack.name, "Capture annulée ! -$cDmg Boss • -40 Posture${if (broke) " • 💥 RUPTURE !" else ""}")
                 refreshHud(); turnLocked = false; renderTurnControls(); return
             }
 
-            // 3) Perfect Parry vs Telegraphed Ultimate or Time Double!
-            if (wasGuarding && (attack.kind == AttackKind.ULTIMATE || attack.kind == AttackKind.TIME_DOUBLE)) {
-                rpgState.recordPerfectParry()
-                val parryDmg = (attack.hpDamage * 0.15f).toInt().coerceAtLeast(4)
-                hp = (hp - parryDmg).coerceAtLeast(1)
-                sp = (sp + 32 + forgeSpBonus).coerceAtMost(100)
-                val riposte = ((32 + playerLv / 2) * forgeAtkMul).toInt()
-                witchResolve = (witchResolve - riposte).coerceAtLeast(0)
-                if (curWitch.def.archetype == WitchCatalog.Archetype.CHRONO) chronoHourglass = (chronoHourglass + 2).coerceAtMost(4)
-                val broke = applyPostureDamage(55)
-                stage.triggerPerfectParryFlash(); onVibrate(55L)
+            // 2) Counter-Seal intercepts Capture / Strike / Double / ArmorBreak!
+            if (wasCountering && (attack.kind == AttackKind.BIND_CAPTURE || attack.kind == AttackKind.BIND_ESCALATE || attack.kind == AttackKind.STRIKE || attack.kind == AttackKind.TIME_DOUBLE || attack.kind == AttackKind.ARMOR_BREAK)) {
+                val cDmg = ((50 + playerLv) * forgeAtkMul * comboMult).toInt()
+                witchResolve = (witchResolve - cDmg).coerceAtLeast(0)
+                if (curWitch.def.archetype == WitchCatalog.Archetype.BINDER) silkThreads = (silkThreads - 2).coerceAtLeast(0)
+                val broke = applyPostureDamage(54)
+                sp = (sp + 26 + forgeSpBonus).coerceAtMost(100)
+                stage.triggerPerfectParryFlash(); WitchCombatSystem.SoundFx.play(sfxOn, "parry"); onVibrate(60L)
                 if (witchResolve <= 0) { finishBattleVictory(); return }
                 plannedIntent = buildAiIntent()
-                speakAi("⚡ PARADE PARFAITE !", EventKind.PERFECT_PARRY, attack.name, "🛡️ -$parryDmg PV • +32 SP • -55 Posture${if (broke) " • 💥 RUPTURE !" else ""}")
+                speakAi("⚡ CONTRE-SCEAU PARFAIT !", EventKind.COUNTER_HIT, attack.name, "💥 -$cDmg Boss • -54 Posture${if (broke) " • 💥 RUPTURE !" else ""}")
+                refreshHud(); turnLocked = false; renderTurnControls(); return
+            }
+
+            // 3) Perfect Parry vs Telegraphed Ultimate, Time Double or Armor Break!
+            if (wasGuarding && (attack.kind == AttackKind.ULTIMATE || attack.kind == AttackKind.TIME_DOUBLE || attack.kind == AttackKind.ARMOR_BREAK)) {
+                rpgState.recordPerfectParry()
+                parriesThisFight++
+                val parryDmg = (attack.hpDamage * 0.14f).toInt().coerceAtLeast(4)
+                hp = (hp - parryDmg).coerceAtLeast(1)
+                val zephSp = if (activeSpirit == ElementalSpirit.ZEPHYR) 12 else 0
+                sp = (sp + 34 + zephSp + forgeSpBonus).coerceAtMost(100)
+                val riposte = ((36 + playerLv / 2) * forgeAtkMul).toInt()
+                witchResolve = (witchResolve - riposte).coerceAtLeast(0)
+                if (curWitch.def.archetype == WitchCatalog.Archetype.CHRONO) chronoHourglass = (chronoHourglass + 2).coerceAtMost(4)
+                val broke = applyPostureDamage(60)
+                stage.triggerPerfectParryFlash(); WitchCombatSystem.SoundFx.play(sfxOn, "parry"); onVibrate(55L)
+                if (witchResolve <= 0) { finishBattleVictory(); return }
+                plannedIntent = buildAiIntent()
+                speakAi("⚡ PARADE PARFAITE !", EventKind.PERFECT_PARRY, attack.name, "🛡️ -$parryDmg PV • +${34 + zephSp} SP • -60 Posture${if (broke) " • 💥 RUPTURE !" else ""}")
                 refreshHud(); turnLocked = false; renderTurnControls(); return
             }
 
             if (attack.kind == AttackKind.ULTIMATE && !wasGuarding) missedUltimateGuards++
-            if (attack.kind == AttackKind.BARRIER_SHIELD) witchShield = true
-            else if (attack.kind == AttackKind.MIRAGE_CLONE) witchMirage = true
+            when (attack.kind) {
+                AttackKind.BARRIER_SHIELD -> witchShield = true
+                AttackKind.MIRAGE_CLONE -> witchMirage = true
+                AttackKind.THORN_COUNTER -> { witchThornCounter = true; extraFooterList.add("🌹 Riposte Épineuse active ! Utilise ✨ Brise-Sort ou 🛡️ Garde !") }
+                AttackKind.WEATHER_SHIFT -> {
+                    battleWeather = listOf(BattleWeather.BLOOD_ECLIPSE, BattleWeather.MIND_FOG, BattleWeather.ETHER_STORM, BattleWeather.HEAVY_GRAVITY).random()
+                    extraFooterList.add("🌑 Météo → ${battleWeather.label} (${battleWeather.effectSummary})")
+                }
+                else -> {}
+            }
 
             // Enact Inquisition Law!
             if (intent.lawToEnact != InquisitionLaw.NONE && !hadMeditateImm) {
@@ -1397,12 +1532,14 @@ class WitchRpgBattleOverlay(
             }
 
             val guardMul = if (wasGuarding) 0.25f else 1.0f
-            val captureMul = if (captured) 1.28f else 1.0f
+            val gaiaDefMul = if (activeSpirit == ElementalSpirit.GAIA) 0.70f else 1.0f
+            val eclipseMul = if (battleWeather == BattleWeather.BLOOD_ECLIPSE) 1.25f else 1.0f
+            val captureMul = when { captureStage >= 2 -> 1.48f; captured -> 1.28f; else -> 1.0f }
             val doubleMul = if (attack.kind == AttackKind.TIME_DOUBLE) 1.35f else 1.0f
             val stormMul = if (runicStormActive) 1.45f else 1.0f
             runicStormActive = false
 
-            val dmg = (attack.hpDamage * bonusMult * guardMul * captureMul * doubleMul * stormMul).toInt().coerceAtLeast(5)
+            val dmg = (attack.hpDamage * bonusMult * guardMul * gaiaDefMul * eclipseMul * captureMul * doubleMul * stormMul).toInt().coerceAtLeast(5)
             val embGain = (attack.embraceGain * bonusMult * guardMul * forgeEmbraceResist).toInt().coerceAtLeast(5)
             val lvLoss = if (wasGuarding || hadMeditateImm) 0 else attack.levelDrain
 
@@ -1412,11 +1549,13 @@ class WitchRpgBattleOverlay(
             if (lvLoss > 0) playerLv = (playerLv - lvLoss).coerceAtLeast(1)
             drainPct = (drainPct + if (wasGuarding) 4 else 13).coerceAtMost(95)
 
-            // Drainer heals on every real hit!
+            // Drainer heals on every real hit (Ignis Burn cuts vampiric healing by 65%!)
             if (curWitch.def.archetype == WitchCatalog.Archetype.DRAINER && !wasGuarding) {
-                val vampHeal = (dmg * 0.65f).toInt().coerceAtLeast(8)
+                val burnAntiHeal = if (witchBurnTurns > 0) 0.35f else 1.0f
+                val eclipseHeal = if (battleWeather == BattleWeather.BLOOD_ECLIPSE) 1.15f else 1.0f
+                val vampHeal = (dmg * 0.65f * burnAntiHeal * eclipseHeal).toInt().coerceAtLeast(4)
                 witchResolve = (witchResolve + vampHeal).coerceAtMost(witchMaxResolve)
-                extraFooterList.add("🦇 Vol de Vie : ${curWitch.def.name} récupère +$vampHeal Résolution !")
+                extraFooterList.add("🦇 Vol de Vie : +$vampHeal Boss${if (witchBurnTurns > 0) " (réduit par 🔥 Ignis !)" else ""}")
             }
 
             // Adrenaline Last Stand!
@@ -1427,10 +1566,17 @@ class WitchRpgBattleOverlay(
 
             var statusAppliedMsg = ""
             if (!hadMeditateImm && !wasGuarding) {
-                val resistRoll = Random.nextFloat() < (wardBonus - 1) * 0.05f
-                if (!resistRoll) {
+                val resistRoll = Random.nextFloat() < (wardBonus - 1) * 0.04f
+                val ondineMentalImm = activeSpirit == ElementalSpirit.ONDINE && (attack.statusEffect == "CHARMED" || attack.statusEffect == "HYPNOTIZED")
+                if (ondineMentalImm) {
+                    statusAppliedMsg = " • 💧 Ondine immunise !"
+                } else if (!resistRoll) {
                     when (attack.statusEffect) {
-                        "CAPTURE" -> { captured = true; statusAppliedMsg = " • ⛓️ CAPTURÉ !" }
+                        "CAPTURE" -> {
+                            captureStage = if (captured) 2 else 1
+                            captured = true
+                            statusAppliedMsg = if (captureStage >= 2) " • ⛓️⛓️ ÉTREINTE Nv.2 !" else " • ⛓️ CAPTURÉ Nv.1 !"
+                        }
                         "CHARMED" -> { charmedTurns = 2; statusAppliedMsg = " • 💖 CHARMÉ !" }
                         "HYPNOTIZED" -> { hypnoTurns = 2; statusAppliedMsg = " • 🌀 HYPNOTISÉ !" }
                         "SEALED" -> { sealedTurns = 2; statusAppliedMsg = " • 🔒 SCELLÉ !" }
@@ -1438,7 +1584,7 @@ class WitchRpgBattleOverlay(
                     }
                 } else if (attack.statusEffect.isNotEmpty()) statusAppliedMsg = " • 🧿 Résisté !"
             } else if (hadMeditateImm && attack.statusEffect.isNotEmpty()) statusAppliedMsg = " • 🧘 Immunité !"
-            if (!captured && embrace >= 64 && !wasGuarding) { captured = true; statusAppliedMsg = " • ⛓️ EMPRISE CAPTURE !" }
+            if (!captured && embrace >= 64 && !wasGuarding) { captured = true; captureStage = 1; statusAppliedMsg = " • ⛓️ EMPRISE CAPTURE !" }
 
             // Random Golden Rift / Runic Storm twist
             if (turnNumber >= 2 && hp > 0 && embrace < 100 && !triggerVideoAfterHit) {
@@ -1457,8 +1603,11 @@ class WitchRpgBattleOverlay(
             extraFooterList.add("💥 « ${attack.name} » : -$dmg PV$lvTxt • Emprise $embrace%$guardTxt$statusAppliedMsg")
 
             val ev = when {
-                forcedSpamCounter -> EventKind.SPAM_READ
+                forcedSpamCounter -> EventKind.ADAPT_COUNTER
                 wasGuarding -> EventKind.GUARDED
+                attack.kind == AttackKind.THORN_COUNTER -> EventKind.THORN_COUNTER_UP
+                attack.kind == AttackKind.WEATHER_SHIFT -> EventKind.WEATHER_CHANGE
+                attack.kind == AttackKind.BIND_ESCALATE -> EventKind.BIND_STAGE_2
                 attack.kind == AttackKind.BARRIER_SHIELD -> EventKind.SHIELD_UP
                 attack.kind == AttackKind.MIRAGE_CLONE -> EventKind.MIRAGE_CAST
                 attack.kind == AttackKind.ENCHANT_CHARM -> EventKind.ENCHANT_CHARM
@@ -1467,6 +1616,25 @@ class WitchRpgBattleOverlay(
                 attack.kind == AttackKind.TIME_DOUBLE -> EventKind.TIME_DOUBLE
                 captured && attack.statusEffect == "CAPTURE" -> EventKind.CAPTURE
                 else -> EventKind.ATTACK
+            }
+
+            // Little Demon Battle Familiar Assist (scales with Demon Affection & Demon Heart Forge!)
+            if (hp > 0 && embrace < 100 && !triggerVideoAfterHit && Random.nextFloat() < demonAssistChance * 0.65f) {
+                when (Random.nextInt(3)) {
+                    0 -> {
+                        frostButtonTaps = 0; mimicTrapThisTurn = false
+                        extraFooterList.add("$demonFormBadge ${cfg.avatarName} intervient : Givre & Pièges tactiles brisés !")
+                    }
+                    1 -> {
+                        val spHelp = 15 + (rSnap0.demonForm.index * 4)
+                        sp = (sp + spHelp).coerceAtMost(100)
+                        extraFooterList.add("$demonFormBadge ${cfg.avatarName} te lance +$spHelp SP !")
+                    }
+                    else -> {
+                        applyPostureDamage(22)
+                        extraFooterList.add("$demonFormBadge ${cfg.avatarName} mord la Sorcière (-22 Posture Boss) !")
+                    }
+                }
             }
 
             plannedIntent = buildAiIntent()
@@ -1519,16 +1687,19 @@ class WitchRpgBattleOverlay(
             return true
         }
 
-        // ==================== 3 VARIED PHASE-2 CAPTURE QTEs ====================
-        fun onQteSuccess(bonusDmg: Int = 30) {
+        // ==================== 5 VARIED PHASE-2 CAPTURE QTEs ====================
+        fun qteSpiritBonusMs(): Long = if (activeSpirit == ElementalSpirit.ZEPHYR) 800L else 0L
+
+        fun onQteSuccess(bonusDmg: Int = 34) {
             qteTickRunnable?.let { mainHandler.removeCallbacks(it) }; qteTickRunnable = null
             rpgState.recordQteBreak()
-            captured = false; embrace = (embrace - 45).coerceAtLeast(0); silkThreads = 0
-            sp = (sp + 22 + forgeSpBonus).coerceAtMost(100)
+            qteWinsThisFight++
+            captured = false; captureStage = 0; embrace = (embrace - 45).coerceAtLeast(0); silkThreads = 0
+            sp = (sp + 24 + forgeSpBonus).coerceAtMost(100)
             witchResolve = (witchResolve - (bonusDmg * forgeAtkMul).toInt()).coerceAtLeast(0)
-            val broke = applyPostureDamage(35)
-            stage.triggerWitchHitShake(critical = true); onVibrate(45L)
-            speakAi("💥 ÉVASION PARFAITE !", EventKind.QTE_BREAK, extraFooter = "Emprise -45 % • +22 SP • -35 Posture${if (broke) " • 💥 RUPTURE !" else ""}")
+            val broke = applyPostureDamage(38)
+            stage.triggerWitchHitShake(critical = true); WitchCombatSystem.SoundFx.play(sfxOn, "break"); onVibrate(45L)
+            speakAi("💥 ÉVASION PARFAITE !", EventKind.QTE_BREAK, extraFooter = "Emprise -45 % • +24 SP • -38 Posture${if (broke) " • 💥 RUPTURE !" else ""}")
             refreshHud()
             if (witchResolve <= 0) finishBattleVictory() else { turnLocked = false; renderTurnControls() }
         }
@@ -1659,183 +1830,435 @@ class WitchRpgBattleOverlay(
             qteTickRunnable = tick; mainHandler.postDelayed(tick, 120L)
         }
 
+        /** 5th Escape QTE — "Résistance Mentale" : push back the rising purple wave by tapping 4 Willpower Seals! */
+        fun startMentalPulseQte() {
+            actionsBox.removeAllViews(); turnTimerRunnable?.let { mainHandler.removeCallbacks(it) }
+            var wavePct = 20; var sealsCleared = 0; val goal = 4
+            val endElapsed = SystemClock.elapsedRealtime() + 5_800L + (wardBonus - 1) * 160L + qteSpiritBonusMs()
+            val gaugeTv = TextView(context).apply {
+                text = "🧠 Vague d'Hypnose : $wavePct % • Sceaux brisés : 0/$goal"
+                setTextColor(Color.rgb(240, 171, 252)); textSize = 12.6f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+                setPadding(0, dp(2), 0, dp(5))
+            }
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            actionsBox.addView(gaugeTv); actionsBox.addView(row)
+            val icons = listOf("🔥 VOLONTÉ", "🛡️ REMPART", "⚡ ÉCLAT", "🌟 ESPRIT")
+            var activeIdx = Random.nextInt(4)
+            lateinit var renderPulse: () -> Unit
+            renderPulse = {
+                row.removeAllViews()
+                icons.forEachIndexed { idx, lbl ->
+                    val lit = idx == activeIdx
+                    row.addView(makeActionBtn(if (lit) "▶ $lbl" else "···", if (lit) Color.rgb(16, 185, 129) else Color.rgb(42, 34, 62)) {
+                        onVibrate(18L)
+                        if (lit) {
+                            sealsCleared++; wavePct = (wavePct - 18).coerceAtLeast(0)
+                            if (sealsCleared >= goal) onQteSuccess(46)
+                            else { activeIdx = Random.nextInt(4); renderPulse() }
+                        } else {
+                            wavePct = (wavePct + 25).coerceAtMost(100)
+                            if (wavePct >= 100) onQteFailure()
+                        }
+                    }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { if (idx > 0) marginStart = dp(4) })
+                }
+            }
+            renderPulse()
+            val tick = object : Runnable {
+                override fun run() {
+                    if (!sessionActive || inEndScene) return
+                    wavePct += 3
+                    gaugeTv.text = "🧠 Vague d'Hypnose : $wavePct % • Sceaux brisés : $sealsCleared/$goal"
+                    if (wavePct >= 100 || endElapsed - SystemClock.elapsedRealtime() <= 0L) onQteFailure()
+                    else mainHandler.postDelayed(this, 160L)
+                }
+            }
+            qteTickRunnable = tick; mainHandler.postDelayed(tick, 160L)
+        }
+
         fun startNextVariedQte() {
-            when (qteVarietyCounter++ % 4) {
+            when (qteVarietyCounter++ % 5) {
                 0 -> startTimingQte()
                 1 -> startRuneSequenceQte()
                 2 -> startHypnoOrbHuntQte()
+                3 -> startMentalPulseQte()
                 else -> startMashQte()
             }
         }
 
-        // ==================== SKILLS, RELICS & RP SUB-MENUS ====================
-        fun showSkillsMenu() {
+        // ==================== HELPER: EXECUTE DIRECT PLAYER OFFENSIVE ART (SPIRITS + ADAPTATION + THORN REFLECT!) ====================
+        fun executePlayerOffensiveArt(
+            artKey: String,
+            artTitle: String,
+            baseMin: Int,
+            baseMax: Int,
+            postureDmg: Int,
+            spGain: Int,
+            breaksShield: Boolean = false,
+            piercesMirage: Boolean = false,
+            multiHits: Int = 1
+        ) {
+            if (witchThornCounter) {
+                witchThornCounter = false
+                val refDmg = (24 + curWitch.def.chapter * 5).coerceAtMost(hp - 1).coerceAtLeast(8)
+                hp = (hp - refDmg).coerceAtLeast(1)
+                stage.triggerWitchAttackLunge(intense = true); WitchCombatSystem.SoundFx.play(sfxOn, "curse"); onVibrate(75L)
+                speakAi("🌹 RIPOSTE ÉPINEUSE !", EventKind.THORN_REFLECT, extraFooter = "-$refDmg PV renvoyés ! Utilise ✨ Brise-Sort ou 🛡️ Garde contre ses Épines !")
+                refreshHud()
+                val r = Runnable { executeWitchTurn(1.0f) }; pendingTurnRunnable = r; mainHandler.postDelayed(r, 700L)
+                return
+            }
+            if (witchMirage && !piercesMirage && activeSpirit != ElementalSpirit.ZEPHYR && Random.nextBoolean()) {
+                typeDialogue("🪞 MIRAGE !", "Ton coup traverse un clone ! Utilise ⚔️ Estocade, 🌬️ Zéphyr, 🧘 Méditation ou 🌟 Exorcisme !")
+                val r = Runnable { executeWitchTurn(1.0f) }; pendingTurnRunnable = r; mainHandler.postDelayed(r, 650L)
+                return
+            }
+
+            val (vMul, spammed) = evaluateActionVariety(artKey, isOffensive = true)
+            val (elemMul, elemTag) = WitchCombatSystem.spiritElementMultiplier(activeSpirit, curWitch.def)
+            val ignisBoost = if (activeSpirit == ElementalSpirit.IGNIS) 1.45f else 1.0f
+            val eclipseBoost = if (battleWeather == BattleWeather.BLOOD_ECLIPSE) 1.25f else 1.0f
+            val etherBoost = if (battleWeather == BattleWeather.ETHER_STORM && artKey != "STRIKE") 1.30f else 1.0f
+            val focusMul = if (focusCharged) 1.85f else 1.0f
+            val furyMul = if (furyTurns > 0) 1.60f else 1.0f
+            val breakMul = if (witchStunTurns > 0) 2.0f else if (witchPosture > 0) 0.68f else 1.25f
+            val wasShield = witchShield && breaksShield
+            if (wasShield) witchShield = false
+            val shieldMul = if (witchShield) 0.35f else 1.0f
+            val stormMul = if (runicStormActive) 1.50f else 1.0f
+            runicStormActive = false; focusCharged = false
+
+            var totalDmg = 0
+            for (h in 0 until multiHits) {
+                val baseRoll = Random.nextInt(baseMin, baseMax + 1) + playerLv / 2
+                totalDmg += (baseRoll * forgeAtkMul * vMul * elemMul * ignisBoost * eclipseBoost * etherBoost * focusMul * furyMul * breakMul * shieldMul * stormMul).toInt().coerceAtLeast(4)
+            }
+            if (activeSpirit == ElementalSpirit.IGNIS) witchBurnTurns = 3
+            if (breaksShield && curWitch.def.archetype == WitchCatalog.Archetype.BINDER) silkThreads = (silkThreads - 2).coerceAtLeast(0)
+
+            sp = (sp + spGain + forgeSpBonus).coerceAtMost(100)
+            witchResolve = (witchResolve - totalDmg).coerceAtLeast(0)
+            val broke = applyPostureDamage(if (wasShield) postureDmg + 28 else postureDmg)
+            stage.triggerWitchHitShake(critical = wasShield || broke || witchStunTurns > 0 || elemMul >= 1.4f)
+            onVibrate(if (broke || wasShield) 50L else 25L)
+
+            val noteParts = ArrayList<String>().apply {
+                add("-$totalDmg Boss")
+                if (multiHits > 1) add("($multiHits coups)")
+                if (elemTag != null) add(elemTag)
+                if (activeSpirit == ElementalSpirit.IGNIS) add("🔥 Brûlure 3t")
+                if (spammed) add("🧠 Adaptation ennemie !")
+                if (broke) add("💥 RUPTURE 2 TOURS (×2.0 !)")
+            }
+
+            if (witchResolve <= 0) {
+                finishBattleVictory()
+            } else if (wasShield || broke) {
+                speakAi(
+                    if (broke) "💥 RUPTURE DE POSTURE — $artTitle !" else "💥 BOUCLIER BRISÉ !",
+                    EventKind.SHIELD_BREAK,
+                    extraFooter = noteParts.joinToString(" • ")
+                )
+                refreshHud(); renderTurnControls()
+            } else {
+                executeWitchTurn(if (spammed) 1.25f else 1.0f, forcedSpamCounter = spammed)
+            }
+        }
+
+        // ==================== 16 PLAYER SKILLS: ⚔️ SWORD ARTS MENU ====================
+        fun showSwordArtsMenu() {
             val isSealed = sealedTurns > 0
-            val mpCostMul = if (hypnoTurns > 0) 1.4f else 1.0f
-            val bladeCost = (14 * mpCostMul).toInt()
-            val counterCost = (12 * mpCostMul).toInt()
+            val mpMul = if (hypnoTurns > 0) 1.4f else 1.0f
+            val bladeCost = (12 * mpMul).toInt()
+            val danceCost = (16 * mpMul).toInt()
+            val counterCost = (12 * mpMul).toInt()
             actionsBox.removeAllViews()
 
             val r1 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            r1.addView(makeActionBtn("⚔️ Estocade (+20 SP · Anti-Mirage)", Color.rgb(225, 29, 72)) {
+                if (checkLawViolation(InquisitionLaw.NO_STRIKE)) return@makeActionBtn
+                executePlayerOffensiveArt("STRIKE", "Estocade", 22, 32, postureDmg = 18, spGain = 20, piercesMirage = true)
+            }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(4) })
+
             r1.addView(makeActionBtn(
-                if (isSealed) "🔒 Lame Scellée" else "🔥 Lame Brise-Posture (-$bladeCost PM)",
+                if (isSealed) "🔒 Brise-Garde" else "🔥 Fente Brise-Garde (-$bladeCost PM)",
                 if (isSealed || mp < bladeCost) Color.rgb(58, 54, 72) else Color.rgb(234, 88, 12)
             ) {
                 if (checkLawViolation(InquisitionLaw.NO_MAGIC)) return@makeActionBtn
-                when {
-                    isSealed -> typeDialogue("🔒 Sorts Scellés", "Utilise ⚔️ Frappe, 🛡️ Garde ou 🔮 Amulette !")
-                    mp < bladeCost -> typeDialogue("⚡ PM insuffisants", "Utilise 🛡️ Garde (+22 PM) ou 🧘 Méditation (+28 PM) !")
-                    else -> {
-                        mp -= bladeCost; sp = (sp + 12 + forgeSpBonus).coerceAtMost(100)
-                        if (curWitch.def.archetype == WitchCatalog.Archetype.BINDER) silkThreads = (silkThreads - 2).coerceAtLeast(0)
-                        val (vMul, spammed) = evaluateActionVariety("BLADE")
-                        val furyMul = if (furyTurns > 0) 1.6f else 1.0f
-                        val breakMul = if (witchStunTurns > 0) 2.0f else if (witchPosture > 0) 0.78f else 1.2f
-                        val stormMul = if (runicStormActive) 1.5f else 1.0f; runicStormActive = false
-
-                        val postureHit = if (witchShield) 60 else 38
-                        val wasShield = witchShield; witchShield = false
-                        val broke = applyPostureDamage(postureHit)
-                        val dmgBoss = ((Random.nextInt(40, 56) + playerLv / 2) * forgeAtkMul * vMul * furyMul * breakMul * stormMul).toInt()
-                        witchResolve = (witchResolve - dmgBoss).coerceAtLeast(0)
-                        stage.triggerWitchHitShake(critical = wasShield || broke || witchStunTurns > 0); onVibrate(42L)
-                        if (witchResolve <= 0) { finishBattleVictory(); return@makeActionBtn }
-                        if (wasShield || broke) {
-                            speakAi(
-                                if (broke) "💥 RUPTURE DE POSTURE (BREAK !)" else "💥 BOUCLIER BRISÉ !",
-                                EventKind.SHIELD_BREAK,
-                                extraFooter = "-$dmgBoss Boss • -$postureHit Posture • ${if (broke) "ÉTOURDIE 2 TOURS (×2.0 Dégâts !)" else "Ouverture !"}"
-                            )
-                            refreshHud(); renderTurnControls()
-                        } else {
-                            executeWitchTurn(if (spammed) 1.25f else 1.0f, forcedSpamCounter = spammed)
-                        }
-                    }
-                }
-            }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(4) })
-
-            r1.addView(makeActionBtn(
-                if (isSealed) "🔒 Contre Scellé" else "⚡ Contre-Sceau (-$counterCost PM)",
-                if (isSealed || mp < counterCost) Color.rgb(58, 54, 72) else Color.rgb(14, 116, 144)
-            ) {
-                if (checkLawViolation(InquisitionLaw.NO_MAGIC)) return@makeActionBtn
-                when {
-                    isSealed -> typeDialogue("🔒 Sorts Scellés", "Sorts bloqués !")
-                    mp < counterCost -> typeDialogue("⚡ PM insuffisants", "Besoin de $counterCost PM !")
-                    else -> { mp -= counterCost; counterStance = true; evaluateActionVariety("COUNTER"); executeWitchTurn(1.0f) }
-                }
-            }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(4) })
+                if (isSealed || mp < bladeCost) { typeDialogue("⚡ Indisponible", "Sorts scellés ou PM insuffisants !"); return@makeActionBtn }
+                mp -= bladeCost
+                executePlayerOffensiveArt("BLADE", "Fente Brise-Garde", 34, 48, postureDmg = 48, spGain = 14, breaksShield = true)
+            }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(4) })
             actionsBox.addView(r1)
 
             val r2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-            r2.addView(makeActionBtn("🧘 Méditation (+28 PM · Anti-Charme)", Color.rgb(16, 128, 96)) {
-                mp = (mp + 28).coerceAtMost(maxMp); sp = (sp + 14 + forgeSpBonus).coerceAtMost(100)
-                charmedTurns = 0; hypnoTurns = 0; witchMirage = false; fogBlindTurns = 0; meditateImmunity = true
-                evaluateActionVariety("MEDITATE"); executeWitchTurn(0.90f)
-            }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(4); topMargin = dp(5) })
-
-            val canJudg = sp >= 100; val canExor = sp >= 50
             r2.addView(makeActionBtn(
-                when { canJudg -> "💥 JUGEMENT ! (100 SP)"; canExor -> "🌟 EXORCISME ! (50 SP)"; else -> "🌟 Exorcisme ($sp/50 SP)" },
-                when { canJudg -> Color.rgb(220, 38, 38); canExor -> Color.rgb(217, 119, 6); else -> Color.rgb(54, 50, 68) }
+                if (isSealed) "🔒 Danse Lames" else "🗡️ Danse des Lames ×3 (-$danceCost PM)",
+                if (isSealed || mp < danceCost) Color.rgb(58, 54, 72) else Color.rgb(190, 24, 93)
+            ) {
+                if (checkLawViolation(InquisitionLaw.NO_STRIKE)) return@makeActionBtn
+                if (isSealed || mp < danceCost) { typeDialogue("⚡ Indisponible", "Besoin de $danceCost PM !"); return@makeActionBtn }
+                mp -= danceCost
+                executePlayerOffensiveArt("DANCE", "Danse des Lames", 16, 23, postureDmg = 26, spGain = 16, multiHits = 3)
+            }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(4); topMargin = dp(4) })
+
+            r2.addView(makeActionBtn(
+                if (isSealed) "🔒 Contre-Sceau" else "⚡ Contre-Sceau (-$counterCost PM)",
+                if (isSealed || mp < counterCost) Color.rgb(58, 54, 72) else Color.rgb(14, 116, 144)
+            ) {
+                if (checkLawViolation(InquisitionLaw.NO_MAGIC)) return@makeActionBtn
+                if (isSealed || mp < counterCost) { typeDialogue("⚡ Indisponible", "Besoin de $counterCost PM !"); return@makeActionBtn }
+                mp -= counterCost; counterStance = true; evaluateActionVariety("COUNTER", isOffensive = false); executeWitchTurn(1.0f)
+            }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(4); topMargin = dp(4) })
+            actionsBox.addView(r2)
+
+            val r3 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            r3.addView(makeActionBtn("🎯 Concentration (+20 SP · Prochain ×1.85 !)", Color.rgb(180, 83, 9)) {
+                focusCharged = true; sp = (sp + 20 + forgeSpBonus).coerceAtMost(100)
+                evaluateActionVariety("FOCUS", isOffensive = false)
+                typeDialogue("🎯 CONCENTRATION !", "Ton prochain Art infligera ×1.85 dégâts et ×1.55 Brise-Posture !")
+                refreshHud(); executeWitchTurn(0.92f)
+            }, LinearLayout.LayoutParams(0, dp(36), 1.4f).apply { marginEnd = dp(4); topMargin = dp(4) })
+            r3.addView(makeActionBtn("↩ Retour", Color.rgb(42, 36, 56)) { renderTurnControls() },
+                LinearLayout.LayoutParams(0, dp(36), 0.6f).apply { marginStart = dp(4); topMargin = dp(4) })
+            actionsBox.addView(r3)
+        }
+
+        // ==================== 16 PLAYER SKILLS: 🌀 4 ELEMENTAL SPIRITS, MAGIC & ULTIMATES MENU ====================
+        fun showSpiritsAndMagicMenu() {
+            val isSealed = sealedTurns > 0
+            actionsBox.removeAllViews()
+
+            // Row 1: The 4 MGQ Elemental Spirits!
+            val spRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            val spirits = listOf(ElementalSpirit.ZEPHYR, ElementalSpirit.GAIA, ElementalSpirit.ONDINE, ElementalSpirit.IGNIS)
+            spirits.forEachIndexed { idx, spirit ->
+                val isUnlocked = unlockedSpirits.contains(spirit.id)
+                val cost = (spirit.mpCost - spiritMpDiscount).coerceAtLeast(6)
+                val isActive = activeSpirit == spirit
+                val label = when {
+                    !isUnlocked -> "🔒 ${spirit.shortBadge.take(5)}"
+                    isActive -> "✅ ${spirit.shortBadge}"
+                    else -> "${spirit.shortBadge} (-$cost)"
+                }
+                val bg = when {
+                    isActive -> spirit.colorHex
+                    !isUnlocked || isSealed || mp < cost -> Color.rgb(48, 44, 62)
+                    else -> Color.argb(235, Color.red(spirit.colorHex), Color.green(spirit.colorHex), Color.blue(spirit.colorHex))
+                }
+                spRow.addView(makeActionBtn(label, bg) {
+                    if (!isUnlocked) { typeDialogue("🔒 ${spirit.displayName}", spirit.unlockHint); return@makeActionBtn }
+                    if (isSealed) { typeDialogue("🔒 Sorts Scellés", "Purifie ton sceau d'abord !"); return@makeActionBtn }
+                    if (mp < cost) { typeDialogue("⚡ PM insuffisants", "Besoin de $cost PM !"); return@makeActionBtn }
+                    mp -= cost; activeSpirit = spirit; usedSpiritThisFight = true
+                    if (spirit == ElementalSpirit.ONDINE) { charmedTurns = 0; hypnoTurns = 0 }
+                    if (spirit == ElementalSpirit.GAIA) { frostButtonTaps = 0; dodgeButtonThisTurn = false }
+                    WitchCombatSystem.SoundFx.play(sfxOn, "spirit")
+                    speakAi("🌀 INVOCATION : ${spirit.displayName} !", EventKind.SPIRIT_SUMMON, spirit.displayName, spirit.passiveDesc)
+                    refreshHud(); renderTurnControls()
+                }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { if (idx > 0) marginStart = dp(3) })
+            }
+            actionsBox.addView(spRow)
+
+            // Row 2: Tactical Magic (Méditation, Brise-Sort, Chant Résistance)
+            val mRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            mRow.addView(makeActionBtn("🧘 Médit. (+32 PM)", Color.rgb(16, 128, 96)) {
+                mp = (mp + 32).coerceAtMost(maxMp); sp = (sp + 15 + forgeSpBonus).coerceAtMost(100)
+                charmedTurns = 0; hypnoTurns = 0; witchMirage = false; fogBlindTurns = 0; meditateImmunity = true
+                if (battleWeather == BattleWeather.MIND_FOG) battleWeather = BattleWeather.CLEAR
+                evaluateActionVariety("MEDITATE", isOffensive = false); executeWitchTurn(0.88f)
+            }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginEnd = dp(3); topMargin = dp(4) })
+
+            mRow.addView(makeActionBtn("✨ Brise-Sort (-14)", if (isSealed || mp < 14) Color.rgb(54, 50, 68) else Color.rgb(126, 34, 206)) {
+                if (isSealed || mp < 14) { typeDialogue("⚡ PM insuffisants", "Besoin de 14 PM !"); return@makeActionBtn }
+                mp -= 14; witchShield = false; witchMirage = false; witchThornCounter = false
+                activeLaw = InquisitionLaw.NONE; lawTurns = 0; battleWeather = BattleWeather.CLEAR
+                val broke = applyPostureDamage(35)
+                evaluateActionVariety("DISPEL", isOffensive = false); stage.triggerPerfectParryFlash()
+                typeDialogue("✨ BRISE-SORT !", "Lois d'Inquisition, Riposte Épineuse, Barrière & Météo annulées ! -35 Posture${if (broke) " • 💥 RUPTURE !" else ""}")
+                refreshHud(); if (broke) renderTurnControls() else executeWitchTurn(0.90f)
+            }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginEnd = dp(3); topMargin = dp(4) })
+
+            mRow.addView(makeActionBtn("💚 Chant (-16)", if (isSealed || mp < 16) Color.rgb(54, 50, 68) else Color.rgb(5, 150, 105)) {
+                if (isSealed || mp < 16) { typeDialogue("⚡ PM insuffisants", "Besoin de 16 PM !"); return@makeActionBtn }
+                mp -= 16; embrace = (embrace - 35).coerceAtLeast(0); playerRegenTurns = 3
+                evaluateActionVariety("CHANT", isOffensive = false)
+                typeDialogue("💚 CHANT DE RÉSISTANCE !", "Emprise -35 % et Régénération +18 PV pendant 3 tours !")
+                refreshHud(); executeWitchTurn(0.92f)
+            }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { topMargin = dp(4) })
+            actionsBox.addView(mRow)
+
+            // Row 3: Ultimates (Exorcisme 50 SP, Jugement / Surcharge Spirituelle 100 SP) + Back
+            val uRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            val canOverdrive = sp >= 100 && activeSpirit != ElementalSpirit.NONE
+            val canJudg = sp >= 100
+            val canExor = sp >= 50
+            uRow.addView(makeActionBtn(
+                when {
+                    canOverdrive -> "⚡ SURCHARGE ${activeSpirit.shortBadge} (100 SP)"
+                    canJudg -> "💥 JUGEMENT ULTIME (100 SP)"
+                    canExor -> "🌟 EXORCISME (50 SP)"
+                    else -> "🌟 Ultimes ($sp/50 SP)"
+                },
+                when {
+                    canOverdrive -> Color.rgb(192, 38, 211)
+                    canJudg -> Color.rgb(220, 38, 38)
+                    canExor -> Color.rgb(217, 119, 6)
+                    else -> Color.rgb(54, 50, 68)
+                }
             ) {
                 when {
-                    canJudg -> {
-                        sp = 0; witchShield = false; witchMirage = false; fogBlindTurns = 0
+                    canOverdrive -> {
+                        sp = 0; witchShield = false; witchMirage = false; witchThornCounter = false; fogBlindTurns = 0
+                        activeLaw = InquisitionLaw.NONE; lawTurns = 0; witchBurnTurns = 3
                         charmedTurns = 0; hypnoTurns = 0; sealedTurns = 0; siphonTurns = 0; healInvertTurns = 0
-                        embrace = (embrace - 60).coerceAtLeast(0); hp = (hp + 40).coerceAtMost(maxHp)
-                        val breakMul = if (witchStunTurns > 0) 2.0f else 1.25f
-                        val broke = applyPostureDamage(90)
-                        val dmgBoss = ((125 + playerLv * 2) * forgeAtkMul * comboMult * breakMul).toInt()
+                        embrace = (embrace - 70).coerceAtLeast(0); hp = (hp + 55).coerceAtMost(maxHp)
+                        val (elemMul, _) = WitchCombatSystem.spiritElementMultiplier(activeSpirit, curWitch.def)
+                        val broke = applyPostureDamage(120)
+                        val dmgBoss = ((165 + playerLv * 3) * forgeAtkMul * spiritPowerMult * elemMul * (if (witchStunTurns > 0) 2.0f else 1.35f)).toInt()
                         witchResolve = (witchResolve - dmgBoss).coerceAtLeast(0)
-                        stage.triggerWitchHitShake(critical = true); onVibrate(80L)
+                        stage.triggerWitchHitShake(critical = true); WitchCombatSystem.SoundFx.play(sfxOn, "break"); onVibrate(95L)
                         if (witchResolve <= 0) finishBattleVictory() else {
-                            speakAi("💥 JUGEMENT ULTIME (100 SP) !", EventKind.JUDGMENT_ULT, extraFooter = "-$dmgBoss Boss • +40 PV • Emprise -60 %${if (broke) " • 💥 RUPTURE !" else ""}")
+                            speakAi("⚡🌟 SURCHARGE SPIRITUELLE !", EventKind.OVERDRIVE_ULT, extraFooter = "-$dmgBoss Boss • +55 PV • -70 % Emprise • Brûlure 3t${if (broke) " • 💥 RUPTURE !" else ""}")
+                            refreshHud(); renderTurnControls()
+                        }
+                    }
+                    canJudg -> {
+                        sp = 0; witchShield = false; witchMirage = false; witchThornCounter = false; fogBlindTurns = 0
+                        charmedTurns = 0; hypnoTurns = 0; sealedTurns = 0; siphonTurns = 0; healInvertTurns = 0
+                        embrace = (embrace - 60).coerceAtLeast(0); hp = (hp + 45).coerceAtMost(maxHp)
+                        val broke = applyPostureDamage(95)
+                        val dmgBoss = ((135 + playerLv * 2) * forgeAtkMul * comboMult * (if (witchStunTurns > 0) 2.0f else 1.25f)).toInt()
+                        witchResolve = (witchResolve - dmgBoss).coerceAtLeast(0)
+                        stage.triggerWitchHitShake(critical = true); WitchCombatSystem.SoundFx.play(sfxOn, "break"); onVibrate(80L)
+                        if (witchResolve <= 0) finishBattleVictory() else {
+                            speakAi("💥 JUGEMENT ULTIME (100 SP) !", EventKind.JUDGMENT_ULT, extraFooter = "-$dmgBoss Boss • +45 PV • Emprise -60 %${if (broke) " • 💥 RUPTURE !" else ""}")
                             refreshHud(); renderTurnControls()
                         }
                     }
                     canExor -> {
-                        sp -= 50; witchShield = false; witchMirage = false; fogBlindTurns = 0
+                        sp -= 50; witchShield = false; witchMirage = false; witchThornCounter = false; fogBlindTurns = 0
+                        activeLaw = InquisitionLaw.NONE; lawTurns = 0
                         charmedTurns = 0; hypnoTurns = 0; sealedTurns = 0; siphonTurns = 0; healInvertTurns = 0
-                        embrace = (embrace - 45).coerceAtLeast(0); evaluateActionVariety("EXORCISM")
-                        val breakMul = if (witchStunTurns > 0) 2.0f else 1.0f
-                        val broke = applyPostureDamage(45)
-                        val dmgBoss = ((68 + playerLv) * forgeAtkMul * comboMult * breakMul).toInt()
+                        embrace = (embrace - 45).coerceAtLeast(0); evaluateActionVariety("EXORCISM", isOffensive = false)
+                        val broke = applyPostureDamage(50)
+                        val dmgBoss = ((74 + playerLv) * forgeAtkMul * comboMult * (if (witchStunTurns > 0) 2.0f else 1.0f)).toInt()
                         witchResolve = (witchResolve - dmgBoss).coerceAtLeast(0)
                         stage.triggerWitchHitShake(critical = true); onVibrate(55L)
                         if (witchResolve <= 0) finishBattleVictory() else {
-                            speakAi("🌟 SCEAU D'EXORCISME !", EventKind.EXORCISM_HIT, extraFooter = "-$dmgBoss Boss • -45 Posture • Tout purifié !${if (broke) " • 💥 RUPTURE !" else ""}")
+                            speakAi("🌟 SCEAU D'EXORCISME !", EventKind.EXORCISM_HIT, extraFooter = "-$dmgBoss Boss • -50 Posture • Tout purifié !${if (broke) " • 💥 RUPTURE !" else ""}")
                             refreshHud()
                             if (broke) renderTurnControls() else {
                                 val r = Runnable { executeWitchTurn(0.85f) }; pendingTurnRunnable = r; mainHandler.postDelayed(r, 700L)
                             }
                         }
                     }
-                    else -> typeDialogue("✨ SP insuffisants", "Charge 50 SP (Exorcisme) ou 100 SP (Jugement Ultime) !")
+                    else -> typeDialogue("✨ SP insuffisants", "Charge 50 SP (Exorcisme) ou 100 SP (Jugement / Surcharge Spirituelle) !")
                 }
-            }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(4); topMargin = dp(5) })
-            actionsBox.addView(r2)
+            }, LinearLayout.LayoutParams(0, dp(36), 1.45f).apply { marginEnd = dp(4); topMargin = dp(4) })
 
-            actionsBox.addView(makeActionBtn("↩ Retour", Color.rgb(42, 36, 56)) { renderTurnControls() }.apply {
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(34)).apply { topMargin = dp(5) }
-            })
+            uRow.addView(makeActionBtn("↩ Retour", Color.rgb(42, 36, 56)) { renderTurnControls() },
+                LinearLayout.LayoutParams(0, dp(36), 0.55f).apply { topMargin = dp(4) })
+            actionsBox.addView(uRow)
         }
 
-        fun showItemsMenu() {
+        fun showItemsMenu(page: Int = 0) {
             if (activeLaw == InquisitionLaw.NO_ITEMS && lawTurns > 0) {
                 typeDialogue("⚖️ SAC CONFISQUÉ !", "La Loi de ${curWitch.def.name} interdit les Reliques pendant encore $lawTurns tour(s) !")
                 return
             }
             val inv = rpgState.snapshot()
             actionsBox.removeAllViews()
-            val r1 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-            val healAmt = if (healInvertTurns > 0) 32 else 68
-            r1.addView(makeActionBtn("🧪 Élixir +$healAmt PV (${inv.elixirs})", if (inv.elixirs > 0) Color.rgb(16, 128, 96) else Color.rgb(52, 52, 66)) {
-                if (rpgState.consumeItem("elixir")) {
-                    hp = (hp + healAmt).coerceAtMost(maxHp)
-                    typeDialogue("🧪 Élixir", "+$healAmt PV !${if (healInvertTurns > 0) " (Réduit par Inversion de Soin !)" else ""}")
-                    refreshHud(); executeWitchTurn(0.88f)
-                }
-            }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(4) })
-            r1.addView(makeActionBtn("💎 Cristal +45 PM (${inv.crystals})", if (inv.crystals > 0) Color.rgb(37, 99, 235) else Color.rgb(52, 52, 66)) {
-                if (rpgState.consumeItem("crystal")) {
-                    mp = (mp + 45).coerceAtMost(maxMp); sp = (sp + 25).coerceAtMost(100); typeDialogue("💎 Cristal", "+45 PM & +25 SP !"); refreshHud(); executeWitchTurn(0.88f)
-                }
-            }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(4) })
-            actionsBox.addView(r1)
+            if (page == 0) {
+                val r1 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                val healAmt = if (healInvertTurns > 0) 34 else 74
+                r1.addView(makeActionBtn("🧪 Élixir +$healAmt (${inv.elixirs})", if (inv.elixirs > 0) Color.rgb(16, 128, 96) else Color.rgb(52, 52, 66)) {
+                    if (rpgState.consumeItem("elixir")) {
+                        relicsUsedThisFight++; hp = (hp + healAmt).coerceAtMost(maxHp)
+                        typeDialogue("🧪 Élixir", "+$healAmt PV !"); refreshHud(); executeWitchTurn(0.88f)
+                    }
+                }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginEnd = dp(4) })
+                r1.addView(makeActionBtn("💎 Cristal +48 PM (${inv.crystals})", if (inv.crystals > 0) Color.rgb(37, 99, 235) else Color.rgb(52, 52, 66)) {
+                    if (rpgState.consumeItem("crystal")) {
+                        relicsUsedThisFight++; mp = (mp + 48).coerceAtMost(maxMp); sp = (sp + 25).coerceAtMost(100)
+                        typeDialogue("💎 Cristal", "+48 PM & +25 SP !"); refreshHud(); executeWitchTurn(0.88f)
+                    }
+                }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginStart = dp(4) })
+                actionsBox.addView(r1)
 
-            val r2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-            r2.addView(makeActionBtn("📜 Talisman (${inv.talismans})", if (inv.talismans > 0) Color.rgb(217, 119, 6) else Color.rgb(52, 52, 66)) {
-                if (rpgState.consumeItem("talisman")) {
-                    captured = false; silkThreads = 0; embrace = (embrace - 50).coerceAtLeast(0); stage.triggerWitchHitShake()
-                    typeDialogue("📜 Talisman", "Liens & Fils pulvérisés ! Emprise -50 % !"); refreshHud(); renderTurnControls()
-                }
-            }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(4); topMargin = dp(4) })
-            r2.addView(makeActionBtn("🔮 Amulette (${inv.amulets})", if (inv.amulets > 0) Color.rgb(126, 34, 206) else Color.rgb(52, 52, 66)) {
-                if (rpgState.consumeItem("amulet")) {
-                    charmedTurns = 0; hypnoTurns = 0; sealedTurns = 0; siphonTurns = 0; healInvertTurns = 0; fogBlindTurns = 0; drainPct = 0
-                    try { onClearVisualDrain() } catch (_: Throwable) {}
-                    typeDialogue("🔮 Amulette", "Statuts, Siphon, Inversion, Brouillard & Drain purifiés ! ✨"); refreshHud(); renderTurnControls()
-                }
-            }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(4); topMargin = dp(4) })
-            actionsBox.addView(r2)
+                val r2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                r2.addView(makeActionBtn("📜 Talisman (${inv.talismans})", if (inv.talismans > 0) Color.rgb(217, 119, 6) else Color.rgb(52, 52, 66)) {
+                    if (rpgState.consumeItem("talisman")) {
+                        relicsUsedThisFight++; captured = false; captureStage = 0; silkThreads = 0; embrace = (embrace - 50).coerceAtLeast(0)
+                        stage.triggerWitchHitShake(); typeDialogue("📜 Talisman", "Liens pulvérisés ! Emprise -50 % !"); refreshHud(); renderTurnControls()
+                    }
+                }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginEnd = dp(4); topMargin = dp(4) })
+                r2.addView(makeActionBtn("🔮 Amulette (${inv.amulets})", if (inv.amulets > 0) Color.rgb(126, 34, 206) else Color.rgb(52, 52, 66)) {
+                    if (rpgState.consumeItem("amulet")) {
+                        relicsUsedThisFight++; charmedTurns = 0; hypnoTurns = 0; sealedTurns = 0; siphonTurns = 0; healInvertTurns = 0; fogBlindTurns = 0; drainPct = 0
+                        try { onClearVisualDrain() } catch (_: Throwable) {}
+                        typeDialogue("🔮 Amulette", "Statuts, Siphon & Drain purifiés ! ✨"); refreshHud(); renderTurnControls()
+                    }
+                }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginStart = dp(4); topMargin = dp(4) })
+                actionsBox.addView(r2)
 
-            val r3 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-            r3.addView(makeActionBtn("🕯️ Furie ×1.6 (${inv.incenses})", if (inv.incenses > 0) Color.rgb(190, 24, 93) else Color.rgb(52, 52, 66)) {
-                if (rpgState.consumeItem("incense")) {
-                    furyTurns = 3; typeDialogue("🕯️ Encens de Furie", "Attaques ×1.6 pendant 3 tours ! 🔥"); refreshHud(); renderTurnControls()
-                }
-            }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(4); topMargin = dp(4) })
-            r3.addView(makeActionBtn("🛡️ Égide (${inv.aegisVeils})", if (inv.aegisVeils > 0) Color.rgb(14, 116, 144) else Color.rgb(52, 52, 66)) {
-                if (rpgState.consumeItem("aegis")) {
-                    aegisActive = true; typeDialogue("🛡️ Voile d'Égide", "Absorbe 100 % de la prochaine attaque & sort système !"); refreshHud(); renderTurnControls()
-                }
-            }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(4); topMargin = dp(4) })
-            actionsBox.addView(r3)
+                val r3 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                r3.addView(makeActionBtn("🕯️ Furie ×1.6 (${inv.incenses})", if (inv.incenses > 0) Color.rgb(190, 24, 93) else Color.rgb(52, 52, 66)) {
+                    if (rpgState.consumeItem("incense")) {
+                        relicsUsedThisFight++; furyTurns = 3; typeDialogue("🕯️ Encens de Furie", "Attaques ×1.6 pendant 3 tours !"); refreshHud(); renderTurnControls()
+                    }
+                }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginEnd = dp(4); topMargin = dp(4) })
+                r3.addView(makeActionBtn("🛡️ Égide (${inv.aegisVeils})", if (inv.aegisVeils > 0) Color.rgb(14, 116, 144) else Color.rgb(52, 52, 66)) {
+                    if (rpgState.consumeItem("aegis")) {
+                        relicsUsedThisFight++; aegisActive = true; typeDialogue("🛡️ Voile d'Égide", "Absorbe 100 % du prochain assaut !"); refreshHud(); renderTurnControls()
+                    }
+                }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginStart = dp(4); topMargin = dp(4) })
+                actionsBox.addView(r3)
+            } else {
+                val r1 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                r1.addView(makeActionBtn("💣 Bombe Posture (${inv.postureBombs})", if (inv.postureBombs > 0) Color.rgb(234, 88, 12) else Color.rgb(52, 52, 66)) {
+                    if (rpgState.consumeItem("posture_bomb")) {
+                        relicsUsedThisFight++; witchShield = false; witchThornCounter = false
+                        val broke = applyPostureDamage(75)
+                        stage.triggerWitchHitShake(critical = true)
+                        typeDialogue("💣 BOMBE BRISE-POSTURE !", "-75 Posture Boss & Barrière/Épines brisées !${if (broke) " 💥 RUPTURE !" else ""}")
+                        refreshHud(); renderTurnControls()
+                    }
+                }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(4) })
+                r1.addView(makeActionBtn("💧 Eau Bénite (${inv.holyWaters})", if (inv.holyWaters > 0) Color.rgb(2, 132, 199) else Color.rgb(52, 52, 66)) {
+                    if (rpgState.consumeItem("holy_water")) {
+                        relicsUsedThisFight++; adaptiveBrain.resetAll(); battleWeather = BattleWeather.CLEAR; charmedTurns = 0; hypnoTurns = 0
+                        typeDialogue("💧 EAU BÉNITE !", "Résistance Adaptative ennemie remise à 0 % & Météo dissipée !")
+                        refreshHud(); renderTurnControls()
+                    }
+                }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(4) })
+                actionsBox.addView(r1)
 
-            actionsBox.addView(makeActionBtn("↩ Retour", Color.rgb(42, 36, 56)) { renderTurnControls() }.apply {
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(34)).apply { topMargin = dp(4) }
-            })
+                val r2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                r2.addView(makeActionBtn("⚡ Élixir Éther +100 SP (${inv.etherElixirs})", if (inv.etherElixirs > 0) Color.rgb(192, 38, 211) else Color.rgb(52, 52, 66)) {
+                    if (rpgState.consumeItem("ether_elixir")) {
+                        relicsUsedThisFight++; sp = 100
+                        WitchCombatSystem.SoundFx.play(sfxOn, "spirit")
+                        typeDialogue("⚡ ÉLIXIR D'ÉTHER !", "100 SP instantanés — Surcharge Spirituelle prête !")
+                        refreshHud(); renderTurnControls()
+                    }
+                }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(4); topMargin = dp(4) })
+                r2.addView(makeActionBtn("⏳ Sablier Répit (${inv.hourglasses})", if (inv.hourglasses > 0) Color.rgb(180, 83, 9) else Color.rgb(52, 52, 66)) {
+                    if (rpgState.consumeItem("hourglass")) {
+                        relicsUsedThisFight++; witchStunTurns = witchStunTurns.coerceAtLeast(1); embrace = (embrace - 35).coerceAtLeast(0)
+                        typeDialogue("⏳ SABLIER DE RÉPIT !", "${curWitch.def.name} est figée 1 tour & Emprise -35 % !")
+                        refreshHud(); renderTurnControls()
+                    }
+                }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(4); topMargin = dp(4) })
+                actionsBox.addView(r2)
+            }
+
+            val nav = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            nav.addView(makeActionBtn(if (page == 0) "▶ Reliques Rares (4)" else "◀ Reliques de Base (6)", Color.rgb(56, 44, 82)) {
+                showItemsMenu(if (page == 0) 1 else 0)
+            }, LinearLayout.LayoutParams(0, dp(34), 1.3f).apply { marginEnd = dp(4); topMargin = dp(4) })
+            nav.addView(makeActionBtn("↩ Retour", Color.rgb(42, 36, 56)) { renderTurnControls() },
+                LinearLayout.LayoutParams(0, dp(34), 0.7f).apply { topMargin = dp(4) })
+            actionsBox.addView(nav)
         }
 
         fun showRpMenu() {
@@ -1870,13 +2293,14 @@ class WitchRpgBattleOverlay(
         }
 
         fun applyTouchSabotageToButton(btn: Button, allowDodge: Boolean, allowFrost: Boolean, realAction: () -> Unit) {
+            val gaiaImmune = activeSpirit == ElementalSpirit.GAIA
             var dodgedOnce = false
-            var remainingFrost = if (allowFrost && frostButtonTaps > 0) frostButtonTaps else 0
+            var remainingFrost = if (!gaiaImmune && allowFrost && frostButtonTaps > 0) frostButtonTaps else 0
             val origLabel = btn.text.toString()
             if (remainingFrost > 0) btn.text = "❄️[$remainingFrost] $origLabel"
             btn.setOnClickListener {
                 if (turnLocked || inVideoTrance) return@setOnClickListener
-                if (allowDodge && dodgeButtonThisTurn && !dodgedOnce) {
+                if (!gaiaImmune && allowDodge && dodgeButtonThisTurn && !dodgedOnce) {
                     dodgedOnce = true; onVibrate(30L)
                     val dx = (if (Random.nextBoolean()) 1f else -1f) * dp(26).toFloat()
                     btn.animate().translationX(dx).translationY(-dp(12).toFloat()).setDuration(110L).withEndAction {
@@ -1924,25 +2348,29 @@ class WitchRpgBattleOverlay(
 
                 if (captured) {
                     val r1 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-                    val qteLabel = when (qteVarietyCounter % 4) {
-                        0 -> "🎯 Briser (Timing)"; 1 -> "🔮 Briser (Runes)"; 2 -> "✨ Briser (Orbes)"; else -> "⚡ Se débattre (QTE)"
+                    val qteLabel = when (qteVarietyCounter % 5) {
+                        0 -> "🎯 Briser (Timing)"
+                        1 -> "🔮 Briser (Runes)"
+                        2 -> "✨ Briser (Orbes)"
+                        3 -> "🧠 Briser (Pulsation)"
+                        else -> "⚡ Se débattre (QTE)"
                     }
                     r1.addView(makeActionBtn(qteLabel, Color.rgb(234, 88, 12)) { if (!turnLocked) startNextVariedQte() },
                         LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(4) })
 
                     if (inv.talismans > 0 && activeLaw != InquisitionLaw.NO_ITEMS) {
                         r1.addView(makeActionBtn("📜 Talisman (${inv.talismans})", Color.rgb(217, 119, 6)) {
-                            if (rpgState.consumeItem("talisman")) onQteSuccess(32)
+                            if (rpgState.consumeItem("talisman")) { relicsUsedThisFight++; onQteSuccess(34) }
                         }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(4) })
                     } else {
-                        r1.addView(makeActionBtn("🛡️ Endurer (+22 PM)", Color.rgb(37, 99, 235)) {
-                            guarding = true; mp = (mp + 22).coerceAtMost(maxMp); executeWitchTurn(0.80f)
+                        r1.addView(makeActionBtn("🛡️ Endurer (+24 PM)", Color.rgb(37, 99, 235)) {
+                            guarding = true; mp = (mp + 24).coerceAtMost(maxMp); executeWitchTurn(0.80f)
                         }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(4) })
                     }
                     actionsBox.addView(r1)
 
                     val r2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-                    r2.addView(makeActionBtn("🎒 Reliques (${inv.totalItems})", Color.rgb(79, 70, 229)) { showItemsMenu() },
+                    r2.addView(makeActionBtn("🎒 Reliques (${inv.totalItems})", Color.rgb(79, 70, 229)) { showItemsMenu(0) },
                         LinearLayout.LayoutParams(0, dp(38), 0.45f).apply { marginEnd = dp(4); topMargin = dp(5) })
                     r2.addView(makeActionBtn("💖 Céder au Drainage Final", Color.rgb(162, 28, 175)) {
                         embrace = 100; hp = 0; startCinematicDrainEndScene()
@@ -1959,66 +2387,52 @@ class WitchRpgBattleOverlay(
                     }
 
                     val strikeForbidden = activeLaw == InquisitionLaw.NO_STRIKE && lawTurns > 0
-                    val strikeBtn = makeActionBtn(
+                    val artsBtn = makeActionBtn(
                         when {
-                            strikeForbidden -> "⚖️ Frappe (INTERDITE !)"
+                            strikeForbidden -> "⚖️ Arts Épée (LOI !)"
                             isCharmed -> "💖 Obéir (Charmé !)"
-                            else -> "⚔️ Frappe (+18 SP)"
+                            witchThornCounter -> "🌹 Arts (ÉPINES !)"
+                            else -> "⚔️ Arts de l'Épée ▾"
                         },
                         when {
                             strikeForbidden -> Color.rgb(120, 53, 15)
                             isCharmed -> Color.rgb(192, 38, 211)
+                            witchThornCounter -> Color.rgb(159, 18, 57)
                             else -> Color.rgb(225, 29, 72)
                         }
                     ) {}
-                    applyTouchSabotageToButton(strikeBtn, allowDodge = true, allowFrost = true) {
-                        if (checkLawViolation(InquisitionLaw.NO_STRIKE)) return@applyTouchSabotageToButton
+                    applyTouchSabotageToButton(artsBtn, allowDodge = true, allowFrost = true) {
                         if (isCharmed) {
                             charmedTurns = 0
-                            // Charmer passive: attacking under Charm can heal her!
                             if (curWitch.def.archetype == WitchCatalog.Archetype.CHARMER && Random.nextBoolean()) {
                                 witchResolve = (witchResolve + 35).coerceAtMost(witchMaxResolve)
-                                typeDialogue("💖 ENVOÛTEMENT !", "Sous son charme, ton coup hésite et nourrit son aura (+35 Boss) ! Utilise 🧘 Méditation !")
+                                typeDialogue("💖 ENVOÛTEMENT !", "Sous son charme, ton coup hésite et nourrit son aura (+35 Boss) ! Utilise 💧 Ondine ou 🧘 Méditation !")
                                 val r = Runnable { executeWitchTurn(1.15f) }; pendingTurnRunnable = r; mainHandler.postDelayed(r, 650L)
                             } else {
                                 executeWitchTurn(1.25f)
                             }
                         } else {
-                            sp = (sp + 18 + forgeSpBonus).coerceAtMost(100)
-                            val (vMul, spammed) = evaluateActionVariety("STRIKE")
-                            if (witchMirage && Random.nextBoolean()) {
-                                typeDialogue("🪞 MIRAGE !", "Ta frappe traverse un clone ! Utilise 🧘 Méditation ou 🌟 Exorcisme !")
-                                val r = Runnable { executeWitchTurn(1.0f) }; pendingTurnRunnable = r; mainHandler.postDelayed(r, 650L); return@applyTouchSabotageToButton
-                            }
-                            val postureMul = if (witchStunTurns > 0) 2.0f else if (witchPosture > 0) 0.58f else 1.25f
-                            val shieldMul = if (witchShield) 0.30f else 1.0f
-                            val furyMul = if (furyTurns > 0) 1.6f else 1.0f
-                            val stormMul = if (runicStormActive) 1.5f else 1.0f; runicStormActive = false
-                            val crit = Random.nextFloat() < 0.20f
-                            val dmgBoss = ((Random.nextInt(22, 32) + playerLv / 3) * forgeAtkMul * vMul * postureMul * shieldMul * furyMul * stormMul * (if (crit) 1.45f else 1f)).toInt().coerceAtLeast(5)
-                            witchResolve = (witchResolve - dmgBoss).coerceAtLeast(0)
-                            val broke = applyPostureDamage(if (vMul >= 1.4f) 24 else 14)
-                            stage.triggerWitchHitShake(critical = crit || broke || witchStunTurns > 0); onVibrate(22L)
-                            if (witchResolve <= 0) finishBattleVictory()
-                            else if (broke) {
-                                speakAi("💥 RUPTURE DE POSTURE !", EventKind.SHIELD_BREAK, extraFooter = "-$dmgBoss Boss • ÉTOURDIE 2 TOURS (×2.0 Dégâts !)")
-                                refreshHud(); renderTurnControls()
-                            } else executeWitchTurn(if (spammed) 1.25f else 1.0f, forcedSpamCounter = spammed)
+                            showSwordArtsMenu()
                         }
                     }
 
-                    val skillsBtn = makeActionBtn(
-                        when { sp >= 100 -> "💥 Sorts · JUGEMENT !"; sp >= 50 -> "🌟 Sorts · EXORCISME !"; else -> "🔥 Sorts & Contre ▾" },
-                        if (sp >= 50) Color.rgb(217, 119, 6) else Color.rgb(234, 88, 12)
-                    ) { if (!turnLocked) showSkillsMenu() }
+                    val spiritsBtn = makeActionBtn(
+                        when {
+                            sp >= 100 && activeSpirit != ElementalSpirit.NONE -> "⚡ Esprits · SURCHARGE !"
+                            sp >= 100 -> "💥 Esprits · JUGEMENT !"
+                            sp >= 50 -> "🌟 Esprits · EXORCISME !"
+                            else -> "🌀 Esprits & Magie ▾"
+                        },
+                        if (sp >= 50) Color.rgb(217, 119, 6) else Color.rgb(14, 116, 144)
+                    ) { if (!turnLocked) showSpiritsAndMagicMenu() }
 
                     val guardForbidden = activeLaw == InquisitionLaw.NO_GUARD && lawTurns > 0
-                    val guardHighlight = !guardForbidden && fogBlindTurns == 0 && (plannedIntent.attack.kind == AttackKind.ULTIMATE || plannedIntent.attack.kind == AttackKind.TIME_DOUBLE)
+                    val guardHighlight = !guardForbidden && fogBlindTurns == 0 && (plannedIntent.attack.kind == AttackKind.ULTIMATE || plannedIntent.attack.kind == AttackKind.TIME_DOUBLE || plannedIntent.attack.kind == AttackKind.ARMOR_BREAK)
                     val guardBtn = makeActionBtn(
                         when {
-                            guardForbidden -> "⚖️ Garde (INTERDITE)"
-                            guardHighlight -> "🛡️ PARADE ! (+22 PM)"
-                            else -> "🛡️ Garde (+22 PM)"
+                            guardForbidden -> "⚖️ Garde (LOI)"
+                            guardHighlight -> "🛡️ PARADE ! (+24 PM)"
+                            else -> "🛡️ Garde (+24 PM)"
                         },
                         when {
                             guardForbidden -> Color.rgb(120, 53, 15)
@@ -2028,20 +2442,20 @@ class WitchRpgBattleOverlay(
                     ) {}
                     applyTouchSabotageToButton(guardBtn, allowDodge = dominanceTierFor(playerLv) >= 2, allowFrost = false) {
                         if (checkLawViolation(InquisitionLaw.NO_GUARD)) return@applyTouchSabotageToButton
-                        guarding = true; mp = (mp + 22).coerceAtMost(maxMp); evaluateActionVariety("GUARD"); executeWitchTurn(1.0f)
+                        guarding = true; mp = (mp + 24).coerceAtMost(maxMp); evaluateActionVariety("GUARD", isOffensive = false); executeWitchTurn(1.0f)
                     }
 
                     val bagLocked = activeLaw == InquisitionLaw.NO_ITEMS && lawTurns > 0
                     val itemsBtn = makeActionBtn(
                         if (bagLocked) "🔒 Sac (${lawTurns}t)" else "🎒 Sac (${inv.totalItems})",
                         if (bagLocked) Color.rgb(65, 55, 72) else Color.rgb(79, 70, 229)
-                    ) { if (!turnLocked) showItemsMenu() }
+                    ) { if (!turnLocked) showItemsMenu(0) }
                     val rpBtn = makeActionBtn("💬 RP", Color.rgb(126, 34, 206)) { if (!turnLocked) showRpMenu() }
                     val yieldBtn = makeActionBtn("💖", Color.rgb(98, 22, 108)) {
                         if (!turnLocked) { embrace = 100; hp = 0; startCinematicDrainEndScene() }
                     }
 
-                    val topPair = if (scrambleButtonsThisTurn) listOf(skillsBtn, strikeBtn) else listOf(strikeBtn, skillsBtn)
+                    val topPair = if (scrambleButtonsThisTurn) listOf(spiritsBtn, artsBtn) else listOf(artsBtn, spiritsBtn)
                     val r1 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
                     r1.addView(topPair[0], LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(4) })
                     r1.addView(topPair[1], LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(4) })
@@ -2062,24 +2476,54 @@ class WitchRpgBattleOverlay(
         onMountFullscreen(root)
         refreshHud()
 
+        val recSpirit = WitchCombatSystem.recommendedSpiritFor(curWitch.def)
         val introExtra = buildString {
             append("📌 ${WitchCombatAi.archetypePassiveSummary(curWitch.def.archetype)}")
-            append("\n${WitchCombatAi.tacticalWeaknessLabel(curWitch.def.archetype)}")
+            append("\n${WitchCombatAi.tacticalWeaknessLabel(curWitch.def.archetype)} • Esprit conseillé : ${recSpirit.displayName}")
             if (battleMods.introContextLine.isNotBlank()) append("\n${battleMods.introContextLine}")
             if (battleMods.surpriseBossDmg > 0) append("\n⚡ Attaque surprise : -${battleMods.surpriseBossDmg} Résolution !")
             if (initialThreatApp != null && allowMidAppPowers && DemonMdmManager.hasPrivilegedControl(context)) {
                 append("\n👁️ Elle guette ton appli « $initialThreatApp »…")
             }
         }
-        speakAi(curWitch.profile.name, EventKind.INTRO, extraFooter = introExtra)
-        renderTurnControls()
-        onVibrate(65L)
 
-        if (battleMods.forcedAppRaid || dominanceTierFor(playerLv) >= 3) {
-            mainHandler.postDelayed({
-                if (sessionActive && !inEndScene) triggerMidBattleAppHostage("🚨 PLEINS POUVOIRS DU COVEN :")
-            }, 1_600L)
+        fun beginActualBattleTurn() {
+            speakAi(curWitch.profile.name, EventKind.INTRO, extraFooter = introExtra)
+            renderTurnControls()
+            onVibrate(65L)
+            if (battleMods.forcedAppRaid || dominanceTierFor(playerLv) >= 3) {
+                mainHandler.postDelayed({
+                    if (sessionActive && !inEndScene) triggerMidBattleAppHostage("🚨 PLEINS POUVOIRS DU COVEN :")
+                }, 1_600L)
+            }
         }
+
+        // Pre-Battle 3-Beat Visual Novel Story Cutscene (1-tap readable or skippable!)
+        val cutscene = WitchLoreAndCampaign.buildPreBattleCutscene(
+            def = curWitch.def,
+            bondLevel = rpgState.getBondLevel(curWitch.def.id),
+            corruption = rSnap0.corruption,
+            demonName = cfg.avatarName,
+            threatApp = initialThreatApp
+        )
+        var beatIdx = 0
+        fun renderCutsceneBeat() {
+            if (!sessionActive || inEndScene) return
+            val (spkr, txt) = cutscene.beats[beatIdx]
+            typeDialogue(spkr, txt)
+            actionsBox.removeAllViews()
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            val nextLabel = if (beatIdx < cutscene.beats.size - 1) "Suite ▶ (${beatIdx + 1}/${cutscene.beats.size})" else "⚔️ ENGAGER LE DUEL !"
+            row.addView(makeActionBtn(nextLabel, Color.rgb(162, 28, 175)) {
+                beatIdx++
+                if (beatIdx >= cutscene.beats.size) beginActualBattleTurn() else renderCutsceneBeat()
+            }, LinearLayout.LayoutParams(0, dp(42), 1.35f).apply { marginEnd = dp(4) })
+            row.addView(makeActionBtn("⏩ Passer", Color.rgb(48, 40, 68)) {
+                beginActualBattleTurn()
+            }, LinearLayout.LayoutParams(0, dp(42), 0.65f).apply { marginStart = dp(4) })
+            actionsBox.addView(row)
+        }
+        renderCutsceneBeat()
     }
 
     private fun makeActionBtn(label: String, bgColor: Int, onClick: () -> Unit): Button = Button(context).apply {

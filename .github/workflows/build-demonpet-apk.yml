@@ -113,13 +113,14 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: demonmom-v9.0.${{ github.run_number }}
-          name: "DemonMom RPG v9.0.${{ github.run_number }} (12 Pouvoirs Shizuku • Pactes Maudits & 4e QTE • Petit Démon 100% Shizuku/Accessibilité sans faux positifs notifs)"
+          tag_name: demonmom-v10.0.${{ github.run_number }}
+          name: "DemonMom RPG v10.0.${{ github.run_number }} (Refonte Complète 15h+ • 4 Esprits MGQ • 16 Compétences • 55 Sorcières & 5 Superboss • Donjons 5 Salles • Évolution Petit Démon & Focus Shizuku)"
           body: |
-            ### DemonMom RPG v9.0 (`demonmom-v9.0.${{ github.run_number }}`)
-            - **12 Pouvoirs Shizuku concrets & 100 % réversibles** : Épinglage plein écran (`am task lock`), Ralentissement Android ×3,5, Illusion Batterie 3 %, Distorsion Zoom DPI, Double Otage d'applis, Disparition d'appli (`pm disable-user`), Isolement Notifs + DND, Sceau Micro & Presse-papiers, Mode Éclipse Sombre/Éco, Claquement d'écran, Force-Stop + Rappel jeu, Auto-octroi des 4 permissions spéciales !
-            - **Nouveautés RPG Sorcières** : Pactes Maudits de Phase 2 (dilemme tactique), 4e QTE d'évasion « Chasse aux Orbes d'Hypnose », indice Faiblesse Tactique en début de duel !
-            - **Petit Démon réparé** : Zéro panique sur les notifications, horloge, MIUI security ou batterie — 100 % recentré sur **Shizuku + Accessibilité** !
+            ### DemonMom RPG v10.0 — Édition Grimoire de l'Éclipse (`demonmom-v10.0.${{ github.run_number }}`)
+            **Plus de 55 nouvelles fonctionnalités majeures — un vrai RPG tactique 15 h+ façon Monster Girl Quest + Petit Démon Shizuku/Accessibilité ultime :**
+            - **⚔️ Combats Longs, Difficiles & Vrai Anti-Spam (Style MGQ)** : **4 Esprits Élémentaires** (*Zéphyr*, *Gaïa*, *Ondine*, *Ignis*) avec faiblesses ×1.55 et passifs continus, **16 Compétences Joueur** (*Arts de l'Épée*, *Esprits & Magie*, *Surcharge Spirituelle 100 SP*), **Résistance Adaptative ennemie (-35% → -80% anti-spam + contre)**, **10 attaques uniques par Sorcière** (dont *Riposte Épineuse*, *Altération Météo*, *Capture Stade 1→2*, *Brise-Volonté*), **5 QTE d'évasion** (*Timing*, *Runes*, *Chasse aux Orbes*, *Pulsation Mentale*, *Martèlement*), **Pactes Maudits Phase 2** et **10 Reliques tactiques** !
+            - **📖 Campagne 15 h+ & Histoires Cohérentes** : **55 Sorcières** (50 Campagne + **5 Superboss Éveillés #51–55** jusqu'à 1980 Résolution), cinématiques Visual Novel cohérentes avant duel (3 temps), biographie + **5 chapitres de Lien d'Âme** par Sorcière, **Expéditions Donjon 5 Salles** liées, **12 Contrats Tactiques**, **24 Titres à bonus permanents**, **6 Équipements Forge Nv.1→15**, **Pacte Quotidien 7 jours** et **5 Fins distinctes** !
+            - **😈 Sanctuaire du Petit Démon (100 % Shizuku & Accessibilité, zéro faux positifs notifs)** : **4 Formes Évolutives** (*Diablotin → Seigneur de l'Éclipse*), jauges *Affection/Faim/XP*, interventions directes en combat, **Menu Rapide flottant par double-tap**, **Mode Focus/Travail Shizuku (15/30/60 min)**, **Radar Top-8 Applis Shizuku**, **Quiz Grimoire 50 questions**, **Pierre-Feuille-Ciseaux**, **Heures Calmes 23h–7h**, **6 Farces Shizuku auto-réversibles** et les **12 Pouvoirs Système Shizuku** (dont Épinglage `am task lock` & Transe Vidéo Forcée) !
 
             Refonte tactique majeure — **Vraies logiques de combat par Sorcière, Attaques Système Concrètes & Vidéo Forcée impossible à quitter pendant qu'elle agit en arrière-plan** :
 

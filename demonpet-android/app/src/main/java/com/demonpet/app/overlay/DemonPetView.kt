@@ -42,7 +42,8 @@ class DemonPetView(
     private val onDragRelease: (vxPxPerSec: Float, vyPxPerSec: Float, wasTap: Boolean) -> Unit,
     private val onGentlePet: () -> Unit,
     private val onSecretTwentyTaps: () -> Unit,
-    private val onDodgeJump: () -> Unit = {}
+    private val onDodgeJump: () -> Unit = {},
+    private val onDoubleTapMenu: () -> Unit = {}
 ) : View(context) {
 
     enum class PetPose {
@@ -63,6 +64,7 @@ class DemonPetView(
     var animPhase: Float = 0f
     var curfewNightcap: Boolean = false
     var seductionAuraActive: Boolean = false
+    var evolutionTier: Int = 0 // 0=Diablotin, 1=Gardien Cornu, 2=Archidémon, 3=Seigneur de l'Éclipse
     var speechText: String = ""
     var speechUntilMs: Long = 0L
     var heartUntilMs: Long = 0L
@@ -280,6 +282,14 @@ class DemonPetView(
                         if (secretTapCount == 1) {
                             showHeart()
                             onGentlePet()
+                        } else if (secretTapCount == 2) {
+                            val checkMs = now
+                            postDelayed({
+                                if (secretTapCount == 2 && lastTapMs == checkMs) {
+                                    secretTapCount = 0
+                                    onDoubleTapMenu()
+                                }
+                            }, 460L)
                         } else if (secretTapCount in 14..19) {
                             say("${secretTapCount}/20… 👀", 1_100L)
                         }
@@ -332,7 +342,28 @@ class DemonPetView(
             else -> sin(animPhase * 0.5f) * 1.3f
         }
 
-        // Ground contact shadow
+        // Ground contact shadow + Evolution Aura Ring (Tier 1..3!)
+        if (evolutionTier >= 1) {
+            val auraCol = when (evolutionTier) {
+                3 -> Color.argb(125, 250, 204, 21)
+                2 -> Color.argb(115, 244, 63, 94)
+                else -> Color.argb(95, 192, 132, 252)
+            }
+            val auraRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.style = Paint.Style.STROKE
+                strokeWidth = (1.6f + evolutionTier * 0.6f) * density
+                color = auraCol
+            }
+            val rAura = bodyW * (0.48f + sin(animPhase * 1.4f) * 0.04f)
+            canvas.drawCircle(cx, topY + bodyH * 0.48f + hoverDy, rAura, auraRing)
+            if (evolutionTier >= 3) {
+                val sparkP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(254, 240, 138) }
+                for (i in 0 until 4) {
+                    val ang = animPhase * 1.2f + i * (Math.PI.toFloat() * 0.5f)
+                    canvas.drawCircle(cx + cos(ang) * rAura, topY + bodyH * 0.48f + hoverDy + sin(ang) * rAura * 0.45f, 2.8f * density, sparkP)
+                }
+            }
+        }
         if (pose != PetPose.DRAGGED && pose != PetPose.HANGING_TOP) {
             val groundShadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 shader = RadialGradient(

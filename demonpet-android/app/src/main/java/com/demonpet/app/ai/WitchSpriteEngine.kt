@@ -42,11 +42,15 @@ object WitchSpriteEngine {
         ENCHANT_CHARM,
         ENCHANT_HYPNO,
         BIND_CAPTURE,
+        BIND_ESCALATE,
         SEAL_MAGIC,
         SIPHON_DRAIN,
         BARRIER_SHIELD,
+        THORN_COUNTER,
         MIRAGE_CLONE,
         TIME_DOUBLE,
+        WEATHER_SHIFT,
+        ARMOR_BREAK,
         ULTIMATE
     }
 
@@ -352,18 +356,18 @@ object WitchSpriteEngine {
         val s2 = def.skillNames.getOrElse(2) { "Drain d'Aura" }
         val drainBonus = if (def.archetype == WitchCatalog.Archetype.DRAINER || def.isBoss) 1 else 0
 
-        // 6 Diverse Tactical Spells & Enchantments per Witch (no repetitive spam!)
+        // 10 Diverse Tactical MGQ-Grade Spells, Counters, Holds & Weather Arts per Witch!
         val attacks = ArrayList<WitchAttack>().apply {
             // 1. Signature Elemental Strike
             add(
                 WitchAttack(
                     name = "$s0 ✨",
-                    hpDamage = (15 * chScale).toInt().coerceIn(12, 34),
-                    embraceGain = (14 * chScale).toInt().coerceIn(12, 28),
+                    hpDamage = (17 * chScale).toInt().coerceIn(13, 42),
+                    embraceGain = (15 * chScale).toInt().coerceIn(12, 32),
                     levelDrain = 0,
                     statusEffect = "",
                     kind = AttackKind.STRIKE,
-                    telegraphHint = "⚔️ Prépare « $s0 » (Contre-Sceau ou Garde conseillé)"
+                    telegraphHint = "⚔️ Prépare « $s0 » (Contre-Sceau ou Esquive Zéphyr !)"
                 )
             )
             // 2. Enchantment (Charm OR Hypnosis)
@@ -371,127 +375,164 @@ object WitchSpriteEngine {
                 add(
                     WitchAttack(
                         name = "🌀 Spirale de $s2",
-                        hpDamage = (13 * chScale).toInt().coerceIn(10, 28),
-                        embraceGain = (20 * chScale).toInt().coerceIn(16, 36),
+                        hpDamage = (14 * chScale).toInt().coerceIn(11, 32),
+                        embraceGain = (22 * chScale).toInt().coerceIn(18, 40),
                         levelDrain = 1,
                         statusEffect = "HYPNOTIZED",
                         kind = AttackKind.ENCHANT_HYPNO,
-                        telegraphHint = "🌀 Tisse une Hypnose ! (🧘 Méditation bloque l'envoûtement !)"
+                        telegraphHint = "🌀 Tisse une Hypnose ! (💧 Ondine ou 🧘 Méditation immunise !)"
                     )
                 )
             } else {
                 add(
                     WitchAttack(
                         name = "💖 Envoûtement : $s0",
-                        hpDamage = (12 * chScale).toInt().coerceIn(10, 26),
-                        embraceGain = (21 * chScale).toInt().coerceIn(18, 38),
+                        hpDamage = (13 * chScale).toInt().coerceIn(11, 30),
+                        embraceGain = (23 * chScale).toInt().coerceIn(18, 42),
                         levelDrain = 0,
                         statusEffect = "CHARMED",
                         kind = AttackKind.ENCHANT_CHARM,
-                        telegraphHint = "💖 Prépare un Envoûtement Charme ! (🧘 Méditation ou 🔮 Amulette !)"
+                        telegraphHint = "💖 Prépare un Envoûtement Charme ! (💧 Ondine ou 🧘 Méditation !)"
                     )
                 )
             }
-            // 3. Binding / Capture Attempt
+            // 3. Binding / Capture Initiation (MGQ Stage 1 Bind)
             add(
                 WitchAttack(
                     name = "⛓️ Capture : $s1",
-                    hpDamage = (17 * chScale).toInt().coerceIn(14, 34),
-                    embraceGain = (24 * chScale).toInt().coerceIn(20, 40),
+                    hpDamage = (18 * chScale).toInt().coerceIn(15, 38),
+                    embraceGain = (25 * chScale).toInt().coerceIn(20, 44),
                     levelDrain = 1,
                     statusEffect = "CAPTURE",
                     kind = AttackKind.BIND_CAPTURE,
-                    telegraphHint = "⛓️ Va tenter une CAPTURE ! (⚡ Contre-Sceau ou 🛡️ Voile d'Égide !)"
+                    telegraphHint = "⛓️ Va tenter une CAPTURE ! (⚡ Contre-Sceau ou 💧 Ondine !)"
                 )
             )
-            // 4. Archetype Specialty #1 (Barrier Shield OR Mirage Clone OR Time Double)
+            // 4. Deep Capture Hold Escalation (MGQ Stage 2 Bind Technique — brutal when player is already captured!)
+            add(
+                WitchAttack(
+                    name = "💜 Étreinte Profonde : $s1",
+                    hpDamage = (22 * chScale).toInt().coerceIn(18, 46),
+                    embraceGain = (30 * chScale).toInt().coerceIn(24, 52),
+                    levelDrain = 1 + drainBonus,
+                    statusEffect = "CAPTURE",
+                    kind = AttackKind.BIND_ESCALATE,
+                    telegraphHint = "💜 Resserre son Étreinte Profonde ! Libère-toi vite (QTE / 📜 Talisman) !"
+                )
+            )
+            // 5. Archetype Specialty #1 (Mirage OR Time Double OR Barrier)
             when (def.archetype) {
                 WitchCatalog.Archetype.ILLUSIONIST, WitchCatalog.Archetype.CHARMER -> add(
                     WitchAttack(
                         name = "🪞 Mirage de ${def.name}",
-                        hpDamage = (11 * chScale).toInt().coerceIn(8, 22),
-                        embraceGain = (14 * chScale).toInt().coerceIn(12, 24),
+                        hpDamage = (12 * chScale).toInt().coerceIn(9, 26),
+                        embraceGain = (16 * chScale).toInt().coerceIn(12, 28),
                         levelDrain = 0,
                         statusEffect = "",
                         kind = AttackKind.MIRAGE_CLONE,
-                        telegraphHint = "🪞 Invoque un Double Mirage ! (🌟 Exorcisme ou 🧘 Méditation perce l'illusion)"
+                        telegraphHint = "🪞 Invoque un Double Mirage ! (🌬️ Zéphyr, 🌟 Exorcisme ou 🧘 Méditation perce !)"
                     )
                 )
                 WitchCatalog.Archetype.CHRONO, WitchCatalog.Archetype.SOVEREIGN -> add(
                     WitchAttack(
                         name = "⏳ Double Écho : $s2",
-                        hpDamage = (21 * chScale).toInt().coerceIn(18, 42),
-                        embraceGain = (20 * chScale).toInt().coerceIn(16, 36),
+                        hpDamage = (24 * chScale).toInt().coerceIn(19, 48),
+                        embraceGain = (22 * chScale).toInt().coerceIn(18, 40),
                         levelDrain = 1,
                         statusEffect = "",
                         kind = AttackKind.TIME_DOUBLE,
-                        telegraphHint = "⏳ Distorsion Temporelle (Double Frappe) ! (🛡️ Garde fortement conseillée !)"
+                        telegraphHint = "⏳ Distorsion Temporelle (Double Frappe) ! (🛡️ GARDE PARFAITE conseillée !)"
                     )
                 )
                 else -> add(
                     WitchAttack(
                         name = "🛡️ Barrière Runique de ${def.element}",
-                        hpDamage = (10 * chScale).toInt().coerceIn(8, 20),
-                        embraceGain = (12 * chScale).toInt().coerceIn(10, 22),
+                        hpDamage = (11 * chScale).toInt().coerceIn(9, 24),
+                        embraceGain = (13 * chScale).toInt().coerceIn(10, 26),
                         levelDrain = 0,
                         statusEffect = "",
                         kind = AttackKind.BARRIER_SHIELD,
-                        telegraphHint = "🛡️ Érige une Barrière Runique ! (🔥 Lame Spirituelle la brise + ÉTOURDI !)"
+                        telegraphHint = "🛡️ Érige une Barrière Runique ! (🔥 Fente Brise-Garde = ÉTOURDIE !)"
                     )
                 )
             }
-            // 5. Siphon Mark (Drains HP & Heals Witch each turn!)
+            // 6. Siphon Mark (Drains HP & Heals Witch each turn!)
             add(
                 WitchAttack(
                     name = "🩸 Siphon : $s2",
-                    hpDamage = (16 * chScale).toInt().coerceIn(13, 32),
-                    embraceGain = (18 * chScale).toInt().coerceIn(15, 32),
+                    hpDamage = (18 * chScale).toInt().coerceIn(14, 38),
+                    embraceGain = (19 * chScale).toInt().coerceIn(16, 36),
                     levelDrain = 1 + drainBonus,
                     statusEffect = "SIPHON",
                     kind = AttackKind.SIPHON_DRAIN,
-                    telegraphHint = "🩸 Prépare une Marque de Siphon ! (Purifie avec 🔮 Amulette ou 🌟 Exorcisme)"
+                    telegraphHint = "🩸 Marque de Siphon ! (🔥 Ignis coupe ses soins, 🔮 Amulette purifie !)"
                 )
             )
-            // 6. Seal Magic (Inquisitor / Boss / High-chapter) OR Hypnosis
-            if (def.archetype == WitchCatalog.Archetype.INQUISITOR || def.isBoss || def.isMiniBoss) {
-                add(
-                    WitchAttack(
-                        name = "🔒 Sceau d'Interdiction",
-                        hpDamage = (18 * chScale).toInt().coerceIn(14, 34),
-                        embraceGain = (16 * chScale).toInt().coerceIn(14, 30),
-                        levelDrain = 1,
-                        statusEffect = "SEALED",
-                        kind = AttackKind.SEAL_MAGIC,
-                        telegraphHint = "🔒 Va SCELLER tes sorts PM ! (🧘 Méditation te protège 1 tour !)"
-                    )
+            // 7. Thorn Counter Stance (MGQ-style Trap: attacking directly reflects damage! Dispel with Brise-Sort or Guard!)
+            add(
+                WitchAttack(
+                    name = "🌹 Riposte Épineuse de ${def.name}",
+                    hpDamage = (10 * chScale).toInt().coerceIn(8, 22),
+                    embraceGain = (14 * chScale).toInt().coerceIn(12, 26),
+                    levelDrain = 0,
+                    statusEffect = "",
+                    kind = AttackKind.THORN_COUNTER,
+                    telegraphHint = "🌹 Posture de RIPOSTE ÉPINEUSE ! Ne frappe pas direct — utilise 🌀 Brise-Sort ou 🛡️ Garde !"
                 )
-            } else {
-                add(
-                    WitchAttack(
-                        name = "🛡️ Barrière d'Éclipse",
-                        hpDamage = (12 * chScale).toInt().coerceIn(10, 24),
-                        embraceGain = (14 * chScale).toInt().coerceIn(12, 26),
-                        levelDrain = 0,
-                        statusEffect = "",
-                        kind = AttackKind.BARRIER_SHIELD,
-                        telegraphHint = "🛡️ Va activer une Barrière ! (🔥 Lame Spirituelle = Brise-Garde !)"
-                    )
+            )
+            // 8. Seal Magic / Inquisition Decree
+            add(
+                WitchAttack(
+                    name = "🔒 Sceau d'Interdiction : ${def.element}",
+                    hpDamage = (19 * chScale).toInt().coerceIn(15, 40),
+                    embraceGain = (18 * chScale).toInt().coerceIn(15, 34),
+                    levelDrain = 1,
+                    statusEffect = "SEALED",
+                    kind = AttackKind.SEAL_MAGIC,
+                    telegraphHint = "🔒 Va SCELLER tes sorts PM ! (🧘 Méditation protège 1 tour !)"
                 )
-            }
+            )
+            // 9. Armor-Break / Guard-Crushing Heavy Spell
+            add(
+                WitchAttack(
+                    name = "💥 Brise-Volonté : $s0",
+                    hpDamage = (25 * chScale).toInt().coerceIn(20, 52),
+                    embraceGain = (20 * chScale).toInt().coerceIn(16, 36),
+                    levelDrain = 1,
+                    statusEffect = "",
+                    kind = AttackKind.ARMOR_BREAK,
+                    telegraphHint = "💥 Frappe lourde Brise-Volonté ! (🪨 Gaïa ou 🛡️ Égide absorbe l'impact !)"
+                )
+            )
+            // 10. Battlefield Weather / Eclipse Domain Shift!
+            add(
+                WitchAttack(
+                    name = "🌑 Domaine de ${def.element}",
+                    hpDamage = (14 * chScale).toInt().coerceIn(11, 30),
+                    embraceGain = (18 * chScale).toInt().coerceIn(14, 34),
+                    levelDrain = 0,
+                    statusEffect = "",
+                    kind = AttackKind.WEATHER_SHIFT,
+                    telegraphHint = "🌑 Altère la Météo du Sanctuaire ! Prépare-toi à adapter tes Esprits !"
+                )
+            )
         }
 
         val ultimate = WitchAttack(
             name = "👑 ${def.ultimateName}",
-            hpDamage = (32 * chScale).toInt().coerceIn(28, 62),
-            embraceGain = (34 * chScale).toInt().coerceIn(28, 56),
+            hpDamage = (36 * chScale).toInt().coerceIn(30, 78),
+            embraceGain = (36 * chScale).toInt().coerceIn(30, 62),
             levelDrain = (2 + drainBonus).coerceAtMost(4),
             statusEffect = if (def.isBoss || def.archetype == WitchCatalog.Archetype.BINDER) "CAPTURE" else "HYPNOTIZED",
             kind = AttackKind.ULTIMATE,
             telegraphHint = "⚠️ SORT ULTIME « ${def.ultimateName} » ! Utilise 🛡️ GARDE pour une PARADE PARFAITE !"
         )
 
-        val advice = "🔮 Évaluation de ${cfg.avatarName} (Grimoire #${def.id}/50) :\n" +
-            "« Battu par ${def.name} (${def.archetype.label}) ? ${def.weaknessTip} »"
+        val recSpirit = com.demonpet.app.rpg.WitchCombatSystem.recommendedSpiritFor(def)
+        val advice = "🔮 Salle d'Évaluation MGQ — ${cfg.avatarName} (Grimoire #${def.id}) :\n" +
+            "• Adversaire : ${def.name} (${def.archetype.label} · ${def.element})\n" +
+            "• Esprit conseillé : ${recSpirit.displayName}\n" +
+            "• Conseil tactique : ${def.weaknessTip}"
 
         return WitchProfile(
             def = def,

@@ -37,6 +37,7 @@ import android.widget.TextView
 import android.widget.VideoView
 import com.demonpet.app.config.DemonConfigSnapshot
 import com.demonpet.app.config.DemonSettings
+import com.demonpet.app.mdm.DemonMdmManager
 import com.demonpet.app.media.MediaFolderHelper
 import java.io.File
 import java.text.Normalizer
@@ -166,7 +167,70 @@ class DemonOverlayManager(
     fun setCurfewNightcap(active: Boolean) {
         mainHandler.post {
             petView?.curfewNightcap = active
+            petView?.evolutionTier = com.demonpet.app.rpg.WitchRpgState(context).snapshot().demonForm.index
             petView?.invalidate()
+        }
+    }
+
+    /** Interactive Floating Quick-Menu launched by Double-Tapping the Little Demon from ANY app! */
+    fun showDemonQuickRadialMenu(cfg: DemonConfigSnapshot) {
+        mainHandler.post {
+            if (isAnyModalActive()) return@post
+            val rpg = com.demonpet.app.rpg.WitchRpgState(context)
+            val rs = rpg.snapshot()
+            val card = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(18), dp(16), dp(18), dp(16))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(20).toFloat()
+                    setColor(Color.rgb(18, 12, 30))
+                    setStroke(dp(2), Color.rgb(217, 70, 239))
+                }
+            }
+            card.addView(TextView(context).apply {
+                text = "${rs.demonForm.badge} ${cfg.avatarName} — ${rs.demonForm.name}"
+                setTextColor(Color.WHITE); textSize = 15.5f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+            })
+            card.addView(TextView(context).apply {
+                text = "Affection ${rs.demonAffection}% • Faim ${rs.demonHunger}% • Shizuku : ${if (DemonMdmManager.isShizukuActive()) "✅ ACTIF" else "⚠️ Inactif"}"
+                setTextColor(Color.rgb(216, 180, 254)); textSize = 11.4f; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(12))
+            })
+
+            fun quickBtn(label: String, col: Int, action: () -> Unit): Button = Button(context).apply {
+                text = label; isAllCaps = false; textSize = 12.2f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+                background = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(col) }
+                setPadding(dp(10), dp(10), dp(10), dp(10)); minHeight = 0; minimumHeight = 0
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(7) }
+                setOnClickListener { action() }
+            }
+
+            card.addView(quickBtn("⚔️ Duel Sorcière Rapide (Plein Écran)", Color.rgb(225, 29, 72)) {
+                dismissModal()
+                showSeductionBattleOverlay(cfg)
+            })
+            card.addView(quickBtn("💖 Caresser & Nourrir (+Affection · -Colère)", Color.rgb(16, 128, 96)) {
+                settings.adjustMood(-12)
+                rpg.addDemonCare(affDelta = +8, hungerDelta = +18, xpDelta = +12)
+                dismissModal()
+                say("Mmmh merci ! Affection +8 % ! 💜😈", 3_400L)
+            })
+            card.addView(quickBtn("🎯 Mode Focus Shizuku 15 min (+150 💎)", Color.rgb(2, 132, 199)) {
+                dismissModal()
+                Thread {
+                    val res = DemonMdmManager.startShizukuFocusContract(context, 15)
+                    say(res, 5_000L)
+                }.start()
+            })
+            card.addView(quickBtn("🏠 Ouvrir le QG DemonMom RPG", Color.rgb(126, 34, 206)) {
+                dismissModal()
+                try {
+                    val i = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                    i?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (i != null) context.startActivity(i)
+                } catch (_: Throwable) {}
+            })
+            card.addView(quickBtn("✖ Fermer", Color.rgb(48, 42, 66)) { dismissModal() })
+            presentModal(card, focusable = true, keepPetOnTop = true)
         }
     }
 
@@ -290,8 +354,9 @@ class DemonOverlayManager(
                     }
                 },
                 onGentlePet = {
-                    settings.adjustMood(-4)
-                    if (Random.nextFloat() < 0.35f) {
+                    settings.adjustMood(-5)
+                    com.demonpet.app.rpg.WitchRpgState(context).addDemonCare(affDelta = +3, hungerDelta = 0, xpDelta = +4)
+                    if (Random.nextFloat() < 0.45f) {
                         petView?.say(PET_LINES.random(), 2_600L)
                     }
                 },
@@ -300,10 +365,14 @@ class DemonOverlayManager(
                 },
                 onDodgeJump = {
                     performDodgeJump()
+                },
+                onDoubleTapMenu = {
+                    showDemonQuickRadialMenu(currentConfig)
                 }
             )
+            view.evolutionTier = com.demonpet.app.rpg.WitchRpgState(context).snapshot().demonForm.index
             view.updateConfig(cfg)
-            view.say("Je te surveille… 😈", 4_000L)
+            view.say("Double-tap pour mon menu rapide ! 😈", 4_200L)
 
             val params = WindowManager.LayoutParams(
                 winW,
