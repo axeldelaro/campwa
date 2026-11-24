@@ -18,16 +18,14 @@ import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.random.Random
 
 /**
- * AccessibilityService Multi-Window Host for GazeLock AI v4.0 ULTRA:
- * - Hosts up to 5 layered `TYPE_ACCESSIBILITY_OVERLAY` windows cleanly:
- *   1) Video + #21 Hypnotic Spiral + #7 Subliminal Window (Ghost Pass-Through OR Full-Lock)
- *   2) Compact Draggable Ghost Pill Window (zero close button!)
- *   3) #5 Floating Ghost Micro-Popup Window (compact WRAP_CONTENT, rest of phone stays touchable!)
- *   4) #9 Punitive Confiscated Touch Dead-Zone Window (localized touch blocker!)
- *   5) Interactive Fullscreen Portal / #2 Attention Hijack / Completion Window!
+ * AccessibilityService Multi-Window Host for GazeLock AI v5.0 APOCALYPSE:
+ * - Hosts up to 5 layered `TYPE_ACCESSIBILITY_OVERLAY` windows cleanly.
  * - #8 Hardware Volume Down / Mute key interception via `onKeyEvent`.
  * - #13 Surgical Anti-Escape in Ghost mode & Total Anti-Escape in Full-Lock mode.
- * - #26 Immortal Mode: resumes interrupted session (+45s escape tax) upon reboot or unlock!
+ * - #21 App-Trap Ambush: opening any user-selected trapped app immediately injects a GazeLock session!
+ * - #26 Immortal Mode: resumes interrupted session (+45s) on reboot/unlock.
+ * - #29 Block Quick Settings / Notification Shade EVEN in Ghost Pass-Through mode!
+ * - #30 App-Switch Tax: switching apps > 3 times/min in Ghost mode adds +10s & +5% opacity!
  */
 class GazeAccessibilityService : AccessibilityService() {
 
@@ -49,6 +47,12 @@ class GazeAccessibilityService : AccessibilityService() {
     private var activeScreenSec = 0
     private var lastShadeDismissMs = 0L
     private var lastEscapeEjectMs = 0L
+    private var lastAppTrapTriggerMs = 0L
+
+    // #30 App-Switch Tax tracking
+    private var lastForegroundUserPkg = ""
+    private val recentAppSwitches = ArrayDeque<Long>()
+    private var lastAppSwitchTaxMs = 0L
 
     private val autoAmbushTick = object : Runnable {
         override fun run() {
@@ -57,7 +61,6 @@ class GazeAccessibilityService : AccessibilityService() {
                 val gCfg = GazeConfig(applicationContext)
                 val cfg = gCfg.snapshot()
 
-                // #26 Immortal Mode: if session was interrupted by reboot/force-kill, auto-resume (+45s)!
                 if (interactive && cfg.rebootSurvivalEnabled && !GazeSessionService.isSessionRunning) {
                     val resumeSec = gCfg.consumeUnfinishedCheckpointSec()
                     if (resumeSec != null) {
@@ -104,43 +107,93 @@ class GazeAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null || !GazeSessionService.isSessionRunning) return
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        if (event == null || event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
 
         val cfg = GazeConfig(applicationContext).snapshot()
         val pkg = event.packageName?.toString()?.lowercase().orEmpty()
         val cls = event.className?.toString()?.lowercase().orEmpty()
         val now = System.currentTimeMillis()
-        val isGhost = GazeSessionService.isCurrentSessionGhostMode()
 
-        if ((!isGhost || portalView != null) && pkg == "com.android.systemui" &&
-            (cls.contains("shade") || cls.contains("panel") || cls.contains("controlcenter") || cls.contains("quicksettings"))
-        ) {
-            if (now - lastShadeDismissMs > 1_200L) {
-                lastShadeDismissMs = now
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
+        // ==================== #21 APP-TRAP AMBUSH (WHEN NO SESSION IS RUNNING) ====================
+        if (!GazeSessionService.isSessionRunning) {
+            if (cfg.appTrapEnabled && pkg.isNotBlank() && pkg != packageName.lowercase() &&
+                now - lastAppTrapTriggerMs > 35_000L &&
+                now - GazeSessionService.lastSessionEndedMs > 30_000L
+            ) {
+                if (pkg in cfg.trappedPackageSet()) {
+                    lastAppTrapTriggerMs = now
+                    GazeSessionService.startSession(
+                        context = applicationContext,
+                        overrideDurationSec = cfg.appTrapDurationSec,
+                        trapTriggerPkg = pkg
+                    )
                 }
             }
             return
         }
 
-        if (!cfg.antiEscapeLockEnabled) return
-        val isSystemEscape = isBlockedSettingsOrSystem(pkg)
-        val isRecentsEscape = !isGhost && (
-            cls.contains("recents") || cls.contains("overview") || cls.contains("taskswitcher") ||
-                pkg.contains("recents") || pkg.contains("quickstep")
-            )
+        // ==================== ACTIVE SESSION ENFORCEMENT ====================
+        val isGhost = GazeSessionService.isCurrentSessionGhostMode()
 
-        if ((isSystemEscape || isRecentsEscape) && now - lastEscapeEjectMs > 2_800L) {
-            lastEscapeEjectMs = now
-            try { performGlobalAction(GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
+        // 1) #29 Collapse Notification Shade / Quick Settings (in FULL_LOCK, Portal, OR Ghost when #29 enabled!)
+        val blockShadeNow = !isGhost || portalView != null || cfg.blockShadeInGhostEnabled
+        if (blockShadeNow && pkg == "com.android.systemui" &&
+            (cls.contains("shade") || cls.contains("panel") || cls.contains("controlcenter") || cls.contains("quicksettings"))
+        ) {
+            if (now - lastShadeDismissMs > 1_100L) {
+                lastShadeDismissMs = now
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
+                } else {
+                    try { performGlobalAction(GLOBAL_ACTION_BACK) } catch (_: Throwable) {}
+                }
             }
-            bringOverlaysToFront()
-            GazeSessionService.triggerEscapeAttemptPenalty()
+            return
         }
+
+        // 2) #13 Surgical vs Total Anti-Escape Watchdog
+        if (cfg.antiEscapeLockEnabled) {
+            val isSystemEscape = isBlockedSettingsOrSystem(pkg)
+            val isRecentsEscape = !isGhost && (
+                cls.contains("recents") || cls.contains("overview") || cls.contains("taskswitcher") ||
+                    pkg.contains("recents") || pkg.contains("quickstep")
+                )
+            if ((isSystemEscape || isRecentsEscape) && now - lastEscapeEjectMs > 2_800L) {
+                lastEscapeEjectMs = now
+                try { performGlobalAction(GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
+                }
+                bringOverlaysToFront()
+                GazeSessionService.triggerEscapeAttemptPenalty()
+                return
+            }
+        }
+
+        // 3) #30 App-Switch Tax in Ghost Mode (> 3 distinct app switches within 60s -> +10s & +5% opacity!)
+        if (isGhost && cfg.appSwitchTaxEnabled && portalView == null && isTrackableUserApp(pkg)) {
+            if (pkg != lastForegroundUserPkg) {
+                val hadPrevious = lastForegroundUserPkg.isNotEmpty()
+                lastForegroundUserPkg = pkg
+                if (hadPrevious) {
+                    recentAppSwitches.addLast(now)
+                    while (recentAppSwitches.isNotEmpty() && now - recentAppSwitches.first() > 60_000L) {
+                        recentAppSwitches.removeFirst()
+                    }
+                    if (recentAppSwitches.size > 3 && now - lastAppSwitchTaxMs > 12_000L) {
+                        lastAppSwitchTaxMs = now
+                        GazeSessionService.triggerAppSwitchTax()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isTrackableUserApp(pkg: String): Boolean {
+        if (pkg.isBlank() || pkg == packageName.lowercase()) return false
+        if (pkg == "com.android.systemui" || pkg.contains("inputmethod") || pkg.contains("gboard") || pkg.contains("keyboard")) return false
+        if (pkg.contains("launcher") || pkg.contains("nexuslauncher") || pkg.contains("trebuchet") || pkg.contains("miui.home")) return false
+        return true
     }
 
     private fun isBlockedSettingsOrSystem(pkg: String): Boolean {
@@ -169,6 +222,8 @@ class GazeAccessibilityService : AccessibilityService() {
     fun mountVideoOverlay(view: View, passThroughTouches: Boolean, forceMaxBrightness: Boolean): Boolean {
         val winMgr = wm ?: return false
         removeVideoOverlay()
+        recentAppSwitches.clear()
+        lastForegroundUserPkg = ""
         return try {
             val flags = if (passThroughTouches) {
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -214,7 +269,7 @@ class GazeAccessibilityService : AccessibilityService() {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = (dm.widthPixels - (190 * dm.density).toInt()).coerceAtLeast((8 * dm.density).toInt())
+                x = (dm.widthPixels - (195 * dm.density).toInt()).coerceAtLeast((8 * dm.density).toInt())
                 y = (44 * dm.density).toInt()
             }
             winMgr.addView(view, lp)
@@ -233,7 +288,6 @@ class GazeAccessibilityService : AccessibilityService() {
         try { winMgr.updateViewLayout(v, lp) } catch (_: Throwable) {}
     }
 
-    /** #5 Mount compact floating Ghost Micro-Popup at a random edge/quadrant! */
     fun mountMicroPopupOverlay(view: View): Boolean {
         val winMgr = wm ?: return false
         removeMicroPopupOverlay()
@@ -265,7 +319,6 @@ class GazeAccessibilityService : AccessibilityService() {
         try { wm?.removeViewImmediate(v) } catch (_: Throwable) {}
     }
 
-    /** #9 Mount localized Confiscated Touch Dead-Zone over center-lower display! */
     fun mountDeadZoneOverlay(view: View): Boolean {
         val winMgr = wm ?: return false
         removeDeadZoneOverlay()

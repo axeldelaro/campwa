@@ -104,18 +104,20 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: gazelock-v4.0.${{ github.run_number }}
-          name: "GazeLock AI v4.0.${{ github.run_number }} ULTRA EXTREME (Opacité Vivante • Coupures d'Emprise • Micro-Popups • Zones Mortes • 6 Mini-Jeux • Sprint 20 FPS • Spirale • Dette de Temps • Immortel)"
+          tag_name: gazelock-v5.0.${{ github.run_number }}
+          name: "GazeLock AI v5.0.${{ github.run_number }} APOCALYPSE (Boss Final 30s • Anti-Clignement • Applis Piégées • Taquin 4×4 • Chasse 9 img/s • Portail Progressif 3→6m • Pavlov)"
           body: |
-            ### 👁️ GazeLock AI v4.0 ULTRA EXTREME (`gazelock-v4.0.${{ github.run_number }}`)
-            - **📈 #1 Emprise Progressive (Opacité Vivante `48 % → 96 %`)** : en mode Semi-Transparent, l'opacité grimpe au fil du temps, des écarts de regard, des micro-pop-ups ignorés et des tentatives d'évasion — jusqu'à forcer une Coupure d'Emprise à `96 %` !
-            - **⚡ #2 Coupures d'Emprise (`Attention Hijack`)** : en plein usage normal du téléphone, l'overlay confisque soudainement le tactile à `96 %` d'opacité jusqu'à `14 s` de regard ininterrompu !
-            - **🖼️ #5 Micro-Pop-Ups Fantômes** : fenêtres compactes avec photo du dossier + mantra + barre `6,5 s` pendant l'usage normal (`+6 %` d'opacité si ignoré !).
-            - **🚫 #9 Zones Mortes Tactiles Punitives** : bloque une zone centrale de l'écran sur faute de regard — rétrécit uniquement quand tu fixes l'écran !
-            - **🧩 #16 6 Mini-Jeux Visuels du Dossier (sans dictée)** : Taquin `3×3`, Reconstitution échange `3×3`, Rotation `3×3`, **🧠 Memory Flash `4×3`**, **🎯 Séquence Fuyante `1→9`** & **🔍 Trouve l'Intrus Éclair (3 manches)** !
-            - **🔥 #17 Sprint Surcharge (`00:45 → 00:00`)** : spam accéléré à **`0,05 s` (`20 FPS`)**, pop-ups 2× plus rapides, battement binaural `118 BPM`, et échec/timeout renvoie le chrono à **`01:00`** !
-            - **💸 #18 Dette de Temps** : interrompre via le portail 3 min reporte `50–100 %` du temps restant sur la prochaine session (soldé uniquement en finissant jusqu'à `00:00` !).
-            - **🌀 Arsenal Ultra-Intense inclus** : **#21 Spirale Hypnotique `60 FPS`**, **#22 Portail 3 min Verrouillé par le Regard Caméra**, **#23 Voix TTS Hypnotique (Chuchotement Mantras)**, **#24 Chrono Aveugle (`??:??`) & Roulette Chaos**, **#25 Anti-Pose Accéléromètre (table)** et **#26 Mode Immortel (`+45 s` après reboot/déverrouillage)** !
+            ### 👁️ GazeLock AI v5.0 APOCALYPSE (`gazelock-v5.0.${{ github.run_number }}`)
+            - **👁️ #11 Défi Anti-Clignement Extrême** : t'impose périodiquement `8–20 s` sans cligner des yeux (surveillé en direct par ML Kit) — cligner = **`+15 s` + Opacité `+8 %`** + buzzer !
+            - **🪤 #21 Embuscades sur Applis Piégées (`App-Trap`)** : sélecteur d'applis installées — ouvrir une appli piégée (TikTok, Instagram, Chrome, YouTube…) injecte instantanément une session overlay !
+            - **🚫 #29 Blocage du Panneau de Contrôle en mode Ghost** : referme automatiquement le volet de notifications / raccourcis rapides même en mode Semi-Transparent !
+            - **🔀 #30 Taxe Changement d'Appli (`> 3 applis/min`)** : zapper entre plus de 3 applis par minute en mode Ghost inflige **`+10 s` + `+5 %` d'opacité** !
+            - **🔔 #36 Conditionnement Sonore Pavlovien** : carillon cristallin synthétisé toutes les `30 s` de regard parfait / victoire mini-jeu, et buzzer dissonant immédiat sur chaque faute !
+            - **🔥 #51 Taquin `4×4` Mode Enfer (15 tuiles)** : puzzle à glissement `4×4` avec les vraies photos du dossier + aide optimale instantanée (`+5 s`).
+            - **⚡ #54 Chasse au Motif Éclair à `9 img/s` (`111 ms`)** : mémorise la cible dorée puis frappe STOP en plein vol dans un flux à **`9 images/seconde`** (3 manches, `+5 s` par erreur) !
+            - **📈 #70 Portail Progressif Journalier** : chaque déblocage complété dans la même journée allonge la durée imposée du portail (**`3 min → 4 min → 5 min → 6 min`**) !
+            - **👑 #76 Boss Final de Fin de Session (`30 s`)** : les 30 dernières secondes passent à **`100 %` verrouillé Zéro Faute** (accélération binaurale `118 BPM`) — un écart `> 1 s` inflige **`+60 s` de pénalité** !
+            - **Inclut aussi tout l'arsenal v1–v4** : Ghost 48%→96%, Coupures d'Emprise, Micro-Popups, Zones Mortes, Spirale 60 FPS, Subliminal #7, Verrou Audio/Lum/Binaural #8, Dette de Temps #18, Sprint 20 FPS #17, Portail Regard #22, Chuchotements TTS, Chrono Aveugle & Mode Immortel.
           files: ./GazeLockAI.apk
           draft: false
           prerelease: false

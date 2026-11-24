@@ -59,6 +59,7 @@ class GazeVideoFeedOverlay(
     private val onRemovePortalOverlay: () -> Unit,
     private val onDragGhostPill: (dx: Int, dy: Int) -> Unit,
     private val onIssueAccessCodeAfterWait: () -> String,
+    private val onRecordDailyPortalCompletion: () -> Unit,
     private val onVerifyAccessCode: (String) -> Boolean,
     private val onEmergencyExit: () -> Unit,
     private val onSessionCompleteDismiss: () -> Unit
@@ -368,8 +369,9 @@ class GazeVideoFeedOverlay(
                 setOnClickListener { if (!isAccessWaitActive && !isPausedByLookAway) nextVideoInFeed() }
             })
         }
+        val waitMin = config.currentPortalWaitSec() / 60
         pill.addView(TextView(context).apply {
-            text = "🔓 3m"; setTextColor(Color.WHITE); textSize = 10.6f; typeface = Typeface.DEFAULT_BOLD
+            text = "🔓 ${waitMin}m"; setTextColor(Color.WHITE); textSize = 10.6f; typeface = Typeface.DEFAULT_BOLD
             background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.rgb(190, 24, 93)) }
             setPadding(dp(7), dp(3), dp(7), dp(3))
             setOnClickListener { openUnlockPortal() }
@@ -644,20 +646,24 @@ class GazeVideoFeedOverlay(
                 setStroke(dp(2), Color.rgb(225, 29, 72))
             }
         }
+        val waitMin = config.currentPortalWaitSec() / 60
         card.addView(TextView(context).apply {
-            text = "🔑 Portail de Déblocage 3 min (Overlay)"
+            text = "🔑 Portail de Déblocage ($waitMin min · Overlay)"
             setTextColor(Color.WHITE); textSize = 16.8f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
         })
         val debtWarn = if (config.timeDebtEnabled && !config.infiniteUntilUnlock) {
             "\n💸 Attention : ${config.timeDebtCarryPct} % du temps restant sera reporté en Dette de Temps sur la prochaine session !"
         } else ""
+        val escNote = if (config.dailyEscalatingPortalEnabled && config.portalUsesToday > 0) {
+            "\n📈 Portail progressif du jour (#${config.portalUsesToday + 1}) : durée portée à $waitMin min !"
+        } else ""
         card.addView(TextView(context).apply {
-            text = "Accomplis les 3 minutes imposées en overlay : spam 0,1 s → Sprint Surcharge 20 FPS, pop-ups, regard caméra + 3 mini-jeux visuels !$debtWarn"
-            setTextColor(Color.rgb(212, 206, 232)); textSize = 11.6f; gravity = Gravity.CENTER; setPadding(0, dp(6), 0, dp(12))
+            text = "Accomplis les $waitMin minutes imposées en overlay : spam 0,1 s → Sprint Surcharge 20 FPS, pop-ups, regard caméra + 3 mini-jeux visuels (Taquin 4×4, Chasse 9 img/s…)!$escNote$debtWarn"
+            setTextColor(Color.rgb(212, 206, 232)); textSize = 11.4f; gravity = Gravity.CENTER; setPadding(0, dp(6), 0, dp(12))
         })
 
         card.addView(Button(context).apply {
-            text = "⏳ LANCER LE CRÉNEAU 3 MIN (Overlay + 6 Mini-Jeux)"
+            text = "⏳ LANCER LE PORTAIL $waitMin MIN (Overlay + 7 Mini-Jeux)"
             isAllCaps = false; textSize = 12.6f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
             background = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(Color.rgb(162, 28, 175)) }
             setPadding(dp(12), dp(12), dp(12), dp(12))
@@ -721,6 +727,7 @@ class GazeVideoFeedOverlay(
             gazeLookingSupplier = gazeLookingSupplier,
             onOverloadSprintChanged = onOverloadSprintChanged,
             onIssueCode = onIssueAccessCodeAfterWait,
+            onRecordDailyPortalCompletion = onRecordDailyPortalCompletion,
             onCodeUnlockedAndExit = { issuedCode ->
                 isAccessWaitActive = false
                 if (onVerifyAccessCode(issuedCode)) {
