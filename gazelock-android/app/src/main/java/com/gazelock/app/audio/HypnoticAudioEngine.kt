@@ -8,12 +8,9 @@ import kotlin.math.PI
 import kotlin.math.sin
 
 /**
- * #8 Local Synthesized Hypnotic Binaural + Rhythmic Sub-Bass Pulse Engine:
- * - Zero audio files required, 100% real-time stereo PCM synthesis via Android [AudioTrack].
- * - Left ear: carrier 168 Hz + warm sub-harmonic 84 Hz.
- * - Right ear: carrier (168 + beatHz) Hz + sub-harmonic (84 + beatHz/2) Hz -> Theta/Alpha binaural beat!
- * - Smooth rhythmic pulse LFO (~68 BPM / 1.13 Hz) so it feels mesmerizing even on phone speakers.
- * - Smooth fade-in/fade-out gain envelope prevents any clicks or pops on start/pause/stop.
+ * #8 & #17 Local Synthesized Hypnotic Binaural + Rhythmic Sub-Bass Pulse Engine:
+ * - Supports live Overload Sprint mode (#17): boosts binaural beat (+5 Hz) & heartbeat pulse rate
+ *   (68 BPM -> 118 BPM) seamlessly without restarting AudioTrack!
  */
 class HypnoticAudioEngine {
 
@@ -22,6 +19,9 @@ class HypnoticAudioEngine {
 
     @Volatile
     private var paused = false
+
+    @Volatile
+    private var overloadSprint = false
 
     @Volatile
     private var targetGain = 0.25f
@@ -39,6 +39,7 @@ class HypnoticAudioEngine {
         updateParams(volumePct, freqHz)
         running = true
         paused = false
+        overloadSprint = false
 
         val t = Thread {
             try {
@@ -83,12 +84,14 @@ class HypnoticAudioEngine {
                 var phaseLfo = 0.0
                 var currentGain = 0.0f
                 val twoPi = 2.0 * PI
-                val carrierBase = 168.0
-                val lfoFreq = 1.13 // ~68 BPM slow hypnotic pulse
 
                 while (running) {
-                    val goalGain = if (paused) 0.0f else targetGain
-                    val beat = beatFreqHz
+                    val sprint = overloadSprint
+                    val goalGain = if (paused) 0.0f else if (sprint) (targetGain * 1.25f).coerceAtMost(0.62f) else targetGain
+                    val carrierBase = if (sprint) 186.0 else 168.0
+                    val beat = beatFreqHz + if (sprint) 5.0 else 0.0
+                    val lfoFreq = if (sprint) 1.96 else 1.13 // 118 BPM heart-racing sprint vs 68 BPM trance
+
                     val incL = twoPi * carrierBase / sampleRate
                     val incR = twoPi * (carrierBase + beat) / sampleRate
                     val incSubL = twoPi * (carrierBase * 0.5) / sampleRate
@@ -97,10 +100,9 @@ class HypnoticAudioEngine {
 
                     var i = 0
                     while (i < framesPerChunk) {
-                        // Smooth per-sample gain ramp (eliminates clicks!)
                         currentGain += (goalGain - currentGain) * 0.0018f
-
-                        val pulse = 0.72 + 0.28 * sin(phaseLfo)
+                        val pulseDepth = if (sprint) 0.36 else 0.28
+                        val pulse = (1.0 - pulseDepth) + pulseDepth * sin(phaseLfo)
                         val leftSample = (0.64 * sin(phaseL) + 0.36 * sin(phaseSubL)) * pulse * currentGain
                         val rightSample = (0.64 * sin(phaseR) + 0.36 * sin(phaseSubR)) * pulse * currentGain
 
@@ -130,9 +132,12 @@ class HypnoticAudioEngine {
     }
 
     fun updateParams(volumePct: Int, freqHz: Int) {
-        // Scale 10..80% nicely into comfortable mix range (0.07..0.52) so video stays audible too!
         targetGain = (volumePct.coerceIn(10, 80) / 100f) * 0.65f
         beatFreqHz = freqHz.coerceIn(4, 12).toDouble()
+    }
+
+    fun setOverloadSprint(active: Boolean) {
+        overloadSprint = active
     }
 
     fun setPaused(isPaused: Boolean) {

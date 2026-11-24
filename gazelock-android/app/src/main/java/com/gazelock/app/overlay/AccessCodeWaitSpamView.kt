@@ -26,43 +26,47 @@ import com.gazelock.app.config.GazeConfig
 import com.gazelock.app.config.GazeConfigSnapshot
 import com.gazelock.app.media.VideoFeedRepository
 import com.gazelock.app.overlay.minigames.ImageReconstructionView
+import com.gazelock.app.overlay.minigames.MemoryFlashView
+import com.gazelock.app.overlay.minigames.MovingSequenceView
 import com.gazelock.app.overlay.minigames.SlidingPuzzleView
+import com.gazelock.app.overlay.minigames.SpotIntruderView
 import kotlin.random.Random
 
 /**
- * Fullscreen Interactive 3-Minute (180s) Imposed Overlay Unlock Portal (v3.0):
- * - Runs directly in a fullscreen TYPE_ACCESSIBILITY_OVERLAY window (or embedded in MainActivity).
- * - Continuous 0.1s (100ms, 10 FPS) folder image spam background (or auto-extracted video frames) that NEVER stops!
- * - Timed interactive Pop-Ups (Presence Check, Decoy Trap, 3-Tap Image Flash) — ignoring adds +8..10s penalty!
- * - 3 Scheduled Mandatory Visual Mini-Games using REAL images from the user's video folder:
- *   1) 3x3 Sliding Puzzle (Taquin) at ~02:25 remaining
- *   2) 3x3 Image Reconstruction (Swap Tiles) at ~01:20 remaining
- *   3) 3x3 Image Rotation Alignment at ~00:30 remaining
- *   (Timer pauses during each mini-game until solved!)
- * - Reaching 00:00 issues a fresh 6-digit access code & unlocks/removes the active video overlay!
+ * Fullscreen Interactive 3-Minute (180s) Imposed Overlay Unlock Portal (v4.0 ULTRA):
+ * - Continuous 0.1s (10 FPS) folder image spam -> accelerates to 0.05s (20 FPS!) during #17 Overload Sprint (00:45->00:00)!
+ * - #22 Gaze-Gated Portal: when live camera gaze is attached, looking away freezes the 3-min timer (+5s after 2.2s)!
+ * - Timed interactive Pop-Ups (2x faster in Sprint! Timeout in Sprint resets countdown to 01:00!).
+ * - #16 6-Game Visual Pool (NO dictation!): Sliding Puzzle 3x3, Swap Reconstruction 3x3, Rotate Alignment 3x3,
+ *   Memory Flash 4x3, Moving Sequence 1->9, and Spot the Intruder (3 rounds) — 3 distinct games drawn per run!
  */
 class AccessCodeWaitSpamView(
     context: Context,
     private val cfg: GazeConfigSnapshot,
+    private val gazeLookingSupplier: (() -> Boolean)? = null,
+    private val onOverloadSprintChanged: ((Boolean) -> Unit)? = null,
     private val onIssueCode: () -> String,
     private val onCodeUnlockedAndExit: ((String) -> Unit)? = null,
     private val onCancelWait: () -> Unit
 ) : FrameLayout(context) {
+
+    private enum class GameType { SLIDING, SWAP, ROTATE, MEMORY, SEQUENCE, INTRUDER }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val density = context.resources.displayMetrics.density
     private fun dp(v: Int) = (v * density).toInt()
 
     private lateinit var imageView: ImageView
+    private val pillBox: LinearLayout
     private lateinit var countdownTv: TextView
     private lateinit var subTv: TextView
     private lateinit var flashAlertTv: TextView
     private lateinit var progressBar: ProgressBar
-    private lateinit var popupLayer: FrameLayout
-    private lateinit var minigameLayer: FrameLayout
-    private lateinit var actionBtn: Button
-    private lateinit var revealCard: LinearLayout
-    private lateinit var revealedCodeTv: TextView
+    private val popupLayer: FrameLayout
+    private val minigameLayer: FrameLayout
+    private val actionBtn: Button
+    private val revealCard: LinearLayout
+    private val revealedCodeTv: TextView
 
     private val bitmapPool = ArrayList<Bitmap>()
     private var running = false
@@ -72,25 +76,32 @@ class AccessCodeWaitSpamView(
     private var lastBmpIdx = -1
     private var lastTickElapsedMs = 0L
 
-    // Mini-games tracking
-    private var activeSlidingView: SlidingPuzzleView? = null
-    private var activeReconView: ImageReconstructionView? = null
+    // #17 Overload Sprint State
+    private var inOverloadSprint = false
+    private var sprintMistakesInFinalGame = 0
+
+    // #22 Gaze-Gate State
+    private var portalAwayMs = 0L
+    private var portalAwayPenaltyApplied = false
+
+    // 6-Game Pool State
+    private val scheduledGames = ArrayList<GameType>(3)
+    private var activeMinigameRelease: (() -> Unit)? = null
     private var minigameActive = false
-    private var triggeredStage1 = false // Sliding Puzzle at <= 145s
-    private var triggeredStage2 = false // Swap Reconstruction at <= 80s
-    private var triggeredStage3 = false // Rotate Reconstruction at <= 30s
+    private var triggeredStage1 = false
+    private var triggeredStage2 = false
+    private var triggeredStage3 = false
     private var minigamesSolvedCount = 0
     private val totalMinigames = if (cfg.unlockMinigamesEnabled) 3 else 0
 
-    // Interactive Pop-ups tracking
+    // Interactive Pop-ups State
     private var popupActive = false
     private var popupExpireElapsedMs = 0L
     private var popupDurationMs = 8_500L
     private var popupProgressBar: ProgressBar? = null
-    private var nextPopupAtRemainingMs = 164_000L
+    private var nextPopupAtRemainingMs = 165_000L
     private var popupsClearedCount = 0
 
-    // Flash banner
     private var alertUntilElapsedMs = 0L
 
     override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
@@ -107,25 +118,57 @@ class AccessCodeWaitSpamView(
         override fun run() {
             if (!running) return
             val now = SystemClock.elapsedRealtime()
-            val dt = (now - lastTickElapsedMs).coerceIn(50L, 350L)
+            val dt = (now - lastTickElapsedMs).coerceIn(30L, 350L)
             lastTickElapsedMs = now
 
-            // 1) Advance 3-minute countdown ONLY when no mandatory mini-game is blocking!
-            if (!minigameActive) {
+            // #22 Gaze-Gated 3-Min Portal Check!
+            val gazeOk = if (cfg.gazeGatedPortalEnabled && gazeLookingSupplier != null) {
+                gazeLookingSupplier.invoke()
+            } else true
+
+            if (!gazeOk) {
+                portalAwayMs += dt
+                if (portalAwayMs >= 2_200L && !portalAwayPenaltyApplied) {
+                    portalAwayPenaltyApplied = true
+                    addPenaltySeconds(5, "👁️ Regard détourné dans le portail ! +5 s !")
+                }
+            } else {
+                portalAwayMs = 0L
+                portalAwayPenaltyApplied = false
+            }
+
+            // 1) Advance 3-minute countdown ONLY when looking at screen AND no mandatory mini-game is blocking!
+            if (!minigameActive && gazeOk) {
                 remainingWaitMs = (remainingWaitMs - dt).coerceAtLeast(0L)
             }
 
-            // 2) Update progress bar & HUD timer
+            // 2) #17 Final 45-Second Overload Sprint Toggle (00:45 -> 00:00)
+            val shouldSprint = cfg.overloadSprintEnabled && remainingWaitMs <= 45_000L && remainingWaitMs > 0L
+            if (shouldSprint != inOverloadSprint) {
+                inOverloadSprint = shouldSprint
+                onOverloadSprintChanged?.invoke(shouldSprint)
+                updatePillStyle(sprint = shouldSprint, gazeFrozen = !gazeOk)
+                if (shouldSprint) {
+                    vibrateMs(160L)
+                    showTransientAlert("🔥 SPRINT SURCHARGE ! Spam 20 FPS (0,05 s) + Échec = Retour 01:00 !", isError = true)
+                    nextPopupAtRemainingMs = (remainingWaitMs - 4_500L).coerceAtLeast(6_000L)
+                }
+            } else if (!gazeOk) {
+                updatePillStyle(sprint = inOverloadSprint, gazeFrozen = true)
+            }
+
+            // 3) Update HUD Timer & Progress
             val elapsedMs = (totalWaitMs - remainingWaitMs).coerceIn(0L, totalWaitMs)
             progressBar.progress = ((elapsedMs * 1000L) / totalWaitMs.coerceAtLeast(1L)).toInt()
             val remSec = ((remainingWaitMs + 999L) / 1000L).toInt()
-            countdownTv.text = if (minigameActive) {
-                String.format("⏸️ DÉFI REQUIS : %02d:%02d", remSec / 60, remSec % 60)
-            } else {
-                String.format("⏳ PORTAIL 3 MIN : %02d:%02d", remSec / 60, remSec % 60)
+            countdownTv.text = when {
+                !gazeOk -> String.format("👁️ REGARDE L'ÉCRAN ! %02d:%02d", remSec / 60, remSec % 60)
+                minigameActive -> String.format("⏸️ DÉFI REQUIS : %02d:%02d", remSec / 60, remSec % 60)
+                inOverloadSprint -> String.format("🔥 SURCHARGE 20 FPS : %02d:%02d", remSec / 60, remSec % 60)
+                else -> String.format("⏳ PORTAIL 3 MIN : %02d:%02d", remSec / 60, remSec % 60)
             }
 
-            // 3) 0.1s (100ms) Continuous Rapid Folder Image-Spam! (Always active behind everything!)
+            // 4) Rapid Folder Image-Spam (0.1s normal -> 0.05s / 20 FPS in Overload Sprint!)
             if (bitmapPool.isNotEmpty()) {
                 var idx = Random.nextInt(bitmapPool.size)
                 if (bitmapPool.size > 1 && idx == lastBmpIdx) idx = (idx + 1) % bitmapPool.size
@@ -133,102 +176,101 @@ class AccessCodeWaitSpamView(
                 val bmp = bitmapPool[idx]
                 if (!bmp.isRecycled) {
                     imageView.setImageBitmap(bmp)
-                    val sc = 1.0f + (flashCounter % 3) * 0.03f
+                    val sc = if (inOverloadSprint) (1.0f + (flashCounter % 4) * 0.045f) else (1.0f + (flashCounter % 3) * 0.03f)
                     imageView.scaleX = sc; imageView.scaleY = sc
                 }
                 flashCounter++
+                val rateStr = if (inOverloadSprint) "0,05 s (20 FPS)" else "0,1 s"
                 val gameTag = if (totalMinigames > 0) " · 🧩 $minigamesSolvedCount/$totalMinigames" else ""
                 val popTag = if (cfg.unlockPopupsEnabled) " · 🔔 $popupsClearedCount" else ""
-                subTv.text = "🖼️ Spam 0,1 s (#$flashCounter)$gameTag$popTag"
+                subTv.text = "🖼️ Spam $rateStr (#$flashCounter)$gameTag$popTag"
             } else {
                 setBackgroundColor(if (flashCounter++ % 2 == 0) Color.rgb(36, 8, 28) else Color.rgb(16, 8, 34))
                 subTv.text = "⏳ Chargement des images du dossier… Attente obligatoire 3 min"
             }
 
-            // 4) Alert banner auto-hide
+            // 5) Alert auto-hide
             if (flashAlertTv.visibility == View.VISIBLE && now >= alertUntilElapsedMs) {
                 flashAlertTv.visibility = View.GONE
             }
 
-            // 5) Check Active Pop-Up Timeout
+            // 6) Active Pop-Up Timeout
             if (popupActive) {
                 val pRem = (popupExpireElapsedMs - now).coerceAtLeast(0L)
                 popupProgressBar?.progress = ((pRem * 1000L) / popupDurationMs.coerceAtLeast(1L)).toInt()
                 if (pRem <= 0L) {
                     dismissCurrentPopup()
-                    addPenaltySeconds(10, "⏰ Pop-up ignoré ! +10 s ajoutées aux 3 min !")
+                    if (inOverloadSprint) {
+                        kickBackToOneMinute("🔥 Pop-up raté en SURCHARGE ! Chrono renvoyé à 01:00 !")
+                    } else {
+                        addPenaltySeconds(10, "⏰ Pop-up ignoré ! +10 s ajoutées aux 3 min !")
+                    }
                 }
             }
 
-            // 6) Trigger Mandatory Mini-Games at scheduled checkpoints!
-            if (cfg.unlockMinigamesEnabled && !minigameActive) {
+            // 7) Scheduled Mandatory Mini-Games (from 6-game visual pool!)
+            if (cfg.unlockMinigamesEnabled && !minigameActive && gazeOk) {
                 when {
-                    !triggeredStage1 && remainingWaitMs <= 145_000L -> {
+                    !triggeredStage1 && remainingWaitMs <= 145_000L && scheduledGames.size > 0 -> {
                         triggeredStage1 = true
                         dismissCurrentPopup()
-                        launchSlidingPuzzleChallenge()
+                        launchMiniGame(scheduledGames[0], stageNumber = 1, isFinalSprintGame = false)
                     }
-                    !triggeredStage2 && remainingWaitMs <= 80_000L -> {
+                    !triggeredStage2 && remainingWaitMs <= 82_000L && scheduledGames.size > 1 -> {
                         triggeredStage2 = true
                         dismissCurrentPopup()
-                        launchImageReconstructionChallenge(ImageReconstructionView.Mode.SWAP_TILES)
+                        launchMiniGame(scheduledGames[1], stageNumber = 2, isFinalSprintGame = false)
                     }
-                    !triggeredStage3 && remainingWaitMs <= 30_000L -> {
+                    !triggeredStage3 && remainingWaitMs <= 34_000L && scheduledGames.size > 2 -> {
                         triggeredStage3 = true
                         dismissCurrentPopup()
-                        launchImageReconstructionChallenge(ImageReconstructionView.Mode.ROTATE_TILES)
+                        launchMiniGame(scheduledGames[2], stageNumber = 3, isFinalSprintGame = inOverloadSprint)
                     }
                 }
             }
 
-            // 7) Trigger Interactive Pop-Ups periodically between mini-games!
-            if (cfg.unlockPopupsEnabled && !minigameActive && !popupActive &&
-                remainingWaitMs in 9_000L..nextPopupAtRemainingMs
+            // 8) Periodic Interactive Pop-Ups (2x faster in Overload Sprint!)
+            if (cfg.unlockPopupsEnabled && !minigameActive && !popupActive && gazeOk &&
+                remainingWaitMs in 7_500L..nextPopupAtRemainingMs
             ) {
-                nextPopupAtRemainingMs = (remainingWaitMs - Random.nextLong(15_000L, 23_000L)).coerceAtLeast(0L)
+                val gap = if (inOverloadSprint) Random.nextLong(7_000L, 11_000L) else Random.nextLong(15_000L, 22_000L)
+                nextPopupAtRemainingMs = (remainingWaitMs - gap).coerceAtLeast(0L)
                 showInteractivePopup()
             }
 
-            // 8) Completion check!
+            // 9) Completion!
             if (remainingWaitMs <= 0L && !minigameActive) {
                 finishWaitAndRevealCode()
             } else {
-                mainHandler.postDelayed(this, GazeConfig.IMAGE_SPAM_DELAY_MS)
+                val nextDelay = if (inOverloadSprint) GazeConfig.OVERLOAD_SPAM_DELAY_MS else GazeConfig.IMAGE_SPAM_DELAY_MS
+                mainHandler.postDelayed(this, nextDelay)
             }
         }
     }
 
     init {
         setBackgroundColor(Color.BLACK)
-        isClickable = true
-        isFocusable = true
-        isFocusableInTouchMode = true
+        isClickable = true; isFocusable = true; isFocusableInTouchMode = true
 
-        // Layer 1: Fullscreen 0.1s Spam ImageView
         imageView = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
         addView(imageView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // Subtle dark veil so HUD, pop-ups & mini-games stay razor-sharp while 0.1s images visibly blast behind!
         addView(View(context).apply { setBackgroundColor(Color.argb(65, 10, 6, 20)) },
             LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // Layer 2: Top Translucent Countdown Pill + Alert Banner
         val topBox = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(14), dp(36), dp(14), dp(8))
         }
-        val pill = LinearLayout(context).apply {
+        pillBox = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(16), dp(10), dp(16), dp(10))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(18).toFloat()
-                setColor(Color.argb(222, 22, 8, 30))
-                setStroke(dp(2), Color.rgb(225, 29, 72))
-            }
         }
+        updatePillStyle(sprint = false, gazeFrozen = false)
+
         countdownTv = TextView(context).apply {
             text = "⏳ PORTAIL 3 MIN : 03:00"
-            setTextColor(Color.WHITE); textSize = 18.5f; typeface = Typeface.MONOSPACE; gravity = Gravity.CENTER
+            setTextColor(Color.WHITE); textSize = 18f; typeface = Typeface.MONOSPACE; gravity = Gravity.CENTER
         }
         progressBar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000; progress = 0
@@ -239,10 +281,10 @@ class AccessCodeWaitSpamView(
             text = "⏳ Préparation du spam d'images (0,1 s) & mini-jeux…"
             setTextColor(Color.rgb(253, 224, 71)); textSize = 11f; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0)
         }
-        pill.addView(countdownTv)
-        pill.addView(progressBar, LinearLayout.LayoutParams(dp(240), dp(6)).apply { topMargin = dp(5) })
-        pill.addView(subTv)
-        topBox.addView(pill)
+        pillBox.addView(countdownTv)
+        pillBox.addView(progressBar, LinearLayout.LayoutParams(dp(240), dp(6)).apply { topMargin = dp(5) })
+        pillBox.addView(subTv)
+        topBox.addView(pillBox)
 
         flashAlertTv = TextView(context).apply {
             setTextColor(Color.WHITE); textSize = 12f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
@@ -252,18 +294,15 @@ class AccessCodeWaitSpamView(
         topBox.addView(flashAlertTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
         addView(topBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
 
-        // Layer 3: Interactive Pop-Up Layer
         popupLayer = FrameLayout(context).apply { visibility = View.GONE }
         addView(popupLayer, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // Layer 4: Mandatory Mini-Games Host Layer (Centered)
         minigameLayer = FrameLayout(context).apply {
             visibility = View.GONE
-            setPadding(dp(16), dp(115), dp(16), dp(80))
+            setPadding(dp(14), dp(112), dp(14), dp(78))
         }
         addView(minigameLayer, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // Layer 5: Bottom Cancel Button (resets the full 3-minute wait + mini-games!)
         actionBtn = Button(context).apply {
             text = "↩ Annuler le portail (remet les 3 min à zéro)"
             isAllCaps = false; textSize = 11.6f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
@@ -284,10 +323,9 @@ class AccessCodeWaitSpamView(
             }
         )
 
-        // Layer 6: Code Revealed & Direct Unlock Screen (ONLY once 00:00 AND all mini-games are done!)
         revealCard = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-            setBackgroundColor(Color.argb(245, 10, 8, 22))
+            setBackgroundColor(Color.argb(246, 10, 8, 22))
             setPadding(dp(26), dp(26), dp(26), dp(26))
             visibility = View.GONE
         }
@@ -296,7 +334,7 @@ class AccessCodeWaitSpamView(
             setTextColor(Color.rgb(134, 239, 172)); textSize = 20f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
         })
         revealCard.addView(TextView(context).apply {
-            text = "Tu as complété les 3 minutes de spam 0,1 s, les pop-ups et les mini-jeux. Voici ton code d'accès unique (valable 2 min) :"
+            text = "Tu as survécu au spam 0,1 s/20 FPS, aux pop-ups et aux 3 mini-jeux. Voici ton code d'accès unique (valable 2 min) :"
             setTextColor(Color.rgb(215, 215, 235)); textSize = 13f; gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(14))
         })
         revealedCodeTv = TextView(context).apply {
@@ -309,7 +347,7 @@ class AccessCodeWaitSpamView(
             setPadding(dp(24), dp(14), dp(24), dp(14))
         }
         revealCard.addView(revealedCodeTv)
-        val confirmBtn = Button(context).apply {
+        revealCard.addView(Button(context).apply {
             text = if (onCodeUnlockedAndExit != null) "🔓 RETIRER LES VIDÉOS MAINTENANT" else "✅ FERMER"
             isAllCaps = false; textSize = 14.2f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
             background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(Color.rgb(16, 185, 129)) }
@@ -320,23 +358,39 @@ class AccessCodeWaitSpamView(
                 stopAndRelease()
                 if (onCodeUnlockedAndExit != null) onCodeUnlockedAndExit.invoke(c) else onCancelWait()
             }
-        }
-        revealCard.addView(confirmBtn)
+        })
         addView(revealCard, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun updatePillStyle(sprint: Boolean, gazeFrozen: Boolean) {
+        pillBox.background = GradientDrawable().apply {
+            cornerRadius = dp(18).toFloat()
+            when {
+                gazeFrozen -> { setColor(Color.argb(235, 90, 8, 24)); setStroke(dp(2), Color.rgb(251, 113, 133)) }
+                sprint -> { setColor(Color.argb(235, 120, 12, 34)); setStroke(dp(2), Color.rgb(250, 204, 21)) }
+                else -> { setColor(Color.argb(222, 22, 8, 30)); setStroke(dp(2), Color.rgb(225, 29, 72)) }
+            }
+        }
     }
 
     fun startThreeMinuteSpamWait() {
         if (running) return
         running = true
-        flashCounter = 0
-        lastBmpIdx = -1
+        flashCounter = 0; lastBmpIdx = -1
         remainingWaitMs = GazeConfig.ACCESS_CODE_WAIT_SEC * 1000L
         lastTickElapsedMs = SystemClock.elapsedRealtime()
         nextPopupAtRemainingMs = 165_000L
+        inOverloadSprint = false; sprintMistakesInFinalGame = 0
+        portalAwayMs = 0L; portalAwayPenaltyApplied = false
         triggeredStage1 = false; triggeredStage2 = false; triggeredStage3 = false
         minigamesSolvedCount = 0; popupsClearedCount = 0
 
-        // Preload memory-safe folder image pool (or video-frame fallback) off UI thread!
+        // Pick 3 distinct visual mini-games: 1 classic puzzle/reconstruction + 2 new v4.0 intense games!
+        scheduledGames.clear()
+        val classic = listOf(GameType.SLIDING, GameType.SWAP, GameType.ROTATE).shuffled(Random).first()
+        val intense = listOf(GameType.MEMORY, GameType.SEQUENCE, GameType.INTRUDER).shuffled(Random).take(2)
+        scheduledGames.addAll((listOf(classic) + intense).shuffled(Random))
+
         Thread {
             val loaded = VideoFeedRepository.loadSpamBitmapPool(context.applicationContext, cfg, maxPoolSize = 36)
             mainHandler.post {
@@ -356,75 +410,99 @@ class AccessCodeWaitSpamView(
         return if (valid.isNotEmpty()) valid[Random.nextInt(valid.size)] else null
     }
 
-    // ==================== MANDATORY VISUAL MINI-GAMES ====================
-    private fun launchSlidingPuzzleChallenge() {
+    private fun launchMiniGame(type: GameType, stageNumber: Int, isFinalSprintGame: Boolean) {
         clearMinigameViews()
         minigameActive = true
-        vibrateMs(90L)
-        showTransientAlert("🧩 DÉFI #1 : Résous le Puzzle à glissement pour reprendre le chrono !", isError = false)
-        val view = SlidingPuzzleView(
-            context = context,
-            sourceBitmap = pickSafeSourceBitmap(),
-            onPenaltySec = { sec -> addPenaltySeconds(sec, "💡 Indice utilisé : +$sec s ajoutées !") },
-            onSolved = {
-                minigamesSolvedCount++
-                vibrateMs(120L)
-                clearMinigameViews()
-                minigameActive = false
-                showTransientAlert("✅ Puzzle résolu ! Décompte repris !", isError = false)
-            }
-        )
-        activeSlidingView = view
-        minigameLayer.addView(
-            view,
-            LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER)
-        )
-        minigameLayer.visibility = View.VISIBLE
-    }
+        sprintMistakesInFinalGame = 0
+        vibrateMs(95L)
 
-    private fun launchImageReconstructionChallenge(mode: ImageReconstructionView.Mode) {
-        clearMinigameViews()
-        minigameActive = true
-        vibrateMs(90L)
-        val label = if (mode == ImageReconstructionView.Mode.SWAP_TILES) {
-            "🖼️ DÉFI #2 : Reconstitue l'image par échange !"
-        } else {
-            "🔄 DÉFI FINAL #3 : Redresse chaque tuile de l'image !"
+        val onGameSolved: () -> Unit = {
+            minigamesSolvedCount++
+            vibrateMs(125L)
+            clearMinigameViews()
+            minigameActive = false
+            showTransientAlert("✅ Défi #$stageNumber réussi ! Décompte repris !", isError = false)
         }
-        showTransientAlert(label, isError = false)
-        val view = ImageReconstructionView(
-            context = context,
-            sourceBitmap = pickSafeSourceBitmap(),
-            mode = mode,
-            onPenaltySec = { sec -> addPenaltySeconds(sec, "💡 Indice utilisé : +$sec s ajoutées !") },
-            onSolved = {
-                minigamesSolvedCount++
-                vibrateMs(120L)
-                clearMinigameViews()
-                minigameActive = false
-                showTransientAlert("✅ Image reconstituée ! Décompte repris !", isError = false)
+        val onGamePenalty: (Int) -> Unit = { sec ->
+            addPenaltySeconds(sec, "⚠️ Erreur / Aide : +$sec s ajoutées !")
+        }
+        val onGameMistake: () -> Unit = {
+            if (isFinalSprintGame && cfg.overloadSprintEnabled) {
+                sprintMistakesInFinalGame++
+                if (sprintMistakesInFinalGame >= 3) {
+                    sprintMistakesInFinalGame = 0
+                    clearMinigameViews()
+                    minigameActive = false
+                    triggeredStage3 = false // Must re-pass final challenge when reaching 34s again!
+                    kickBackToOneMinute("🔥 3 erreurs en SURCHARGE ! Renvoi à 01:00 !")
+                }
             }
-        )
-        activeReconView = view
-        minigameLayer.addView(
-            view,
-            LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER)
-        )
+        }
+
+        val view: View = when (type) {
+            GameType.SLIDING -> {
+                showTransientAlert("🧩 DÉFI #$stageNumber : Puzzle à glissement 3×3 !", isError = false)
+                SlidingPuzzleView(context, pickSafeSourceBitmap(), onGamePenalty, onGameSolved).also { v ->
+                    activeMinigameRelease = { v.release() }
+                }
+            }
+            GameType.SWAP -> {
+                showTransientAlert("🖼️ DÉFI #$stageNumber : Reconstitution par échange 3×3 !", isError = false)
+                ImageReconstructionView(context, pickSafeSourceBitmap(), ImageReconstructionView.Mode.SWAP_TILES, onGamePenalty, onGameSolved).also { v ->
+                    activeMinigameRelease = { v.release() }
+                }
+            }
+            GameType.ROTATE -> {
+                showTransientAlert("🔄 DÉFI #$stageNumber : Redressement par rotation 3×3 !", isError = false)
+                ImageReconstructionView(context, pickSafeSourceBitmap(), ImageReconstructionView.Mode.ROTATE_TILES, onGamePenalty, onGameSolved).also { v ->
+                    activeMinigameRelease = { v.release() }
+                }
+            }
+            GameType.MEMORY -> {
+                showTransientAlert("🧠 DÉFI #$stageNumber : Memory Flash (6 paires) !", isError = false)
+                MemoryFlashView(context, bitmapPool, onGamePenalty, onGameMistake, onGameSolved).also { v ->
+                    activeMinigameRelease = { v.release() }
+                }
+            }
+            GameType.SEQUENCE -> {
+                showTransientAlert("🎯 DÉFI #$stageNumber : Séquence Fuyante 1 → 9 !", isError = false)
+                MovingSequenceView(context, pickSafeSourceBitmap(), onGamePenalty, onGameMistake, onGameSolved).also { v ->
+                    activeMinigameRelease = { v.release() }
+                }
+            }
+            GameType.INTRUDER -> {
+                showTransientAlert("🔍 DÉFI #$stageNumber : Trouve l'Intrus Éclair (3 manches) !", isError = false)
+                SpotIntruderView(context, bitmapPool, onGamePenalty, onGameMistake, onGameSolved).also { v ->
+                    activeMinigameRelease = { v.release() }
+                }
+            }
+        }
+
+        minigameLayer.addView(view, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         minigameLayer.visibility = View.VISIBLE
     }
 
     private fun clearMinigameViews() {
-        activeSlidingView?.release(); activeSlidingView = null
-        activeReconView?.release(); activeReconView = null
+        try { activeMinigameRelease?.invoke() } catch (_: Throwable) {}
+        activeMinigameRelease = null
         minigameLayer.removeAllViews()
         minigameLayer.visibility = View.GONE
+    }
+
+    private fun kickBackToOneMinute(reason: String) {
+        remainingWaitMs = maxOf(remainingWaitMs, 60_000L)
+        inOverloadSprint = false
+        onOverloadSprintChanged?.invoke(false)
+        updatePillStyle(sprint = false, gazeFrozen = false)
+        vibrateMs(220L)
+        showTransientAlert(reason, isError = true)
     }
 
     // ==================== TIMED INTERACTIVE POP-UPS ====================
     private fun showInteractivePopup() {
         dismissCurrentPopup()
         popupActive = true
-        popupDurationMs = 8_500L
+        popupDurationMs = if (inOverloadSprint) 6_000L else 8_500L
         popupExpireElapsedMs = SystemClock.elapsedRealtime() + popupDurationMs
         vibrateMs(55L)
 
@@ -440,19 +518,14 @@ class AccessCodeWaitSpamView(
             setPadding(dp(16), dp(14), dp(16), dp(14))
             background = GradientDrawable().apply {
                 cornerRadius = dp(18).toFloat()
-                setColor(Color.argb(238, 22, 12, 36))
-                setStroke(dp(2), when (kind) {
-                    0 -> Color.rgb(236, 72, 153)
-                    1 -> Color.rgb(245, 158, 11)
-                    else -> Color.rgb(168, 85, 247)
-                })
+                setColor(Color.argb(240, 22, 12, 36))
+                setStroke(dp(2), if (inOverloadSprint) Color.rgb(250, 204, 21) else Color.rgb(236, 72, 153))
             }
         }
 
-        // Countdown bar inside pop-up
         val pBar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000; progress = 1000
-            progressTintList = ColorStateList.valueOf(Color.rgb(250, 204, 21))
+            progressTintList = ColorStateList.valueOf(if (inOverloadSprint) Color.rgb(244, 63, 94) else Color.rgb(250, 204, 21))
             progressBackgroundTintList = ColorStateList.valueOf(Color.argb(80, 255, 255, 255))
         }
         popupProgressBar = pBar
@@ -461,20 +534,18 @@ class AccessCodeWaitSpamView(
         val thumb = pickSafeSourceBitmap()
         if (thumb != null) {
             card.addView(ImageView(context).apply {
-                setImageBitmap(thumb)
-                scaleType = ImageView.ScaleType.CENTER_CROP
-            }, LinearLayout.LayoutParams(dp(116), dp(82)).apply { bottomMargin = dp(8) })
+                setImageBitmap(thumb); scaleType = ImageView.ScaleType.CENTER_CROP
+            }, LinearLayout.LayoutParams(dp(116), dp(80)).apply { bottomMargin = dp(8) })
         }
 
         when (kind) {
             0 -> {
-                // Presence check: tap twice (button shifts after first tap!)
                 card.addView(TextView(context).apply {
-                    text = "⚡ POP-UP PRÉSENCE"
+                    text = if (inOverloadSprint) "🔥 POP-UP SURCHARGE !" else "⚡ POP-UP PRÉSENCE"
                     setTextColor(Color.rgb(249, 168, 212)); textSize = 14.5f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
                 })
                 card.addView(TextView(context).apply {
-                    text = "Tu veux déjà retirer les vidéos ? Confirme que tu regardes (sinon +10 s) !"
+                    text = if (inOverloadSprint) "Clique vite ! Timeout = RENVOI À 01:00 !" else "Confirme que tu regardes (sinon +10 s) !"
                     setTextColor(Color.WHITE); textSize = 11.6f; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(10))
                 })
                 var tapsLeft = 2
@@ -490,21 +561,18 @@ class AccessCodeWaitSpamView(
                         btn.text = "⚡ ENCORE 1 CLIC !"
                         btn.translationX = (if (Random.nextBoolean()) 1 else -1) * dp(28).toFloat()
                     } else {
-                        popupsClearedCount++
-                        dismissCurrentPopup()
-                        showTransientAlert("✅ Pop-up validé !", isError = false)
+                        popupsClearedCount++; dismissCurrentPopup()
                     }
                 }
                 card.addView(btn)
             }
             1 -> {
-                // Decoy Trap Pop-up!
                 card.addView(TextView(context).apply {
                     text = "🎭 POP-UP PIÈGE"
                     setTextColor(Color.rgb(253, 224, 71)); textSize = 14.5f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
                 })
                 card.addView(TextView(context).apply {
-                    text = "Choisis le BON bouton pour poursuivre le décompte (piège = +8 s) :"
+                    text = "Choisis le BON bouton pour poursuivre le décompte :"
                     setTextColor(Color.WHITE); textSize = 11.6f; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(10))
                 })
                 val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
@@ -513,11 +581,7 @@ class AccessCodeWaitSpamView(
                     isAllCaps = false; textSize = 11.8f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
                     background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.rgb(79, 70, 229)) }
                     setPadding(dp(12), dp(9), dp(12), dp(9))
-                    setOnClickListener {
-                        popupsClearedCount++
-                        dismissCurrentPopup()
-                        showTransientAlert("✅ Bien vu !", isError = false)
-                    }
+                    setOnClickListener { popupsClearedCount++; dismissCurrentPopup() }
                 }
                 val trapBtn = Button(context).apply {
                     text = "⚡ Quitter (+8 s)"
@@ -526,7 +590,8 @@ class AccessCodeWaitSpamView(
                     setPadding(dp(12), dp(9), dp(12), dp(9))
                     setOnClickListener {
                         dismissCurrentPopup()
-                        addPenaltySeconds(8, "😈 Piège déclenché ! +8 s ajoutées !")
+                        if (inOverloadSprint) kickBackToOneMinute("😈 Piège déclenché en SURCHARGE ! Renvoi à 01:00 !")
+                        else addPenaltySeconds(8, "😈 Piège déclenché ! +8 s ajoutées !")
                     }
                 }
                 val lpA = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(4) }
@@ -536,14 +601,13 @@ class AccessCodeWaitSpamView(
                 card.addView(row, LinearLayout.LayoutParams(dp(245), ViewGroup.LayoutParams.WRAP_CONTENT))
             }
             else -> {
-                // Mantra Image Flash Pop-up (3 taps to dismiss)
                 val mantra = cfg.mantraList().random()
                 card.addView(TextView(context).apply {
                     text = "✨ $mantra"
                     setTextColor(Color.rgb(216, 180, 254)); textSize = 15f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
                 })
                 card.addView(TextView(context).apply {
-                    text = "Touche 3 fois rapidement pour dissiper ce pop-up :"
+                    text = "Touche 3 fois rapidement pour dissiper :"
                     setTextColor(Color.WHITE); textSize = 11.4f; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(10))
                 })
                 var remTaps = 3
@@ -555,34 +619,27 @@ class AccessCodeWaitSpamView(
                 }
                 btn.setOnClickListener {
                     remTaps--
-                    if (remTaps > 0) {
-                        btn.text = "🔓 DISSIPER ($remTaps)"
-                    } else {
-                        popupsClearedCount++
-                        dismissCurrentPopup()
-                    }
+                    if (remTaps > 0) btn.text = "🔓 DISSIPER ($remTaps)"
+                    else { popupsClearedCount++; dismissCurrentPopup() }
                 }
                 card.addView(btn)
             }
         }
 
         val lp = LayoutParams(dp(280), ViewGroup.LayoutParams.WRAP_CONTENT, gravityPick).apply {
-            topMargin = dp(148)
-            bottomMargin = dp(95)
+            topMargin = dp(148); bottomMargin = dp(95)
         }
         popupLayer.addView(card, lp)
         popupLayer.visibility = View.VISIBLE
     }
 
     private fun dismissCurrentPopup() {
-        popupActive = false
-        popupProgressBar = null
-        popupLayer.removeAllViews()
-        popupLayer.visibility = View.GONE
+        popupActive = false; popupProgressBar = null
+        popupLayer.removeAllViews(); popupLayer.visibility = View.GONE
     }
 
     private fun addPenaltySeconds(sec: Int, msg: String) {
-        remainingWaitMs = (remainingWaitMs + sec * 1000L).coerceAtMost(totalWaitMs + 120_000L)
+        remainingWaitMs = (remainingWaitMs + sec * 1000L).coerceAtMost(totalWaitMs + 150_000L)
         vibrateMs(140L)
         showTransientAlert(msg, isError = true)
     }
@@ -591,7 +648,7 @@ class AccessCodeWaitSpamView(
         flashAlertTv.text = msg
         flashAlertTv.background = GradientDrawable().apply {
             cornerRadius = dp(10).toFloat()
-            setColor(if (isError) Color.argb(235, 190, 18, 60) else Color.argb(230, 16, 128, 96))
+            setColor(if (isError) Color.argb(238, 190, 18, 60) else Color.argb(232, 16, 128, 96))
         }
         flashAlertTv.visibility = View.VISIBLE
         alertUntilElapsedMs = SystemClock.elapsedRealtime() + 3_200L
@@ -600,6 +657,7 @@ class AccessCodeWaitSpamView(
     private fun finishWaitAndRevealCode() {
         running = false
         mainHandler.removeCallbacks(spamTick)
+        onOverloadSprintChanged?.invoke(false)
         dismissCurrentPopup()
         clearMinigameViews()
         val freshCode = onIssueCode()
@@ -616,21 +674,18 @@ class AccessCodeWaitSpamView(
             val v = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                v.vibrate(ms)
-            }
+            } else v.vibrate(ms)
         } catch (_: Throwable) {}
     }
 
     fun stopAndRelease() {
         running = false
         mainHandler.removeCallbacks(spamTick)
+        onOverloadSprintChanged?.invoke(false)
         dismissCurrentPopup()
         clearMinigameViews()
         imageView.setImageDrawable(null)
-        for (b in bitmapPool) {
-            try { if (!b.isRecycled) b.recycle() } catch (_: Throwable) {}
-        }
+        for (b in bitmapPool) { try { if (!b.isRecycled) b.recycle() } catch (_: Throwable) {} }
         bitmapPool.clear()
     }
 }

@@ -46,46 +46,65 @@ enum class OverlayMode(val id: String, val label: String, val emoji: String, val
 data class GazeConfigSnapshot(
     val folderPath: String,
     val treeUri: String,
-    val durationSec: Int,              // 30..3600
-    val infiniteUntilUnlock: Boolean,  // true = NO auto-end timer, ONLY removable via 3-min overlay portal!
-    val overlayMode: OverlayMode,      // GHOST_PASSTHROUGH (45-50% touch-unlocked) vs FULL_LOCK (100% opaque)
-    val ghostOpacityPct: Int,          // 35..65 (default 48% right in the 45-50% sweet spot!)
+    val durationSec: Int,
+    val infiniteUntilUnlock: Boolean,
+    val overlayMode: OverlayMode,
+    val ghostOpacityPct: Int,
     val shuffleVideos: Boolean,
-    val maxClipSec: Int,               // 0 = full video, else 15/30/60
+    val maxClipSec: Int,
     val allowSwipeNext: Boolean,
     val pauseVideoOnLookAway: Boolean,
-    val lookAwayPenaltySec: Int,       // 0, 3, 5, 10
-    val penaltyMode: PenaltyMode,      // FIXED, PROGRESSIVE, SUDDEN_DEATH
-    val yawThresholdDeg: Int,          // 12..40
-    val pitchThresholdDeg: Int,        // 14..40
+    val lookAwayPenaltySec: Int,
+    val penaltyMode: PenaltyMode,
+    val yawThresholdDeg: Int,
+    val pitchThresholdDeg: Int,
     val requireEyesOpen: Boolean,
-    val irisTrackingEnabled: Boolean,  // #2 Real pupil/iris gaze deviation detection
-    val irisThresholdPct: Int,         // 18..52
-    val antiEscapeLockEnabled: Boolean,// #13 Anti-Escape watchdog (+15s penalty)
+    val irisTrackingEnabled: Boolean,
+    val irisThresholdPct: Int,
+    val antiEscapeLockEnabled: Boolean,
     val voiceAlertEnabled: Boolean,
     val vibrateAlertEnabled: Boolean,
-    // #7 Subliminal Image Flashes (0.08s-0.22s) + Neon Mantras
+    // #7 Subliminal Image Flashes & Neon Mantras
     val subliminalEnabled: Boolean,
-    val subliminalIntervalSec: Int,    // 2..20
-    val subliminalDurationMs: Int,     // 80..220
-    val subliminalAlphaPct: Int,       // 30..95
+    val subliminalIntervalSec: Int,
+    val subliminalDurationMs: Int,
+    val subliminalAlphaPct: Int,
     val subliminalMantras: String,
     // #8 Absolute Audio Lock + Forced Max Brightness + Hypnotic Binaural Beat
     val volumeLockEnabled: Boolean,
-    val volumeFloorPct: Int,           // 40..100
+    val volumeFloorPct: Int,
     val forceMaxBrightness: Boolean,
     val binauralBeatEnabled: Boolean,
-    val binauralVolumePct: Int,        // 10..80
-    val binauralFreqHz: Int,           // 4..12 Hz Theta/Alpha hypnotic pulse
-    // 3-Minute Overlay Portal Pop-ups & Mini-Games
+    val binauralVolumePct: Int,
+    val binauralFreqHz: Int,
+    // 3-Minute Overlay Portal (#16, #17, #22)
     val unlockPopupsEnabled: Boolean,
     val unlockMinigamesEnabled: Boolean,
+    val overloadSprintEnabled: Boolean,      // #17 Final 45s 20 FPS Overload Sprint + fail reset to 01:00!
+    val gazeGatedPortalEnabled: Boolean,     // #22 Front-camera Gaze Lock during the 3-minute portal!
+    // v4.0 Ultra Extreme Features (#1, #2, #5, #9, #18, #21, #23, #24, #25, #26)
+    val livingOpacityEnabled: Boolean,       // #1 Progressive Opacity Escalation (48% -> 96%!)
+    val attentionHijackEnabled: Boolean,     // #2 Sudden 96% Touch-Locked Attention Hijack bursts in Ghost mode!
+    val attentionHijackIntervalMin: Int,     // 1..8 min
+    val attentionHijackFocusSec: Int,        // 8..25 s uninterrupted focus to regain touch
+    val ghostMicroPopupsEnabled: Boolean,    // #5 Floating Ghost Micro-Popups during normal phone use!
+    val ghostMicroPopupIntervalSec: Int,     // 20..90 s
+    val deadZonesEnabled: Boolean,           // #9 Punitive Touch Dead-Zones on look-away in Ghost mode!
+    val timeDebtEnabled: Boolean,            // #18 Time Debt carryover when aborting via 3-min portal!
+    val timeDebtCarryPct: Int,               // 50, 75, 100 %
+    val pendingTimeDebtSec: Int,             // Stored unpaid time debt added to next timed session!
+    val hypnoticSpiralEnabled: Boolean,      // #21 60 FPS Hypnotic Optical Spiral synced to binaural beat!
+    val spiralOpacityPct: Int,               // 12..55 %
+    val ttsMantraWhisperEnabled: Boolean,    // #23 Deep slow hypnotic TTS mantra whispers over video!
+    val blindTimerEnabled: Boolean,          // #24 Blind Timer (hides countdown as ??:??)
+    val antiFlatSensorEnabled: Boolean,      // #25 Accelerometer Anti-Flat Table detector!
+    val rebootSurvivalEnabled: Boolean,      // #26 Immortal Mode: resumes session +45s after screen unlock/reboot!
     val showTelemetryBadge: Boolean,
     val preset: StrictnessPreset,
     // Optional Auto-Ambush timer via Accessibility
     val autoTriggerEnabled: Boolean,
-    val autoTriggerEveryMin: Int,      // 5..60
-    val autoTriggerDurationSec: Int,   // 30..600
+    val autoTriggerEveryMin: Int,
+    val autoTriggerDurationSec: Int,
     // Cumulative Stats
     val sessionsCompleted: Int,
     val totalFocusedSec: Long,
@@ -139,6 +158,24 @@ class GazeConfig(context: Context) {
         binauralFreqHz = prefs.getInt(KEY_BINAURAL_HZ, 6).coerceIn(4, 12),
         unlockPopupsEnabled = prefs.getBoolean(KEY_UNLOCK_POPUPS, true),
         unlockMinigamesEnabled = prefs.getBoolean(KEY_UNLOCK_MINIGAMES, true),
+        overloadSprintEnabled = prefs.getBoolean(KEY_OVERLOAD_SPRINT, true),
+        gazeGatedPortalEnabled = prefs.getBoolean(KEY_GAZE_PORTAL, true),
+        livingOpacityEnabled = prefs.getBoolean(KEY_LIVING_OPACITY, true),
+        attentionHijackEnabled = prefs.getBoolean(KEY_HIJACK_EN, true),
+        attentionHijackIntervalMin = prefs.getInt(KEY_HIJACK_INT_MIN, 2).coerceIn(1, 8),
+        attentionHijackFocusSec = prefs.getInt(KEY_HIJACK_FOCUS_SEC, 14).coerceIn(8, 25),
+        ghostMicroPopupsEnabled = prefs.getBoolean(KEY_GHOST_POPUPS_EN, true),
+        ghostMicroPopupIntervalSec = prefs.getInt(KEY_GHOST_POPUPS_INT, 38).coerceIn(20, 90),
+        deadZonesEnabled = prefs.getBoolean(KEY_DEAD_ZONES_EN, true),
+        timeDebtEnabled = prefs.getBoolean(KEY_TIME_DEBT_EN, true),
+        timeDebtCarryPct = prefs.getInt(KEY_TIME_DEBT_PCT, 75).coerceIn(50, 100),
+        pendingTimeDebtSec = prefs.getInt(KEY_PENDING_DEBT_SEC, 0).coerceIn(0, 3600),
+        hypnoticSpiralEnabled = prefs.getBoolean(KEY_SPIRAL_EN, true),
+        spiralOpacityPct = prefs.getInt(KEY_SPIRAL_OPACITY, 26).coerceIn(12, 55),
+        ttsMantraWhisperEnabled = prefs.getBoolean(KEY_TTS_WHISPER, true),
+        blindTimerEnabled = prefs.getBoolean(KEY_BLIND_TIMER, false),
+        antiFlatSensorEnabled = prefs.getBoolean(KEY_ANTI_FLAT, true),
+        rebootSurvivalEnabled = prefs.getBoolean(KEY_REBOOT_SURVIVAL, true),
         showTelemetryBadge = prefs.getBoolean(KEY_TELEMETRY, true),
         preset = StrictnessPreset.fromId(prefs.getString(KEY_PRESET, StrictnessPreset.STRICT.id)),
         autoTriggerEnabled = prefs.getBoolean(KEY_AUTO_EN, false),
@@ -166,6 +203,9 @@ class GazeConfig(context: Context) {
                     putString(KEY_PENALTY_MODE, PenaltyMode.FIXED.id)
                     putBoolean(KEY_ANTI_ESCAPE, true); putBoolean(KEY_VOLUME_LOCK, false)
                     putBoolean(KEY_FORCE_BRIGHTNESS, false); putBoolean(KEY_SWIPE_NEXT, true)
+                    putBoolean(KEY_LIVING_OPACITY, false); putBoolean(KEY_HIJACK_EN, false)
+                    putBoolean(KEY_DEAD_ZONES_EN, false); putBoolean(KEY_GAZE_PORTAL, false)
+                    putBoolean(KEY_ANTI_FLAT, false)
                 }
                 StrictnessPreset.STRICT -> {
                     putInt(KEY_YAW_DEG, 22); putInt(KEY_PITCH_DEG, 24)
@@ -175,7 +215,12 @@ class GazeConfig(context: Context) {
                     putBoolean(KEY_ANTI_ESCAPE, true); putBoolean(KEY_VOLUME_LOCK, true)
                     putInt(KEY_VOLUME_FLOOR_PCT, 65); putBoolean(KEY_FORCE_BRIGHTNESS, true)
                     putBoolean(KEY_SUBLIMINAL_EN, true); putBoolean(KEY_BINAURAL_EN, true)
-                    putBoolean(KEY_SWIPE_NEXT, true)
+                    putBoolean(KEY_LIVING_OPACITY, true); putBoolean(KEY_HIJACK_EN, true); putInt(KEY_HIJACK_INT_MIN, 3)
+                    putBoolean(KEY_GHOST_POPUPS_EN, true); putBoolean(KEY_DEAD_ZONES_EN, true)
+                    putBoolean(KEY_OVERLOAD_SPRINT, true); putBoolean(KEY_TIME_DEBT_EN, true)
+                    putBoolean(KEY_SPIRAL_EN, true); putBoolean(KEY_GAZE_PORTAL, true)
+                    putBoolean(KEY_TTS_WHISPER, true); putBoolean(KEY_ANTI_FLAT, true)
+                    putBoolean(KEY_REBOOT_SURVIVAL, true); putBoolean(KEY_SWIPE_NEXT, true)
                 }
                 StrictnessPreset.RUTHLESS -> {
                     putInt(KEY_YAW_DEG, 16); putInt(KEY_PITCH_DEG, 18)
@@ -186,10 +231,79 @@ class GazeConfig(context: Context) {
                     putInt(KEY_VOLUME_FLOOR_PCT, 85); putBoolean(KEY_FORCE_BRIGHTNESS, true)
                     putBoolean(KEY_SUBLIMINAL_EN, true); putInt(KEY_SUBLIMINAL_INTERVAL, 3)
                     putBoolean(KEY_BINAURAL_EN, true); putInt(KEY_BINAURAL_VOL, 50)
-                    putBoolean(KEY_SWIPE_NEXT, false)
+                    putBoolean(KEY_LIVING_OPACITY, true); putBoolean(KEY_HIJACK_EN, true)
+                    putInt(KEY_HIJACK_INT_MIN, 2); putInt(KEY_HIJACK_FOCUS_SEC, 18)
+                    putBoolean(KEY_GHOST_POPUPS_EN, true); putInt(KEY_GHOST_POPUPS_INT, 24)
+                    putBoolean(KEY_DEAD_ZONES_EN, true); putBoolean(KEY_OVERLOAD_SPRINT, true)
+                    putBoolean(KEY_TIME_DEBT_EN, true); putInt(KEY_TIME_DEBT_PCT, 100)
+                    putBoolean(KEY_SPIRAL_EN, true); putInt(KEY_SPIRAL_OPACITY, 36)
+                    putBoolean(KEY_GAZE_PORTAL, true); putBoolean(KEY_TTS_WHISPER, true)
+                    putBoolean(KEY_BLIND_TIMER, true); putBoolean(KEY_ANTI_FLAT, true)
+                    putBoolean(KEY_REBOOT_SURVIVAL, true); putBoolean(KEY_SWIPE_NEXT, false)
                 }
             }
         }
+    }
+
+    /** #24 Chaos Roulette: randomizes intense rules secretly & returns the rolled duration in seconds! */
+    fun applyChaosRouletteRoll(): Pair<Int, String> {
+        val durMin = Random.nextInt(4, 21) // 4..20 min
+        val ghostOp = listOf(45, 48, 50, 54, 58).random()
+        val pm = if (Random.nextBoolean()) PenaltyMode.PROGRESSIVE else PenaltyMode.SUDDEN_DEATH
+        val hijackInt = Random.nextInt(1, 4) // 1..3 min
+        val hijackSec = Random.nextInt(12, 21)
+        val blind = Random.nextBoolean()
+        update {
+            putInt(KEY_DURATION_SEC, durMin * 60)
+            putBoolean(KEY_INFINITE_UNLOCK, false)
+            putInt(KEY_GHOST_OPACITY, ghostOp)
+            putString(KEY_PENALTY_MODE, pm.id)
+            putBoolean(KEY_LIVING_OPACITY, true)
+            putBoolean(KEY_HIJACK_EN, true)
+            putInt(KEY_HIJACK_INT_MIN, hijackInt)
+            putInt(KEY_HIJACK_FOCUS_SEC, hijackSec)
+            putBoolean(KEY_GHOST_POPUPS_EN, true)
+            putBoolean(KEY_DEAD_ZONES_EN, true)
+            putBoolean(KEY_SUBLIMINAL_EN, true)
+            putBoolean(KEY_SPIRAL_EN, true)
+            putBoolean(KEY_OVERLOAD_SPRINT, true)
+            putBoolean(KEY_GAZE_PORTAL, true)
+            putBoolean(KEY_BLIND_TIMER, blind)
+        }
+        val tag = if (blind) "🎲 ROULETTE CHAOS : Durée SECRÈTE (??:??) · ${pm.label} · Opacité $ghostOp% !"
+        else "🎲 ROULETTE CHAOS : ${durMin} min · ${pm.label} · Opacité $ghostOp% !"
+        return (durMin * 60) to tag
+    }
+
+    // ==================== #26 IMMORTAL MODE (REBOOT / UNLOCK PERSISTENCE) ====================
+    fun saveActiveSessionCheckpoint(remainingSec: Int, infinite: Boolean) {
+        update {
+            putBoolean(KEY_ACTIVE_CHECKPOINT, true)
+            putInt(KEY_CHECKPOINT_REM_SEC, remainingSec.coerceAtLeast(30))
+            putBoolean(KEY_CHECKPOINT_INF, infinite)
+            putLong(KEY_CHECKPOINT_TS, System.currentTimeMillis())
+        }
+    }
+
+    fun clearActiveSessionCheckpoint() {
+        update {
+            putBoolean(KEY_ACTIVE_CHECKPOINT, false)
+            remove(KEY_CHECKPOINT_REM_SEC)
+            remove(KEY_CHECKPOINT_INF)
+            remove(KEY_CHECKPOINT_TS)
+        }
+    }
+
+    /** Returns remaining seconds (+45s escape tax!) if a session was interrupted by reboot/kill within 12h. */
+    fun consumeUnfinishedCheckpointSec(): Int? {
+        if (!prefs.getBoolean(KEY_ACTIVE_CHECKPOINT, false)) return null
+        val ts = prefs.getLong(KEY_CHECKPOINT_TS, 0L)
+        if (System.currentTimeMillis() - ts > 12L * 3600L * 1000L) {
+            clearActiveSessionCheckpoint()
+            return null
+        }
+        val rem = prefs.getInt(KEY_CHECKPOINT_REM_SEC, 180)
+        return (rem + 45).coerceIn(60, 3600)
     }
 
     fun recordCompletedSession(focusedSec: Int, lookAways: Int, longestStreakSec: Int) {
@@ -199,17 +313,22 @@ class GazeConfig(context: Context) {
             putLong(KEY_STAT_FOCUSED_SEC, cur.totalFocusedSec + focusedSec.coerceAtLeast(0))
             putInt(KEY_STAT_LOOK_AWAYS, cur.totalLookAways + lookAways.coerceAtLeast(0))
             if (longestStreakSec > cur.bestStreakSec) putInt(KEY_STAT_BEST_STREAK, longestStreakSec)
+            putInt(KEY_PENDING_DEBT_SEC, 0) // Natural completion clears Time Debt!
         }
+        clearActiveSessionCheckpoint()
+    }
+
+    fun addPendingTimeDebt(addSec: Int): Int {
+        if (addSec <= 0) return snapshot().pendingTimeDebtSec
+        val next = (prefs.getInt(KEY_PENDING_DEBT_SEC, 0) + addSec).coerceIn(0, 3600)
+        update { putInt(KEY_PENDING_DEBT_SEC, next) }
+        return next
     }
 
     fun recordEscapeBlock() {
         update { putInt(KEY_STAT_ESCAPES, prefs.getInt(KEY_STAT_ESCAPES, 0) + 1) }
     }
 
-    /**
-     * Generates a fresh 6-digit access code ONLY after completing the imposed 3-minute (180s)
-     * 0.1s folder image-spam + pop-ups + mini-games overlay trial! Valid for 2 minutes.
-     */
     fun issueUnlockedAccessCode(): String {
         val code = String.format("%06d", Random.nextInt(100_000, 999_999))
         val expiresMs = System.currentTimeMillis() + 120_000L
@@ -237,8 +356,9 @@ class GazeConfig(context: Context) {
 
     companion object {
         const val EMERGENCY_TAPS = 20
-        const val ACCESS_CODE_WAIT_SEC = 180 // Imposed 3 full minutes!
-        const val IMAGE_SPAM_DELAY_MS = 100L // 0.1s rapid image display delay!
+        const val ACCESS_CODE_WAIT_SEC = 180
+        const val IMAGE_SPAM_DELAY_MS = 100L
+        const val OVERLOAD_SPAM_DELAY_MS = 50L
 
         val DEFAULT_MANTRAS_LIST = listOf(
             "REGARDE L'ÉCRAN",
@@ -286,6 +406,28 @@ class GazeConfig(context: Context) {
         private const val KEY_BINAURAL_HZ = "binaural_hz_v3"
         private const val KEY_UNLOCK_POPUPS = "unlock_popups_v3"
         private const val KEY_UNLOCK_MINIGAMES = "unlock_minigames_v3"
+        private const val KEY_OVERLOAD_SPRINT = "overload_sprint_v4"
+        private const val KEY_GAZE_PORTAL = "gaze_portal_v4"
+        private const val KEY_LIVING_OPACITY = "living_opacity_v4"
+        private const val KEY_HIJACK_EN = "hijack_en_v4"
+        private const val KEY_HIJACK_INT_MIN = "hijack_int_min_v4"
+        private const val KEY_HIJACK_FOCUS_SEC = "hijack_focus_sec_v4"
+        private const val KEY_GHOST_POPUPS_EN = "ghost_popups_en_v4"
+        private const val KEY_GHOST_POPUPS_INT = "ghost_popups_int_v4"
+        private const val KEY_DEAD_ZONES_EN = "dead_zones_en_v4"
+        private const val KEY_TIME_DEBT_EN = "time_debt_en_v4"
+        private const val KEY_TIME_DEBT_PCT = "time_debt_pct_v4"
+        private const val KEY_PENDING_DEBT_SEC = "pending_debt_sec_v4"
+        private const val KEY_SPIRAL_EN = "spiral_en_v4"
+        private const val KEY_SPIRAL_OPACITY = "spiral_opacity_v4"
+        private const val KEY_TTS_WHISPER = "tts_whisper_v4"
+        private const val KEY_BLIND_TIMER = "blind_timer_v4"
+        private const val KEY_ANTI_FLAT = "anti_flat_v4"
+        private const val KEY_REBOOT_SURVIVAL = "reboot_survival_v4"
+        private const val KEY_ACTIVE_CHECKPOINT = "active_chk_v4"
+        private const val KEY_CHECKPOINT_REM_SEC = "chk_rem_sec_v4"
+        private const val KEY_CHECKPOINT_INF = "chk_inf_v4"
+        private const val KEY_CHECKPOINT_TS = "chk_ts_v4"
         private const val KEY_TELEMETRY = "show_telemetry"
         private const val KEY_PRESET = "preset"
         private const val KEY_AUTO_EN = "auto_en"

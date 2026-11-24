@@ -13,8 +13,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- Video folder access including hidden .* folders & .nomedia -->
+    <!-- Video & Image folder access including hidden .* folders & .nomedia -->
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission
@@ -45,7 +46,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Accessibility Service: Fullscreen Unskippable Video Feed Overlay + Anti-Escape Watchdog -->
+        <!-- Accessibility Service: Multi-Window Overlay Host + Volume Key Lock + Anti-Escape Watchdog -->
         <service
             android:name=".service.GazeAccessibilityService"
             android:exported="true"
@@ -59,7 +60,7 @@
                 android:resource="@xml/gaze_accessibility_config" />
         </service>
 
-        <!-- Foreground Camera + Gaze Tracking Session Service (Android 14-16 compliant!) -->
+        <!-- Foreground Camera + Gaze Tracking + Ultra Extreme Session Service (Android 8-16) -->
         <service
             android:name=".service.GazeSessionService"
             android:exported="false"
@@ -68,5 +69,15 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Local on-device eye-tracking video attention overlay with user-configured timer and emergency exit" />
         </service>
+
+        <!-- #26 Immortal Mode: Resume interrupted session after reboot / screen unlock -->
+        <receiver
+            android:name=".service.GazeBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.USER_PRESENT" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

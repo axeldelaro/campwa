@@ -104,15 +104,18 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: gazelock-v3.0.${{ github.run_number }}
-          name: "GazeLock AI v3.0.${{ github.run_number }} (Overlay Semi-Transparent 45-50% Tactile Libre • #7 Flashs Subliminaux & Mantras • #8 Verrou Audio + Luminosité + Binaural • Portail 3 min Pop-ups & Mini-Jeux)"
+          tag_name: gazelock-v4.0.${{ github.run_number }}
+          name: "GazeLock AI v4.0.${{ github.run_number }} ULTRA EXTREME (Opacité Vivante • Coupures d'Emprise • Micro-Popups • Zones Mortes • 6 Mini-Jeux • Sprint 20 FPS • Spirale • Dette de Temps • Immortel)"
           body: |
-            ### 👁️ GazeLock AI v3.0 (`gazelock-v3.0.${{ github.run_number }}`)
-            - **👻 Overlay Semi-Transparent (45–50 % opacité, tactile 100 % déverrouillé)** : la vidéo remplit tout l'écran en surimpression pendant que tu continues d'utiliser toutes tes applis normalement — avec pilule flottante déplaçable (zéro bouton fermer), mode **`∞ Infini`** optionnel, et anti-évasion chirurgical bloquant Paramètres / Désinstallation / Force-Stop (`+15 s`) !
-            - **🧩 Portail 3 Minutes en Overlay (Spam 0,1 s + Pop-ups + Mini-Jeux)** : unique moyen de retirer les vidéos en cours — 3 minutes imposées directement en overlay avec spam d'images à `0,1 s`, **pop-ups interactifs chronométrés** (Présence, Piège, Flash ×3, `+8–10 s` si ignorés) et **3 mini-jeux obligatoires** utilisant les vraies images du dossier (**Puzzle à glissement `3×3`**, **Reconstitution par échange `3×3`** et **Redressement par rotation `3×3`**) !
-            - **⚡ #7 Flashs Subliminaux (0,08 s–0,22 s) & Mantras Néon** : flashs ultra-courts d'images du dossier + phrases néon personnalisables en pleine vidéo (compatibles mode Semi-Transparent et Verrouillé).
-            - **🔊 #8 Verrouillage Audio Absolu + Luminosité Max + Battement Binaural Hypnotique** : interception matérielle des touches `Volume Bas` / `Muet` via Accessibilité, plancher volume `40–100 %`, luminosité overlay forcée à `100 %` et pulsation binaurale synthétisée en local (`AudioTrack` stéréo).
-            - **Inclus aussi (v2.0)** : #2 Suivi Pupilles/Iris IA local, #12 Pénalités Fixe/Progressive/Mort Subite & #13 Anti-Évasion Total.
+            ### 👁️ GazeLock AI v4.0 ULTRA EXTREME (`gazelock-v4.0.${{ github.run_number }}`)
+            - **📈 #1 Emprise Progressive (Opacité Vivante `48 % → 96 %`)** : en mode Semi-Transparent, l'opacité grimpe au fil du temps, des écarts de regard, des micro-pop-ups ignorés et des tentatives d'évasion — jusqu'à forcer une Coupure d'Emprise à `96 %` !
+            - **⚡ #2 Coupures d'Emprise (`Attention Hijack`)** : en plein usage normal du téléphone, l'overlay confisque soudainement le tactile à `96 %` d'opacité jusqu'à `14 s` de regard ininterrompu !
+            - **🖼️ #5 Micro-Pop-Ups Fantômes** : fenêtres compactes avec photo du dossier + mantra + barre `6,5 s` pendant l'usage normal (`+6 %` d'opacité si ignoré !).
+            - **🚫 #9 Zones Mortes Tactiles Punitives** : bloque une zone centrale de l'écran sur faute de regard — rétrécit uniquement quand tu fixes l'écran !
+            - **🧩 #16 6 Mini-Jeux Visuels du Dossier (sans dictée)** : Taquin `3×3`, Reconstitution échange `3×3`, Rotation `3×3`, **🧠 Memory Flash `4×3`**, **🎯 Séquence Fuyante `1→9`** & **🔍 Trouve l'Intrus Éclair (3 manches)** !
+            - **🔥 #17 Sprint Surcharge (`00:45 → 00:00`)** : spam accéléré à **`0,05 s` (`20 FPS`)**, pop-ups 2× plus rapides, battement binaural `118 BPM`, et échec/timeout renvoie le chrono à **`01:00`** !
+            - **💸 #18 Dette de Temps** : interrompre via le portail 3 min reporte `50–100 %` du temps restant sur la prochaine session (soldé uniquement en finissant jusqu'à `00:00` !).
+            - **🌀 Arsenal Ultra-Intense inclus** : **#21 Spirale Hypnotique `60 FPS`**, **#22 Portail 3 min Verrouillé par le Regard Caméra**, **#23 Voix TTS Hypnotique (Chuchotement Mantras)**, **#24 Chrono Aveugle (`??:??`) & Roulette Chaos**, **#25 Anti-Pose Accéléromètre (table)** et **#26 Mode Immortel (`+45 s` après reboot/déverrouillage)** !
           files: ./GazeLockAI.apk
           draft: false
           prerelease: false

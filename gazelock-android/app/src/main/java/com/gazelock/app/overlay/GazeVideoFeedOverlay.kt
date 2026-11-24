@@ -41,20 +41,20 @@ import kotlin.math.abs
 import kotlin.random.Random
 
 /**
- * GazeLock AI v3.0 Video Feed Overlay:
- * - Supports TWO modes:
- *   1) [OverlayMode.GHOST_PASSTHROUGH]: Fullscreen video fills the display at 45–50% opacity (35..65%)
- *      with FLAG_NOT_TOUCHABLE so the user keeps using ALL apps normally, paired with a tiny draggable
- *      floating pill (no close button!) that launches the 3-minute interactive overlay unlock portal!
- *   2) [OverlayMode.FULL_LOCK]: 100% opaque touch-locked fullscreen video feed with 20-tap portal trigger.
- * - #7 Subliminal Image Flashes (0.08s–0.22s) + Neon Mantras layered seamlessly over the video in BOTH modes!
- * - Interactive Portal Window (Window #3) hosts the 3-minute 0.1s image-spam + pop-ups + Sliding Puzzle &
- *   Image Reconstruction mini-games directly in overlay!
+ * GazeLock AI v4.0 ULTRA Video Feed Overlay:
+ * - Semi-Transparent Ghost Mode (45-50% base, dynamically escalated by #1 Living Opacity & #2 Attention Hijack!)
+ *   AND Full-Lock Mode (100% opaque).
+ * - #7 Subliminal Image Flashes (0.08s–0.22s) + Neon Mantras.
+ * - #21 60 FPS Hypnotic Rotating Spiral synced to Binaural Hz.
+ * - #24 Blind Timer (??:??) support.
+ * - Interactive Portal Window hosts #22 Gaze-Gated 3-Min Trial with 6 Visual Mini-Games & #17 20 FPS Overload Sprint!
  */
 class GazeVideoFeedOverlay(
     private val context: Context,
     private val config: GazeConfigSnapshot,
     initialPlaylist: List<VideoItem>,
+    private val gazeLookingSupplier: () -> Boolean,
+    private val onOverloadSprintChanged: (Boolean) -> Unit,
     private val onMountPortalOverlay: (View) -> Boolean,
     private val onRemovePortalOverlay: () -> Unit,
     private val onDragGhostPill: (dx: Int, dy: Int) -> Unit,
@@ -82,6 +82,7 @@ class GazeVideoFeedOverlay(
     private var isPausedByLookAway = false
     private var isCompleted = false
     private var released = false
+    private var currentDisplayedOpacityPct: Int = if (isGhostMode) config.ghostOpacityPct else 100
 
     @Volatile
     var isAccessWaitActive: Boolean = false
@@ -93,21 +94,22 @@ class GazeVideoFeedOverlay(
     private var emergTaps = 0
     private var emergLastTapMs = 0L
 
-    // #7 Subliminal Image Pool + Scheduler
+    // Shared folder bitmap pool (used by #7 Subliminal Flashes & #5 Ghost Micro-Popups!)
     private val subliminalPool = ArrayList<Bitmap>()
     private var lastSubliminalIdx = -1
     private val mantras = config.mantraList()
 
-    // Window #1: Main Fullscreen Video + Subliminal Layer (touch-unlocked in Ghost mode, locked in Full-Lock!)
+    // Window #1: Fullscreen Video + Spiral + Subliminal Layer
     val rootView: FrameLayout
     private val textureView: TextureView
+    private val spiralView: HypnoticSpiralView?
     private lateinit var subliminalLayer: FrameLayout
     private lateinit var subliminalImageView: ImageView
     private val subliminalMantraTv: TextView
     private val warningBorder: WarningVignetteView
     private val flashBannerTv: TextView
 
-    // Full-Lock HUD elements
+    // Full-Lock HUD
     private val fullLockHudWrap: LinearLayout
     private val topPill: LinearLayout
     private val timerTv: TextView
@@ -120,10 +122,10 @@ class GazeVideoFeedOverlay(
     private val awayPenaltyTv: TextView
     private val bottomRow: LinearLayout
 
-    // Ghost Mode passive look-away status strip (non-touchable, top-center)
+    // Ghost Mode passive look-away strip
     private val ghostAwayStripTv: TextView
 
-    // Window #2: Compact Draggable Floating Control Pill (ONLY used in Ghost Pass-Through mode!)
+    // Window #2: Compact Draggable Ghost Control Pill
     val ghostPillView: LinearLayout?
     private var ghostPillTimerTv: TextView? = null
     private var ghostPillDotTv: TextView? = null
@@ -144,7 +146,6 @@ class GazeVideoFeedOverlay(
     }
 
     init {
-        // ==================== WINDOW #1: FULLSCREEN VIDEO + SUBLIMINAL LAYER ====================
         rootView = object : FrameLayout(context) {
             override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
                 if (!isGhostMode && !isCompleted && event != null &&
@@ -154,12 +155,10 @@ class GazeVideoFeedOverlay(
             }
         }.apply {
             setBackgroundColor(if (isGhostMode) Color.TRANSPARENT else Color.BLACK)
-            isClickable = !isGhostMode
-            isFocusable = !isGhostMode
-            isFocusableInTouchMode = !isGhostMode
+            isClickable = !isGhostMode; isFocusable = !isGhostMode; isFocusableInTouchMode = !isGhostMode
         }
 
-        // Layer 1: Hardware-Accelerated TextureView (supports flawless 45-50% alpha transparency over apps!)
+        // Layer 1: Hardware TextureView (supports live dynamic opacity in Ghost mode!)
         textureView = TextureView(context).apply {
             alpha = if (isGhostMode) (config.ghostOpacityPct.coerceIn(35, 65) / 100f) else 1.0f
             surfaceTextureListener = object : TextureView.SurfaceTextureListener {
@@ -191,20 +190,19 @@ class GazeVideoFeedOverlay(
             }
         }
 
-        // Layer 2: #7 Subliminal Image Flash + Neon Mantra Overlay (0.08s–0.22s!)
-        subliminalLayer = FrameLayout(context).apply {
-            visibility = View.GONE
-            isClickable = false; isFocusable = false
-        }
-        subliminalImageView = ImageView(context).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-        }
+        // Layer 1.5: #21 Rotating Hypnotic Spiral (60 FPS, synced to Binaural Hz, zero touch blocking!)
+        spiralView = if (config.hypnoticSpiralEnabled) {
+            HypnoticSpiralView(context, config.spiralOpacityPct, config.binauralFreqHz).also { sv ->
+                rootView.addView(sv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            }
+        } else null
+
+        // Layer 2: #7 Subliminal Image Flash + Neon Mantra
+        subliminalLayer = FrameLayout(context).apply { visibility = View.GONE; isClickable = false; isFocusable = false }
+        subliminalImageView = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
         subliminalMantraTv = TextView(context).apply {
-            text = ""
-            setTextColor(Color.rgb(255, 235, 255))
-            textSize = 31f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
+            text = ""; setTextColor(Color.rgb(255, 235, 255)); textSize = 31f
+            typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
             setPadding(dp(22), dp(14), dp(22), dp(14))
             setShadowLayer(18f, 0f, 0f, Color.rgb(225, 29, 72))
         }
@@ -212,11 +210,11 @@ class GazeVideoFeedOverlay(
         subliminalLayer.addView(subliminalMantraTv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         rootView.addView(subliminalLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // Layer 3: Pulsing Crimson Warning Vignette (works in BOTH modes!)
+        // Layer 3: Pulsing Crimson Warning Vignette
         warningBorder = WarningVignetteView(context).apply { visibility = View.GONE }
         rootView.addView(warningBorder, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // Layer 4: Full-Lock "LOOK AT SCREEN!" Card (only visible in FULL_LOCK mode)
+        // Layer 4: Full-Lock "LOOK AT SCREEN!" Card
         awayOverlay = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             setBackgroundColor(Color.argb(190, 20, 4, 12))
@@ -232,13 +230,12 @@ class GazeVideoFeedOverlay(
             setTextColor(Color.WHITE); textSize = 14f; gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(6))
         }
         awayPenaltyTv = TextView(context).apply {
-            text = ""
-            setTextColor(Color.rgb(253, 224, 71)); textSize = 13f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+            text = ""; setTextColor(Color.rgb(253, 224, 71)); textSize = 13f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
         }
         awayOverlay.addView(awayTitleTv); awayOverlay.addView(awayReasonTv); awayOverlay.addView(awayPenaltyTv)
         rootView.addView(awayOverlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // Layer 5: Top HUD Wrapper (Full-Lock Pill + Shared Flash Banner + Ghost Passive Look-Away Strip)
+        // Layer 5: Top HUD Wrapper
         val topWrap = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(12), dp(36), dp(12), dp(6))
@@ -262,14 +259,14 @@ class GazeVideoFeedOverlay(
             }
         }
         timerTv = TextView(context).apply {
-            text = if (config.infiniteUntilUnlock) "👁️ ∞ (PORTAIL 3 MIN)" else "👁️ ${formatMmSs(config.durationSec * 1000L)}"
+            text = formatDisplayTimer(config.durationSec * 1000L)
             setTextColor(Color.WHITE); textSize = 17.5f; typeface = Typeface.MONOSPACE; gravity = Gravity.CENTER
         }
         progressBar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000; progress = 0
             progressTintList = ColorStateList.valueOf(Color.rgb(16, 185, 129))
             progressBackgroundTintList = ColorStateList.valueOf(Color.argb(90, 255, 255, 255))
-            visibility = if (config.infiniteUntilUnlock) View.GONE else View.VISIBLE
+            visibility = if (config.infiniteUntilUnlock || config.blindTimerEnabled) View.GONE else View.VISIBLE
         }
         subInfoTv = TextView(context).apply {
             text = "🎬 Fil vidéo verrouillé • ${config.penaltyMode.label}"
@@ -287,28 +284,27 @@ class GazeVideoFeedOverlay(
         fullLockHudWrap.addView(topPill)
         topWrap.addView(fullLockHudWrap)
 
-        // Ghost Passive Look-Away Strip (non-touchable!)
         ghostAwayStripTv = TextView(context).apply {
             setTextColor(Color.rgb(254, 202, 202)); textSize = 11.8f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
             background = GradientDrawable().apply {
-                cornerRadius = dp(12).toFloat(); setColor(Color.argb(210, 88, 10, 28))
+                cornerRadius = dp(12).toFloat(); setColor(Color.argb(215, 88, 10, 28))
                 setStroke(dp(1), Color.rgb(244, 63, 94))
             }
             setPadding(dp(12), dp(6), dp(12), dp(6))
             visibility = View.GONE
         }
-        topWrap.addView(ghostAwayStripTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(44) })
+        topWrap.addView(ghostAwayStripTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(46) })
 
         flashBannerTv = TextView(context).apply {
             setTextColor(Color.WHITE); textSize = 12f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
-            background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.argb(230, 190, 18, 60)) }
+            background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.argb(232, 190, 18, 60)) }
             setPadding(dp(12), dp(6), dp(12), dp(6))
             visibility = View.GONE
         }
         topWrap.addView(flashBannerTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
         rootView.addView(topWrap, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
 
-        // Layer 6: Bottom Aspect Toggle + Swipe Hint (FULL_LOCK mode only)
+        // Layer 6: Bottom Bar (Full-Lock only)
         bottomRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), dp(8), dp(14), dp(22))
@@ -329,11 +325,10 @@ class GazeVideoFeedOverlay(
         bottomRow.addView(aspectBtn)
         rootView.addView(bottomRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
 
-        // ==================== WINDOW #2: COMPACT DRAGGABLE GHOST PILL (ONLY IN GHOST MODE) ====================
         ghostPillView = if (isGhostMode) buildGhostControlPill() else null
 
-        // Preload #7 Subliminal Image Pool off UI thread & start loop!
-        if (config.subliminalEnabled) {
+        // Preload shared folder image pool for #7 Subliminal Flashes & #5 Ghost Micro-Popups!
+        if (config.subliminalEnabled || config.ghostMicroPopupsEnabled) {
             Thread {
                 val loaded = VideoFeedRepository.loadSpamBitmapPool(context.applicationContext, config, maxPoolSize = 24)
                 mainHandler.post {
@@ -344,84 +339,74 @@ class GazeVideoFeedOverlay(
                     subliminalPool.addAll(loaded)
                 }
             }.start()
-            scheduleNextSubliminalFlash()
         }
+        if (config.subliminalEnabled) scheduleNextSubliminalFlash()
     }
 
     private fun buildGhostControlPill(): LinearLayout {
         val pill = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(9), dp(5), dp(7), dp(5))
             background = GradientDrawable().apply {
                 cornerRadius = dp(18).toFloat()
-                setColor(Color.argb(210, 18, 12, 32))
-                setStroke(dp(1), Color.argb(215, 192, 38, 211))
+                setColor(Color.argb(214, 18, 12, 32))
+                setStroke(dp(1), Color.argb(220, 192, 38, 211))
             }
         }
-
-        val dot = TextView(context).apply {
-            text = "🟢"
-            textSize = 10f
-            setPadding(0, 0, dp(4), 0)
-        }
+        val dot = TextView(context).apply { text = "🟢"; textSize = 10f; setPadding(0, 0, dp(4), 0) }
         ghostPillDotTv = dot
-
         val tm = TextView(context).apply {
-            text = if (config.infiniteUntilUnlock) "👻 ∞ · ${config.ghostOpacityPct}%" else "👻 ${formatMmSs(config.durationSec * 1000L)}"
-            setTextColor(Color.WHITE); textSize = 11.4f; typeface = Typeface.MONOSPACE
-            setPadding(0, 0, dp(6), 0)
+            text = "👻 ${formatShortTimer(config.durationSec * 1000L)} · ${config.ghostOpacityPct}%"
+            setTextColor(Color.WHITE); textSize = 11.2f; typeface = Typeface.MONOSPACE; setPadding(0, 0, dp(6), 0)
         }
         ghostPillTimerTv = tm
-
-        pill.addView(dot)
-        pill.addView(tm)
+        pill.addView(dot); pill.addView(tm)
 
         if (config.allowSwipeNext) {
-            val nextBtn = TextView(context).apply {
-                text = "⏭"
-                setTextColor(Color.rgb(216, 180, 254)); textSize = 13f
-                setPadding(dp(5), dp(2), dp(5), dp(2))
+            pill.addView(TextView(context).apply {
+                text = "⏭"; setTextColor(Color.rgb(216, 180, 254)); textSize = 13f; setPadding(dp(5), dp(2), dp(5), dp(2))
                 setOnClickListener { if (!isAccessWaitActive && !isPausedByLookAway) nextVideoInFeed() }
-            }
-            pill.addView(nextBtn)
+            })
         }
-
-        // ONLY way to stop the Ghost overlay early: launches the 3-minute imposed overlay portal!
-        val unlockBtn = TextView(context).apply {
-            text = "🔓 3m"
-            setTextColor(Color.WHITE); textSize = 10.6f; typeface = Typeface.DEFAULT_BOLD
+        pill.addView(TextView(context).apply {
+            text = "🔓 3m"; setTextColor(Color.WHITE); textSize = 10.6f; typeface = Typeface.DEFAULT_BOLD
             background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.rgb(190, 24, 93)) }
             setPadding(dp(7), dp(3), dp(7), dp(3))
             setOnClickListener { openUnlockPortal() }
-        }
-        pill.addView(unlockBtn)
+        })
 
-        // Smooth drag-to-move on the timer/handle area so it never blocks an app button underneath!
         var lastRawX = 0f; var lastRawY = 0f; var dragging = false
         val dragListener = View.OnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { lastRawX = ev.rawX; lastRawY = ev.rawY; dragging = false; true }
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = (ev.rawX - lastRawX).toInt()
-                    val dy = (ev.rawY - lastRawY).toInt()
+                    val dx = (ev.rawX - lastRawX).toInt(); val dy = (ev.rawY - lastRawY).toInt()
                     if (dragging || abs(dx) > dp(4) || abs(dy) > dp(4)) {
-                        dragging = true
-                        onDragGhostPill(dx, dy)
-                        lastRawX = ev.rawX; lastRawY = ev.rawY
+                        dragging = true; onDragGhostPill(dx, dy); lastRawX = ev.rawX; lastRawY = ev.rawY
                     }
                     true
                 }
                 else -> false
             }
         }
-        dot.setOnTouchListener(dragListener)
-        tm.setOnTouchListener(dragListener)
-
+        dot.setOnTouchListener(dragListener); tm.setOnTouchListener(dragListener)
         return pill
     }
 
-    // ==================== #7 SUBLIMINAL IMAGE FLASHES + NEON MANTRAS ====================
+    /** #1 Living Opacity & #2 Hijack: dynamically updates Ghost video alpha (35..98%) cleanly! */
+    fun setDynamicGhostOpacity(pct: Int, intenseSpiral: Boolean = false) {
+        if (!isGhostMode || released) return
+        val clamped = pct.coerceIn(35, 98)
+        currentDisplayedOpacityPct = clamped
+        textureView.alpha = clamped / 100f
+        spiralView?.setIntenseMode(intenseSpiral || clamped >= 80)
+    }
+
+    fun pickRandomFolderThumbnail(): Bitmap? {
+        val valid = subliminalPool.filter { !it.isRecycled }
+        return if (valid.isNotEmpty()) valid[Random.nextInt(valid.size)] else null
+    }
+
     private fun scheduleNextSubliminalFlash() {
         if (released || isCompleted || !config.subliminalEnabled) return
         val baseMs = config.subliminalIntervalSec.coerceIn(2, 20) * 1000L
@@ -432,8 +417,7 @@ class GazeVideoFeedOverlay(
     private fun triggerSingleSubliminalFlash() {
         if (released || isCompleted || isAccessWaitActive) return
         val alphaFactor = config.subliminalAlphaPct.coerceIn(30, 95) / 100f
-        // Keep subliminal image clearly perceptible in Ghost mode too!
-        subliminalLayer.alpha = if (isGhostMode) (alphaFactor * 0.85f).coerceIn(0.30f, 0.82f) else alphaFactor
+        subliminalLayer.alpha = if (isGhostMode) (alphaFactor * 0.85f).coerceIn(0.30f, 0.84f) else alphaFactor
 
         val validImgs = subliminalPool.filter { !it.isRecycled }
         if (validImgs.isNotEmpty()) {
@@ -446,8 +430,7 @@ class GazeVideoFeedOverlay(
             subliminalImageView.visibility = View.GONE
         }
 
-        val mantra = mantras[Random.nextInt(mantras.size)]
-        subliminalMantraTv.text = mantra
+        subliminalMantraTv.text = mantras[Random.nextInt(mantras.size)]
         subliminalMantraTv.rotation = Random.nextInt(-5, 6).toFloat()
         subliminalLayer.visibility = View.VISIBLE
 
@@ -527,6 +510,18 @@ class GazeVideoFeedOverlay(
         textureView.setTransform(m)
     }
 
+    private fun formatShortTimer(ms: Long): String = when {
+        config.infiniteUntilUnlock -> "∞"
+        config.blindTimerEnabled -> "??:??"
+        else -> formatMmSs(ms)
+    }
+
+    private fun formatDisplayTimer(ms: Long): String = when {
+        config.infiniteUntilUnlock -> "👁️ ∞ · PORTAIL 3 MIN"
+        config.blindTimerEnabled -> "👁️ ??:?? · AVEUGLE"
+        else -> "👁️ ${formatMmSs(ms)}"
+    }
+
     fun updateHud(
         remainingMs: Long,
         totalDurationMs: Long,
@@ -535,28 +530,25 @@ class GazeVideoFeedOverlay(
         penaltyAppliedCount: Int,
         nextPenaltySec: Int,
         penaltyMode: PenaltyMode,
-        flashBanner: String
+        flashBanner: String,
+        overrideReason: String? = null
     ) {
         if (released || isCompleted) return
 
         if (flashBanner.isNotBlank()) {
-            flashBannerTv.text = flashBanner
-            flashBannerTv.visibility = View.VISIBLE
+            flashBannerTv.text = flashBanner; flashBannerTv.visibility = View.VISIBLE
         } else {
             flashBannerTv.visibility = View.GONE
         }
 
-        val looking = gaze.isLookingAtScreen
-        val timeStr = if (config.infiniteUntilUnlock) "∞" else formatMmSs(remainingMs)
+        val looking = gaze.isLookingAtScreen && overrideReason == null
+        val shortTime = formatShortTimer(remainingMs)
+        val reasonShown = overrideReason ?: gaze.reason
 
-        // Update Ghost Mode compact floating pill
         if (isGhostMode) {
             ghostPillDotTv?.text = if (looking) "🟢" else "🔴"
-            ghostPillTimerTv?.text = if (config.infiniteUntilUnlock) {
-                "👻 ∞ · ${config.ghostOpacityPct}%"
-            } else {
-                "👻 $timeStr"
-            }
+            val upMark = if (currentDisplayedOpacityPct > config.ghostOpacityPct + 2) "▲" else ""
+            ghostPillTimerTv?.text = "👻 $shortTime · ${currentDisplayedOpacityPct}%$upMark"
             if (looking) {
                 warningBorder.visibility = View.GONE
                 ghostAwayStripTv.visibility = View.GONE
@@ -565,9 +557,8 @@ class GazeVideoFeedOverlay(
                     if (!isAccessWaitActive) { try { if (mediaPlayer?.isPlaying == false) mediaPlayer?.start() } catch (_: Throwable) {} }
                 }
             } else {
-                warningBorder.visibility = View.VISIBLE
-                warningBorder.invalidate()
-                ghostAwayStripTv.text = "👁️ ${gaze.reason} — Chrono figé !"
+                warningBorder.visibility = View.VISIBLE; warningBorder.invalidate()
+                ghostAwayStripTv.text = "👁️ $reasonShown — Chrono figé !"
                 ghostAwayStripTv.visibility = View.VISIBLE
                 if (config.pauseVideoOnLookAway && !isPausedByLookAway) {
                     isPausedByLookAway = true
@@ -577,30 +568,27 @@ class GazeVideoFeedOverlay(
             return
         }
 
-        // Full-Lock HUD update
-        if (!config.infiniteUntilUnlock) {
+        if (!config.infiniteUntilUnlock && !config.blindTimerEnabled) {
             val pct = (((totalDurationMs - remainingMs).coerceAtLeast(0L) * 1000L) / totalDurationMs.coerceAtLeast(1L)).toInt().coerceIn(0, 1000)
             progressBar.progress = pct
         }
 
         if (looking) {
-            timerTv.text = if (config.infiniteUntilUnlock) "👁️ ∞ · PORTAIL 3 MIN" else "👁️ $timeStr"
+            timerTv.text = formatDisplayTimer(remainingMs)
             topPill.background = makePillBg(looking = true)
             progressBar.progressTintList = ColorStateList.valueOf(Color.rgb(16, 185, 129))
-            warningBorder.visibility = View.GONE
-            awayOverlay.visibility = View.GONE
+            warningBorder.visibility = View.GONE; awayOverlay.visibility = View.GONE
             if (isPausedByLookAway) {
                 isPausedByLookAway = false
                 if (!isAccessWaitActive) { try { if (mediaPlayer?.isPlaying == false) mediaPlayer?.start() } catch (_: Throwable) {} }
             }
         } else {
-            timerTv.text = "⏸️ $timeStr · PAUSE"
+            timerTv.text = "⏸️ $shortTime · PAUSE"
             topPill.background = makePillBg(looking = false)
             progressBar.progressTintList = ColorStateList.valueOf(Color.rgb(244, 63, 94))
-            warningBorder.visibility = View.VISIBLE
-            warningBorder.invalidate()
+            warningBorder.visibility = View.VISIBLE; warningBorder.invalidate()
             awayOverlay.visibility = View.VISIBLE
-            awayReasonTv.text = "${gaze.reason}\nLe chronomètre est FIGÉ tant que tu ne regardes pas !"
+            awayReasonTv.text = "$reasonShown\nLe chronomètre est FIGÉ tant que tu ne regardes pas !"
 
             val trigMs = if (penaltyMode == PenaltyMode.SUDDEN_DEATH) 2_200L else 2_500L
             awayPenaltyTv.text = when {
@@ -609,8 +597,7 @@ class GazeVideoFeedOverlay(
                     String.format("💀 MORT SUBITE : RESET CHRONO dans %.1fs !", (trigMs - lookAwayDurationMs) / 1000f)
                 penaltyMode == PenaltyMode.SUDDEN_DEATH ->
                     "💀 CHRONOMÈTRE REMIS À ZÉRO ! (Écarts : $penaltyAppliedCount)"
-                nextPenaltySec <= 0 ->
-                    "Écarts détectés : $penaltyAppliedCount"
+                nextPenaltySec <= 0 -> "Écarts détectés : $penaltyAppliedCount"
                 lookAwayDurationMs < trigMs -> {
                     val pLabel = if (penaltyMode == PenaltyMode.PROGRESSIVE) "📈 Pénalité Progressive" else "⚠️ Pénalité"
                     String.format("$pLabel +%ds dans %.1fs !", nextPenaltySec, (trigMs - lookAwayDurationMs) / 1000f)
@@ -627,16 +614,14 @@ class GazeVideoFeedOverlay(
             telemetryTv.text = if (gaze.faceDetected) {
                 val irisStr = if (gaze.irisMeasured) " · 👁️Iris ${gaze.irisOffsetPct}%" else ""
                 "IA · Yaw ${gaze.yawDeg.toInt()}° · Pitch ${gaze.pitchDeg.toInt()}°$irisStr · Yeux ${(gaze.eyeOpenAvg * 100).toInt()}%"
-            } else {
-                "IA Regard · Aucun visage devant la caméra frontale"
-            }
+            } else "IA Regard · Aucun visage devant la caméra frontale"
         }
     }
 
-    // ==================== WINDOW #3: INTERACTIVE PORTAL OVERLAY (3-MIN TRIAL & COMPLETION) ====================
+    // ==================== WINDOW #3: INTERACTIVE PORTAL OVERLAY ====================
     fun openUnlockPortal() {
         if (released || isCompleted) return
-        if (portalHostView != null) return // Already open!
+        if (portalHostView != null) return
 
         val host = object : FrameLayout(context) {
             override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
@@ -646,7 +631,7 @@ class GazeVideoFeedOverlay(
                 return super.dispatchKeyEvent(event)
             }
         }.apply {
-            setBackgroundColor(Color.argb(232, 8, 6, 18))
+            setBackgroundColor(Color.argb(236, 8, 6, 18))
             isClickable = true; isFocusable = true; isFocusableInTouchMode = true
         }
 
@@ -660,23 +645,19 @@ class GazeVideoFeedOverlay(
             }
         }
         card.addView(TextView(context).apply {
-            text = "🔑 Portail de Déblocage (Overlay)"
-            setTextColor(Color.WHITE); textSize = 17f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+            text = "🔑 Portail de Déblocage 3 min (Overlay)"
+            setTextColor(Color.WHITE); textSize = 16.8f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
         })
-        val extraDesc = buildString {
-            append("Impossible de retirer les vidéos directement. Tu dois accomplir le créneau de 3 minutes imposées en overlay : spam d'images (0,1 s)")
-            if (config.unlockPopupsEnabled) append(" + pop-ups interactifs")
-            if (config.unlockMinigamesEnabled) append(" + mini-jeux (Puzzle à glissement & Reconstitution d'image)")
-            append(" !")
-        }
+        val debtWarn = if (config.timeDebtEnabled && !config.infiniteUntilUnlock) {
+            "\n💸 Attention : ${config.timeDebtCarryPct} % du temps restant sera reporté en Dette de Temps sur la prochaine session !"
+        } else ""
         card.addView(TextView(context).apply {
-            text = extraDesc
-            setTextColor(Color.rgb(212, 206, 232)); textSize = 11.8f; gravity = Gravity.CENTER; setPadding(0, dp(6), 0, dp(12))
+            text = "Accomplis les 3 minutes imposées en overlay : spam 0,1 s → Sprint Surcharge 20 FPS, pop-ups, regard caméra + 3 mini-jeux visuels !$debtWarn"
+            setTextColor(Color.rgb(212, 206, 232)); textSize = 11.6f; gravity = Gravity.CENTER; setPadding(0, dp(6), 0, dp(12))
         })
 
-        // Launch 3-Minute Overlay Portal immediately!
         card.addView(Button(context).apply {
-            text = "⏳ LANCER LE CRÉNEAU 3 MIN (Overlay + Mini-Jeux)"
+            text = "⏳ LANCER LE CRÉNEAU 3 MIN (Overlay + 6 Mini-Jeux)"
             isAllCaps = false; textSize = 12.6f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
             background = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(Color.rgb(162, 28, 175)) }
             setPadding(dp(12), dp(12), dp(12), dp(12))
@@ -688,7 +669,7 @@ class GazeVideoFeedOverlay(
             setTextColor(Color.rgb(252, 165, 165)); textSize = 11.5f; gravity = Gravity.CENTER; visibility = View.GONE
         }
         val input = EditText(context).apply {
-            hint = "Ou saisis un code obtenu (< 2 min)"
+            hint = "Ou saisis un code déjà obtenu (< 2 min)"
             inputType = InputType.TYPE_CLASS_NUMBER
             setTextColor(Color.WHITE); setHintTextColor(Color.rgb(140, 140, 162)); textSize = 12.5f
             background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.rgb(34, 28, 52)) }
@@ -707,11 +688,9 @@ class GazeVideoFeedOverlay(
             background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.rgb(225, 29, 72)) }
             setOnClickListener {
                 if (onVerifyAccessCode(input.text?.toString().orEmpty())) {
-                    closePortalOverlay()
-                    onEmergencyExit()
+                    closePortalOverlay(); onEmergencyExit()
                 } else {
-                    errTv.text = "Code invalide ou expiré — lance le créneau de 3 min !"
-                    errTv.visibility = View.VISIBLE
+                    errTv.text = "Code invalide ou expiré — lance le créneau de 3 min !"; errTv.visibility = View.VISIBLE
                 }
             }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
@@ -739,6 +718,8 @@ class GazeVideoFeedOverlay(
         val waitView = AccessCodeWaitSpamView(
             context = context,
             cfg = config,
+            gazeLookingSupplier = gazeLookingSupplier,
+            onOverloadSprintChanged = onOverloadSprintChanged,
             onIssueCode = onIssueAccessCodeAfterWait,
             onCodeUnlockedAndExit = { issuedCode ->
                 isAccessWaitActive = false
@@ -759,8 +740,9 @@ class GazeVideoFeedOverlay(
         waitView.startThreeMinuteSpamWait()
     }
 
-    private fun closePortalOverlay() {
+    fun closePortalOverlay() {
         isAccessWaitActive = false
+        onOverloadSprintChanged(false)
         activeWaitView?.stopAndRelease()
         activeWaitView = null
         if (portalHostView != null) {
@@ -774,16 +756,14 @@ class GazeVideoFeedOverlay(
         mainHandler.removeCallbacks(subliminalLoopRunnable)
         mainHandler.removeCallbacks(hideSubliminalRunnable)
         subliminalLayer.visibility = View.GONE
+        spiralView?.visibility = View.GONE
         closePortalOverlay()
         releasePlayerOnly()
-        warningBorder.visibility = View.GONE
-        awayOverlay.visibility = View.GONE
-        ghostAwayStripTv.visibility = View.GONE
+        warningBorder.visibility = View.GONE; awayOverlay.visibility = View.GONE; ghostAwayStripTv.visibility = View.GONE
 
-        // Mount interactive completion overlay on Window #3 so even in Ghost mode the button is 100% touchable!
         val completeBox = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-            setBackgroundColor(Color.argb(240, 10, 8, 22))
+            setBackgroundColor(Color.argb(242, 10, 8, 22))
             setPadding(dp(26), dp(28), dp(26), dp(28))
             isClickable = true; isFocusable = true
         }
@@ -794,7 +774,8 @@ class GazeVideoFeedOverlay(
         completeBox.addView(TextView(context).apply {
             text = "⏱️ Temps fixé avec attention : ${formatMmSs(focusedSec * 1000L)}\n" +
                 "👀 Détournements du regard : $lookAways\n" +
-                "🔥 Plus longue série sans détourner les yeux : ${bestStreakSec}s"
+                "🔥 Plus longue série continue : ${bestStreakSec}s\n" +
+                "💸 Dette de Temps soldée à 0 !"
             setTextColor(Color.WHITE); textSize = 14f; gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(22))
         })
         completeBox.addView(Button(context).apply {
@@ -825,6 +806,7 @@ class GazeVideoFeedOverlay(
         released = true
         mainHandler.removeCallbacks(subliminalLoopRunnable)
         mainHandler.removeCallbacks(hideSubliminalRunnable)
+        spiralView?.visibility = View.GONE
         closePortalOverlay()
         releasePlayerOnly()
         subliminalImageView.setImageDrawable(null)
@@ -841,8 +823,7 @@ class GazeVideoFeedOverlay(
 
     private class WarningVignetteView(context: Context) : View(context) {
         private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            color = Color.argb(210, 244, 63, 94)
+            style = Paint.Style.STROKE; color = Color.argb(210, 244, 63, 94)
         }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
