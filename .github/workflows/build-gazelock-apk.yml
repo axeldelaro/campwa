@@ -104,14 +104,15 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: gazelock-v2.0.${{ github.run_number }}
-          name: "GazeLock AI v2.0.${{ github.run_number }} (#2 Suivi Pupilles/Iris IA • #12 Mort Subite & Pénalité Progressive • #13 Anti-Évasion +15s • Code d'Accès 3 min + Spam Images 0,1s)"
+          tag_name: gazelock-v3.0.${{ github.run_number }}
+          name: "GazeLock AI v3.0.${{ github.run_number }} (Overlay Semi-Transparent 45-50% Tactile Libre • #7 Flashs Subliminaux & Mantras • #8 Verrou Audio + Luminosité + Binaural • Portail 3 min Pop-ups & Mini-Jeux)"
           body: |
-            ### 👁️ GazeLock AI v2.0 (`gazelock-v2.0.${{ github.run_number }}`)
-            - **#2 Suivi Précis des Pupilles / Iris IA (100 % hors ligne)** : détection sous-pixel du centre de l'iris dans les 16 contours oculaires ML Kit — arrête le chrono même quand tu gardes la tête immobile en regardant à côté !
-            - **#12 Modes de Sanction Avancés** : **Fixe**, **📈 Progressive** (double à chaque écart : `+3s → +6s → +12s → +24s…`) et **💀 Mort Subite / Zéro Faute** (remet le chrono complet à zéro si regard détourné `> 2,2 s` !).
-            - **#13 Anti-Évasion Total (Accessibilité)** : bloque Paramètres Android, Force-Stop, Centre de Sécurité, Récents et Panneau de Contrôle pendant la session + applique **`+15 s` de pénalité d'évasion** !
-            - **🔑 Code d'Accès par Attente Imposée de 3 min + Spam d'Images 0,1 s** : pour obtenir un code d'accès unique (6 chiffres), l'appli impose 3 minutes complètes avec affichage rapide toutes les `0,1 s` (`10 images/sec`) des images du dossier vidéo (ou frames vidéo auto en secours) !
+            ### 👁️ GazeLock AI v3.0 (`gazelock-v3.0.${{ github.run_number }}`)
+            - **👻 Overlay Semi-Transparent (45–50 % opacité, tactile 100 % déverrouillé)** : la vidéo remplit tout l'écran en surimpression pendant que tu continues d'utiliser toutes tes applis normalement — avec pilule flottante déplaçable (zéro bouton fermer), mode **`∞ Infini`** optionnel, et anti-évasion chirurgical bloquant Paramètres / Désinstallation / Force-Stop (`+15 s`) !
+            - **🧩 Portail 3 Minutes en Overlay (Spam 0,1 s + Pop-ups + Mini-Jeux)** : unique moyen de retirer les vidéos en cours — 3 minutes imposées directement en overlay avec spam d'images à `0,1 s`, **pop-ups interactifs chronométrés** (Présence, Piège, Flash ×3, `+8–10 s` si ignorés) et **3 mini-jeux obligatoires** utilisant les vraies images du dossier (**Puzzle à glissement `3×3`**, **Reconstitution par échange `3×3`** et **Redressement par rotation `3×3`**) !
+            - **⚡ #7 Flashs Subliminaux (0,08 s–0,22 s) & Mantras Néon** : flashs ultra-courts d'images du dossier + phrases néon personnalisables en pleine vidéo (compatibles mode Semi-Transparent et Verrouillé).
+            - **🔊 #8 Verrouillage Audio Absolu + Luminosité Max + Battement Binaural Hypnotique** : interception matérielle des touches `Volume Bas` / `Muet` via Accessibilité, plancher volume `40–100 %`, luminosité overlay forcée à `100 %` et pulsation binaurale synthétisée en local (`AudioTrack` stéréo).
+            - **Inclus aussi (v2.0)** : #2 Suivi Pupilles/Iris IA local, #12 Pénalités Fixe/Progressive/Mort Subite & #13 Anti-Évasion Total.
           files: ./GazeLockAI.apk
           draft: false
           prerelease: false

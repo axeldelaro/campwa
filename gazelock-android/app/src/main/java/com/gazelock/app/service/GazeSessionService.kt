@@ -18,6 +18,7 @@ import android.os.Vibrator
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
@@ -25,8 +26,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import com.gazelock.app.ai.GazeTrackerEngine
 import com.gazelock.app.ai.GazeTrackerEngine.GazeReading
+import com.gazelock.app.audio.HypnoticAudioEngine
 import com.gazelock.app.config.GazeConfig
 import com.gazelock.app.config.GazeConfigSnapshot
+import com.gazelock.app.config.OverlayMode
 import com.gazelock.app.config.PenaltyMode
 import com.gazelock.app.media.VideoFeedRepository
 import com.gazelock.app.overlay.GazeVideoFeedOverlay
@@ -35,11 +38,15 @@ import java.util.Locale
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
- * Foreground Camera + Local AI Gaze Session Service (v2.0):
- * - #2 Real Iris/Pupil + Head Pose AI Gaze Tracking via CameraX + ML Kit Contours.
- * - #12 Fixed, Progressive (doubling +3s -> +6s -> +12s -> +24s...), and Sudden Death (full timer reset!) penalties!
- * - #13 Anti-Escape +15s penalty hook called by [GazeAccessibilityService].
- * - Dynamic Access Code issued ONLY after the imposed 3-minute 0.1s folder image-spam wait!
+ * Foreground Camera + Local AI Gaze Session Service (v3.0):
+ * - Supports Semi-Transparent Ghost Pass-Through Mode (45-50% opacity, touch-unlocked + floating pill)
+ *   AND Full-Lock Mode (100% opaque).
+ * - #2 Real Iris/Pupil + Head Pose AI Gaze Tracking.
+ * - #7 Subliminal Image Flashes & Neon Mantras inside [GazeVideoFeedOverlay].
+ * - #8 Absolute Volume Lock (floor 40-100% + hardware Volume Down/Mute interception) + Forced Max Brightness
+ *   + Local Synthesized Binaural Hypnotic Beat ([HypnoticAudioEngine]).
+ * - #12 Fixed, Progressive & Sudden Death Penalties + #13 Anti-Escape +15s Watchdog.
+ * - Interactive 3-Minute Overlay Unlock Portal (0.1s image spam + pop-ups + Sliding Puzzle & Image Reconstruction!).
  */
 class GazeSessionService : LifecycleService() {
 
@@ -48,15 +55,22 @@ class GazeSessionService : LifecycleService() {
     private var activeCfg: GazeConfigSnapshot? = null
     private var tracker: GazeTrackerEngine? = null
     private var overlay: GazeVideoFeedOverlay? = null
+    private var hypnoticAudio: HypnoticAudioEngine? = null
+
+    // Fallback WindowManager handles (used only if AccessibilityService isn't running)
     private var fallbackWm: WindowManager? = null
     private var mountedViaA11y = false
+    private var fbPillView: View? = null
+    private var fbPillParams: WindowManager.LayoutParams? = null
+    private var fbPortalView: View? = null
+
     private var tts: TextToSpeech? = null
     private var ttsReady = false
 
     // Session Runtime State
-    private var initialDurationMs = 180_000L
-    private var totalDurationMs = 180_000L
-    private var remainingMs = 180_000L
+    private var initialDurationMs = 300_000L
+    private var totalDurationMs = 300_000L
+    private var remainingMs = 300_000L
     private var focusedMs = 0L
     private var currentStreakMs = 0L
     private var bestStreakMs = 0L
@@ -87,8 +101,22 @@ class GazeSessionService : LifecycleService() {
                 val shift = progressiveStep.coerceAtMost(4)
                 (base shl shift).coerceAtMost(60)
             }
-            PenaltyMode.SUDDEN_DEATH -> -1 // Special: FULL RESET!
+            PenaltyMode.SUDDEN_DEATH -> -1
         }
+    }
+
+    private fun enforceVolumeFloorInternal() {
+        val cfg = activeCfg ?: return
+        if (!cfg.volumeLockEnabled || lockedVolumeTarget <= 0) return
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && am.isStreamMute(AudioManager.STREAM_MUSIC)) {
+                am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
+            }
+            if (am.getStreamVolume(AudioManager.STREAM_MUSIC) < lockedVolumeTarget) {
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, lockedVolumeTarget, 0)
+            }
+        } catch (_: Throwable) {}
     }
 
     private val tickRunnable = object : Runnable {
@@ -97,8 +125,12 @@ class GazeSessionService : LifecycleService() {
             val ov = overlay ?: return
             if (sessionCompleted) return
 
-            // If user is currently inside the 3-minute 0.1s image-spam access-code wait, keep video timer frozen!
+            // #8 Continuous Volume Floor Enforcement (even during 3-min portal!)
+            enforceVolumeFloorInternal()
+
+            // Pause video session countdown while inside the 3-minute overlay portal!
             if (ov.isAccessWaitActive) {
+                hypnoticAudio?.setPaused(false) // Keep hypnotic pulse gently active during 3-min portal!
                 mainHandler.postDelayed(this, 100L)
                 return
             }
@@ -106,25 +138,18 @@ class GazeSessionService : LifecycleService() {
             val gaze = latestGaze
             val now = SystemClock.elapsedRealtime()
 
-            // Optional Volume Lock
-            if (cfg.volumeLockEnabled && lockedVolumeTarget > 0) {
-                try {
-                    val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-                    if (am != null && am.getStreamVolume(AudioManager.STREAM_MUSIC) < lockedVolumeTarget) {
-                        am.setStreamVolume(AudioManager.STREAM_MUSIC, lockedVolumeTarget, 0)
-                    }
-                } catch (_: Throwable) {}
-            }
-
             if (gaze.isLookingAtScreen) {
                 if (currentAwayMs > 0L) {
                     currentAwayMs = 0L
                     penaltyAppliedForEpisode = false
                 }
-                remainingMs = (remainingMs - 100L).coerceAtLeast(0L)
+                if (!cfg.infiniteUntilUnlock) {
+                    remainingMs = (remainingMs - 100L).coerceAtLeast(0L)
+                }
                 focusedMs += 100L
                 currentStreakMs += 100L
                 if (currentStreakMs > bestStreakMs) bestStreakMs = currentStreakMs
+                hypnoticAudio?.setPaused(false)
                 ov.checkMaxClipSwitch()
             } else {
                 if (currentAwayMs == 0L) {
@@ -145,30 +170,32 @@ class GazeSessionService : LifecycleService() {
                     )
                 }
 
-                val triggerMs = if (cfg.penaltyMode == PenaltyMode.SUDDEN_DEATH) 2_200L else 2_500L
-                val nextPen = computeNextPenaltySec(cfg)
-                if (!penaltyAppliedForEpisode && currentAwayMs >= triggerMs && (nextPen > 0 || cfg.penaltyMode == PenaltyMode.SUDDEN_DEATH)) {
-                    penaltyAppliedForEpisode = true
-                    vibrateShort(150L)
-                    if (cfg.penaltyMode == PenaltyMode.SUDDEN_DEATH) {
-                        remainingMs = initialDurationMs
-                        totalDurationMs = initialDurationMs
-                        lastPenaltyBanner = "💀 MORT SUBITE ! Chrono remis à ${initialDurationMs / 1000L} s !"
-                        lastPenaltyBannerUntilMs = now + 5_000L
-                        if (cfg.voiceAlertEnabled && ttsReady) {
-                            speakFrench("Zéro faute échoué ! Chronomètre remis à zéro !")
-                            lastVoiceAlertMs = now
-                        }
-                    } else {
-                        remainingMs += nextPen * 1000L
-                        totalDurationMs = maxOf(totalDurationMs, remainingMs)
-                        progressiveStep++
-                        val modeTag = if (cfg.penaltyMode == PenaltyMode.PROGRESSIVE) "📈 Pénalité Progressive" else "🚨 Pénalité"
-                        lastPenaltyBanner = "$modeTag : +$nextPen s ajoutées !"
-                        lastPenaltyBannerUntilMs = now + 4_500L
-                        if (cfg.voiceAlertEnabled && ttsReady) {
-                            speakFrench("Pénalité ! Plus $nextPen secondes !")
-                            lastVoiceAlertMs = now
+                if (!cfg.infiniteUntilUnlock) {
+                    val triggerMs = if (cfg.penaltyMode == PenaltyMode.SUDDEN_DEATH) 2_200L else 2_500L
+                    val nextPen = computeNextPenaltySec(cfg)
+                    if (!penaltyAppliedForEpisode && currentAwayMs >= triggerMs && (nextPen > 0 || cfg.penaltyMode == PenaltyMode.SUDDEN_DEATH)) {
+                        penaltyAppliedForEpisode = true
+                        vibrateShort(150L)
+                        if (cfg.penaltyMode == PenaltyMode.SUDDEN_DEATH) {
+                            remainingMs = initialDurationMs
+                            totalDurationMs = initialDurationMs
+                            lastPenaltyBanner = "💀 MORT SUBITE ! Chrono remis à ${initialDurationMs / 1000L} s !"
+                            lastPenaltyBannerUntilMs = now + 5_000L
+                            if (cfg.voiceAlertEnabled && ttsReady) {
+                                speakFrench("Zéro faute échoué ! Chronomètre remis à zéro !")
+                                lastVoiceAlertMs = now
+                            }
+                        } else {
+                            remainingMs += nextPen * 1000L
+                            totalDurationMs = maxOf(totalDurationMs, remainingMs)
+                            progressiveStep++
+                            val modeTag = if (cfg.penaltyMode == PenaltyMode.PROGRESSIVE) "📈 Pénalité Progressive" else "🚨 Pénalité"
+                            lastPenaltyBanner = "$modeTag : +$nextPen s ajoutées !"
+                            lastPenaltyBannerUntilMs = now + 4_500L
+                            if (cfg.voiceAlertEnabled && ttsReady) {
+                                speakFrench("Pénalité ! Plus $nextPen secondes !")
+                                lastVoiceAlertMs = now
+                            }
                         }
                     }
                 }
@@ -191,7 +218,7 @@ class GazeSessionService : LifecycleService() {
                 updateForegroundNotification()
             }
 
-            if (remainingMs <= 0L) {
+            if (!cfg.infiniteUntilUnlock && remainingMs <= 0L) {
                 onSessionFinishedNaturally()
             } else {
                 mainHandler.postDelayed(this, 100L)
@@ -224,7 +251,10 @@ class GazeSessionService : LifecycleService() {
         val durSec = if (overrideDur >= 15) overrideDur else cfg.durationSec
 
         createChannel()
-        val notif = buildNotification("👁️ Démarrage du fil vidéo GazeLock AI…")
+        val notif = buildNotification(
+            if (cfg.overlayMode == OverlayMode.GHOST_PASSTHROUGH) "👻 Overlay Semi-Transparent GazeLock AI actif…"
+            else "👁️ Démarrage du fil vidéo GazeLock AI…"
+        )
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
@@ -256,14 +286,15 @@ class GazeSessionService : LifecycleService() {
         lastPenaltyBanner = ""; lastPenaltyBannerUntilMs = 0L
         sessionCompleted = false
 
+        // #8 Compute & enforce Volume Floor (40..100%)
+        lockedVolumeTarget = -1
         if (cfg.volumeLockEnabled) {
             try {
                 val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
                 if (am != null) {
                     val maxV = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-                    val curV = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-                    lockedVolumeTarget = curV.coerceAtLeast((maxV * 0.40f).toInt().coerceAtLeast(1))
-                    am.setStreamVolume(AudioManager.STREAM_MUSIC, lockedVolumeTarget, 0)
+                    lockedVolumeTarget = ((maxV * cfg.volumeFloorPct.coerceIn(40, 100)) / 100f).toInt().coerceIn(1, maxV)
+                    enforceVolumeFloorInternal()
                 }
             } catch (_: Throwable) {}
         }
@@ -272,17 +303,20 @@ class GazeSessionService : LifecycleService() {
             context = applicationContext,
             config = cfg,
             initialPlaylist = playlist,
+            onMountPortalOverlay = { portalView -> mountPortalWindow(portalView, cfg.forceMaxBrightness) },
+            onRemovePortalOverlay = { removePortalWindow() },
+            onDragGhostPill = { dx, dy -> dragGhostPillWindow(dx, dy) },
             onIssueAccessCodeAfterWait = { gazeConfig.issueUnlockedAccessCode() },
             onVerifyAccessCode = { code -> gazeConfig.verifyDynamicAccessCode(code) },
             onEmergencyExit = { stopSessionCleanly() },
             onSessionCompleteDismiss = { stopSessionCleanly() }
         )
 
-        val mounted = mountOverlay(ov)
+        val mounted = mountPrimaryOverlays(ov, cfg)
         if (!mounted) {
             ov.release()
             mainHandler.post {
-                Toast.makeText(applicationContext, "⚠️ Active l'Accessibilité (ou Superposition) pour verrouiller le fil vidéo !", Toast.LENGTH_LONG).show()
+                Toast.makeText(applicationContext, "⚠️ Active l'Accessibilité (recommandé) ou Superposition pour lancer l'overlay !", Toast.LENGTH_LONG).show()
             }
             stopSelf()
             return START_NOT_STICKY
@@ -292,6 +326,13 @@ class GazeSessionService : LifecycleService() {
         activeInstance = this
         isSessionRunning = true
         notifyListeners()
+
+        // #8 Start Local Synthesized Hypnotic Binaural Pulse if enabled!
+        if (cfg.binauralBeatEnabled) {
+            hypnoticAudio = HypnoticAudioEngine().apply {
+                start(cfg.binauralVolumePct, cfg.binauralFreqHz)
+            }
+        }
 
         val tr = GazeTrackerEngine(
             context = applicationContext,
@@ -303,37 +344,139 @@ class GazeSessionService : LifecycleService() {
         tracker = tr
         tr.start(this, cfg)
 
+        // In Ghost Pass-Through mode, immediately drop user to their Home Screen so they can keep using their phone right away!
+        if (cfg.overlayMode == OverlayMode.GHOST_PASSTHROUGH) {
+            mainHandler.postDelayed({
+                try {
+                    GazeAccessibilityService.activeInstance?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
+                } catch (_: Throwable) {}
+            }, 350L)
+        }
+
         mainHandler.postDelayed(tickRunnable, 200L)
         return START_STICKY
     }
 
-    /** Called by #13 Anti-Escape Watchdog in GazeAccessibilityService when Settings / Recents escape is attempted! */
+    /** Called by #13 Anti-Escape Watchdog when Settings / Uninstall / Force-Stop / Recents escape is attempted! */
     fun applyEscapeAttemptPenaltyInternal() {
         mainHandler.post {
             if (!isSessionRunning || sessionCompleted) return@post
             gazeConfig.recordEscapeBlock()
-            remainingMs += 15_000L
-            totalDurationMs = maxOf(totalDurationMs, remainingMs)
-            lastPenaltyBanner = "🚨 TENTATIVE D'ÉVASION BLOQUÉE ! +15 s de pénalité !"
+            if (activeCfg?.infiniteUntilUnlock != true) {
+                remainingMs += 15_000L
+                totalDurationMs = maxOf(totalDurationMs, remainingMs)
+            }
+            lastPenaltyBanner = if (activeCfg?.overlayMode == OverlayMode.GHOST_PASSTHROUGH) {
+                "🚫 Paramètres verrouillés ! Utilise le portail 3 min 🔒 (+15 s)"
+            } else {
+                "🚨 TENTATIVE D'ÉVASION BLOQUÉE ! +15 s de pénalité !"
+            }
             lastPenaltyBannerUntilMs = SystemClock.elapsedRealtime() + 5_500L
             vibrateShort(180L)
             if (activeCfg?.voiceAlertEnabled == true && ttsReady) {
-                speakFrench("Tentative de fuite bloquée ! Plus quinze secondes !")
+                speakFrench("Paramètres verrouillés ! Passe par le portail de trois minutes !")
                 lastVoiceAlertMs = SystemClock.elapsedRealtime()
             }
         }
     }
 
+    fun openUnlockPortalInternal() {
+        mainHandler.post {
+            if (isSessionRunning && !sessionCompleted) {
+                overlay?.openUnlockPortal()
+            }
+        }
+    }
+
+    // ==================== MULTI-WINDOW MOUNTING (A11Y TRUSTED + FALLBACK) ====================
     @Suppress("DEPRECATION")
-    private fun mountOverlay(ov: GazeVideoFeedOverlay): Boolean {
+    private fun mountPrimaryOverlays(ov: GazeVideoFeedOverlay, cfg: GazeConfigSnapshot): Boolean {
+        val isGhost = ov.isGhostMode
         val a11y = GazeAccessibilityService.activeInstance
-        if (a11y != null && a11y.mountFullscreenOverlay(ov.rootView)) {
+        if (a11y != null && a11y.mountVideoOverlay(ov.rootView, passThroughTouches = isGhost, forceMaxBrightness = cfg.forceMaxBrightness)) {
             mountedViaA11y = true
+            ov.ghostPillView?.let { pill -> a11y.mountGhostPillOverlay(pill) }
             return true
         }
+
+        // Fallback via SYSTEM_ALERT_WINDOW if Accessibility isn't active
         val canDraw = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
         if (!canDraw) return false
         return try {
+            val winType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                WindowManager.LayoutParams.TYPE_PHONE
+            }
+            val flags = if (isGhost) {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            } else {
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN
+            }
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                winType,
+                flags,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                screenBrightness = if (cfg.forceMaxBrightness) 1.0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            }
+            fallbackWm?.addView(ov.rootView, lp)
+
+            ov.ghostPillView?.let { pill ->
+                val dm = resources.displayMetrics
+                val plp = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    winType,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.START
+                    x = (dm.widthPixels - (175 * dm.density).toInt()).coerceAtLeast((8 * dm.density).toInt())
+                    y = (44 * dm.density).toInt()
+                }
+                fallbackWm?.addView(pill, plp)
+                fbPillView = pill
+                fbPillParams = plp
+            }
+            mountedViaA11y = false
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun dragGhostPillWindow(dx: Int, dy: Int) {
+        if (mountedViaA11y) {
+            GazeAccessibilityService.activeInstance?.dragGhostPillBy(dx, dy)
+        } else {
+            val v = fbPillView ?: return
+            val lp = fbPillParams ?: return
+            val dm = resources.displayMetrics
+            lp.x = (lp.x + dx).coerceIn(0, (dm.widthPixels - v.width.coerceAtLeast(80)).coerceAtLeast(0))
+            lp.y = (lp.y + dy).coerceIn((20 * dm.density).toInt(), (dm.heightPixels - v.height.coerceAtLeast(60)).coerceAtLeast(0))
+            try { fallbackWm?.updateViewLayout(v, lp) } catch (_: Throwable) {}
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun mountPortalWindow(view: View, forceMaxBrightness: Boolean): Boolean {
+        if (mountedViaA11y) {
+            val a11y = GazeAccessibilityService.activeInstance
+            if (a11y != null && a11y.mountPortalOverlay(view, forceMaxBrightness)) return true
+        }
+        return try {
+            removePortalWindow()
             val winType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             } else {
@@ -345,15 +488,27 @@ class GazeSessionService : LifecycleService() {
                 winType,
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-                    WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
                 PixelFormat.TRANSLUCENT
-            ).apply { gravity = Gravity.TOP or Gravity.START }
-            fallbackWm?.addView(ov.rootView, lp)
-            mountedViaA11y = false
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                screenBrightness = if (forceMaxBrightness) 1.0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            }
+            fallbackWm?.addView(view, lp)
+            fbPortalView = view
             true
         } catch (_: Throwable) {
             false
+        }
+    }
+
+    private fun removePortalWindow() {
+        if (mountedViaA11y) {
+            GazeAccessibilityService.activeInstance?.removePortalOverlay()
+        }
+        fbPortalView?.let { v ->
+            fbPortalView = null
+            try { fallbackWm?.removeViewImmediate(v) } catch (_: Throwable) {}
         }
     }
 
@@ -361,6 +516,7 @@ class GazeSessionService : LifecycleService() {
         sessionCompleted = true
         mainHandler.removeCallbacks(tickRunnable)
         tracker?.stop()
+        hypnoticAudio?.stop(); hypnoticAudio = null
         val fSec = (focusedMs / 1000L).toInt()
         val streakSec = (bestStreakMs / 1000L).toInt()
         gazeConfig.recordCompletedSession(fSec, lookAwayEpisodes, streakSec)
@@ -377,13 +533,17 @@ class GazeSessionService : LifecycleService() {
         isSessionRunning = false
         if (activeInstance === this) activeInstance = null
         tracker?.shutdown(); tracker = null
+        hypnoticAudio?.stop(); hypnoticAudio = null
         val ov = overlay
         overlay = null
         if (ov != null) {
             ov.release()
             if (mountedViaA11y) {
-                GazeAccessibilityService.activeInstance?.removeMountedOverlay()
+                GazeAccessibilityService.activeInstance?.removeAllOverlays()
             } else {
+                removePortalWindow()
+                fbPillView?.let { try { fallbackWm?.removeViewImmediate(it) } catch (_: Throwable) {} }
+                fbPillView = null; fbPillParams = null
                 try { fallbackWm?.removeViewImmediate(ov.rootView) } catch (_: Throwable) {}
             }
         }
@@ -397,7 +557,9 @@ class GazeSessionService : LifecycleService() {
         isSessionRunning = false
         if (activeInstance === this) activeInstance = null
         tracker?.shutdown(); tracker = null
+        hypnoticAudio?.stop(); hypnoticAudio = null
         overlay?.release(); overlay = null
+        try { GazeAccessibilityService.activeInstance?.removeAllOverlays() } catch (_: Throwable) {}
         try { tts?.stop(); tts?.shutdown() } catch (_: Throwable) {}
         tts = null
         notifyListeners()
@@ -435,7 +597,7 @@ class GazeSessionService : LifecycleService() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_view)
-            .setContentTitle("👁️ GazeLock AI")
+            .setContentTitle("👁️ GazeLock AI v3.0")
             .setContentText(content)
             .setOngoing(true)
             .setContentIntent(openPi)
@@ -444,10 +606,16 @@ class GazeSessionService : LifecycleService() {
 
     private fun updateForegroundNotification(customText: String? = null) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val cfg = activeCfg
         val txt = customText ?: run {
-            val s = ((remainingMs + 999L) / 1000L).coerceAtLeast(0L)
-            val status = if (latestGaze.isLookingAtScreen) "👁️ Regard & Iris fixés" else "⏸️ Pause (regard détourné)"
-            String.format("%s — %02d:%02d restant(s)", status, s / 60, s % 60)
+            val prefix = if (cfg?.overlayMode == OverlayMode.GHOST_PASSTHROUGH) "👻 Ghost ${cfg.ghostOpacityPct}%" else "🔒 Verrouillé"
+            if (cfg?.infiniteUntilUnlock == true) {
+                "$prefix — ∞ (Portail 3 min requis)"
+            } else {
+                val s = ((remainingMs + 999L) / 1000L).coerceAtLeast(0L)
+                val status = if (latestGaze.isLookingAtScreen) "👁️ Regard OK" else "⏸️ Pause"
+                String.format("%s · %s — %02d:%02d", prefix, status, s / 60, s % 60)
+            }
         }
         try { nm.notify(NOTIF_ID, buildNotification(txt)) } catch (_: Throwable) {}
     }
@@ -470,8 +638,22 @@ class GazeSessionService : LifecycleService() {
         fun removeStateListener(l: () -> Unit) { listeners.remove(l) }
         private fun notifyListeners() { for (l in listeners) try { l() } catch (_: Throwable) {} }
 
+        fun isCurrentSessionGhostMode(): Boolean =
+            activeInstance?.activeCfg?.overlayMode == OverlayMode.GHOST_PASSTHROUGH
+
+        fun isVolumeLockCurrentlyActive(): Boolean =
+            activeInstance?.activeCfg?.volumeLockEnabled == true
+
+        fun enforceVolumeFloorNow(context: Context) {
+            activeInstance?.mainHandler?.post { activeInstance?.enforceVolumeFloorInternal() }
+        }
+
         fun triggerEscapeAttemptPenalty(context: Context) {
             activeInstance?.applyEscapeAttemptPenaltyInternal()
+        }
+
+        fun openUnlockPortalOverlay() {
+            activeInstance?.openUnlockPortalInternal()
         }
 
         fun startSession(context: Context, overrideDurationSec: Int = -1) {

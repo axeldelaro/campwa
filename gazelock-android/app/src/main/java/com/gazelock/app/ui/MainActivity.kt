@@ -1,6 +1,7 @@
 package com.gazelock.app.ui
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -17,6 +18,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -31,6 +33,7 @@ import androidx.core.content.ContextCompat
 import com.gazelock.app.ai.GazeTrackerEngine
 import com.gazelock.app.config.GazeConfig
 import com.gazelock.app.config.GazeConfigSnapshot
+import com.gazelock.app.config.OverlayMode
 import com.gazelock.app.config.PenaltyMode
 import com.gazelock.app.config.StrictnessPreset
 import com.gazelock.app.media.VideoFeedRepository
@@ -39,11 +42,13 @@ import com.gazelock.app.service.GazeAccessibilityService
 import com.gazelock.app.service.GazeSessionService
 
 /**
- * GazeLock AI v2.0 — Fullscreen Unskippable Video Feed + Local On-Device Head & Iris Eye-Tracking:
- * - #2 Real Iris/Pupil Gaze Deviation Tracking via ML Kit 16-point Eye Contours + Y-plane centroid!
- * - #12 Fixed, Progressive (doubling), and Sudden Death (full timer reset!) penalty modes!
- * - #13 Total Anti-Escape Watchdog (blocks Settings, Force-Stop, Recents & Quick Settings + +15s penalty)!
- * - 3-Minute Imposed Wait + 0.1s Folder Image-Spam Gate to issue a single-use 6-digit access code!
+ * GazeLock AI v3.0 — Semi-Transparent Ghost Overlay (45–50%, Touch-Unlocked) & Full-Lock Video Feed:
+ * - Ghost Pass-Through Overlay: 45-50% video opacity over ALL apps (tactile unlocked!), removable ONLY via the
+ *   3-minute imposed overlay portal (0.1s folder image spam + interactive pop-ups + Sliding Puzzle & Image Reconstruction)!
+ * - #7 Subliminal Image Flashes (0.08s–0.22s) + Custom Neon Mantras!
+ * - #8 Absolute Volume Lock (floor 40–100% + hardware Volume Down/Mute interception) + Forced 100% Brightness
+ *   + Local Synthesized Hypnotic Binaural Pulse!
+ * - #2 Real Iris/Pupil Tracking + #12 Fixed/Progressive/Sudden Death Penalties + #13 Anti-Escape Watchdog!
  */
 class MainActivity : AppCompatActivity() {
 
@@ -98,7 +103,7 @@ class MainActivity : AppCompatActivity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (activeMainWaitView != null) {
-            Toast.makeText(this, "Attente de 3 min en cours ! Appuie sur Annuler en bas si tu veux quitter.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Portail de 3 min en cours ! Appuie sur Annuler en bas si tu veux quitter.", Toast.LENGTH_SHORT).show()
             return
         }
         super.onBackPressed()
@@ -199,6 +204,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun launchThreeMinuteCodeWaitScreen() {
+        if (GazeSessionService.isSessionRunning) {
+            GazeSessionService.openUnlockPortalOverlay()
+            return
+        }
         val cfg = gazeConfig.snapshot()
         stopCalibrationPreview()
         spamWaitHost.removeAllViews()
@@ -221,6 +230,33 @@ class MainActivity : AppCompatActivity() {
         wv.startThreeMinuteSpamWait()
     }
 
+    private fun showEditMantrasDialog(cfg: GazeConfigSnapshot) {
+        val edit = EditText(this).apply {
+            setText(cfg.subliminalMantras)
+            minLines = 5; maxLines = 10
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+            hint = "Une phrase par ligne…"
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            setBackgroundColor(Color.rgb(26, 22, 42))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("✨ Mantras Néon Subliminaux (1 par ligne)")
+            .setView(edit)
+            .setPositiveButton("Enregistrer") { _, _ ->
+                val txt = edit.text?.toString()?.trim().orEmpty().ifBlank { GazeConfig.DEFAULT_MANTRAS_TEXT }
+                gazeConfig.update { putString("subliminal_mantras_v3", txt) }
+                Toast.makeText(this, "Mantras mis à jour ✅", Toast.LENGTH_SHORT).show()
+                refreshUi()
+            }
+            .setNeutralButton("Réinitialiser") { _, _ ->
+                gazeConfig.update { putString("subliminal_mantras_v3", GazeConfig.DEFAULT_MANTRAS_TEXT) }
+                refreshUi()
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
+    }
+
     private fun launchGazeLockSession() {
         val cfg = gazeConfig.snapshot()
         if (!hasCameraPerm()) {
@@ -229,7 +265,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (!GazeAccessibilityService.isServiceActive() && !hasOverlayPerm()) {
-            Toast.makeText(this, "⚠️ Active l'Accessibilité (recommandé pour l'Anti-Évasion) !", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "⚠️ Active l'Accessibilité (recommandé pour l'overlay semi-transparent fiable & le verrou volume) !", Toast.LENGTH_LONG).show()
             openAccessibilitySettings()
             return
         }
@@ -244,7 +280,13 @@ class MainActivity : AppCompatActivity() {
                 if (list.isEmpty()) {
                     Toast.makeText(this, "⚠️ Aucune vidéo trouvée dans ce dossier !", Toast.LENGTH_LONG).show()
                 } else {
-                    Toast.makeText(this, "👁️ Fil Vidéo verrouillé (${list.size} vidéos · ${formatDuration(cfg.durationSec)}) !", Toast.LENGTH_SHORT).show()
+                    val modeTxt = if (cfg.overlayMode == OverlayMode.GHOST_PASSTHROUGH) {
+                        "👻 Overlay Semi-Transparent ${cfg.ghostOpacityPct}% (tactile libre)"
+                    } else {
+                        "🔒 Plein Écran Verrouillé"
+                    }
+                    val durTxt = if (cfg.infiniteUntilUnlock) "∞ Infini" else formatDuration(cfg.durationSec)
+                    Toast.makeText(this, "$modeTxt · ${list.size} vidéos · $durTxt !", Toast.LENGTH_SHORT).show()
                     mainHandler.postDelayed({ GazeSessionService.startSession(applicationContext) }, 180L)
                 }
             }
@@ -253,18 +295,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshUi() {
         val cfg = gazeConfig.snapshot()
+        val lockedNow = GazeSessionService.isSessionRunning
         contentBox.removeAllViews()
 
         // Header
         val hdr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, dp(12)) }
         val titleCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         titleCol.addView(TextView(this).apply {
-            text = "👁️ GazeLock AI v2.0"
+            text = "👁️ GazeLock AI v3.0"
             setTextColor(Color.WHITE); textSize = 22.5f; typeface = Typeface.DEFAULT_BOLD
         })
         titleCol.addView(TextView(this).apply {
-            text = "Fil Vidéo Verrouillé · Suivi Iris IA · Anti-Évasion Total"
-            setTextColor(Color.rgb(216, 180, 254)); textSize = 11.4f
+            text = "Overlay Ghost 48 % · Subliminal #7 · Audio/Lum #8 · Mini-Jeux 3 min"
+            setTextColor(Color.rgb(216, 180, 254)); textSize = 11f
         })
         hdr.addView(titleCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
@@ -275,64 +318,169 @@ class MainActivity : AppCompatActivity() {
             textSize = 10.6f; typeface = Typeface.DEFAULT_BOLD
             background = roundedBg(if (a11yOk) Color.argb(45, 16, 185, 129) else Color.argb(45, 245, 158, 11), 12)
             setPadding(dp(10), dp(5), dp(10), dp(5))
-            setOnClickListener { openAccessibilitySettings() }
+            setOnClickListener { if (!lockedNow) openAccessibilitySettings() }
         })
         contentBox.addView(hdr)
 
-        // 1. Primary Launch & Duration Card
-        val launchCard = makeCard(accentStroke = Color.argb(180, 225, 29, 72))
-        launchCard.addView(sectionTitle("🎬 Durée du Fil Vidéo Verrouillé : ${formatDuration(cfg.durationSec)}"))
-        launchCard.addView(sectionSub("Chrono figé dès que tu tournes la tête, détournes les pupilles (Iris) ou fermes les yeux. Sortie anticipée bloquée derrière 3 min d'attente + spam images 0,1 s !"))
+        // ==================== ACTIVE SESSION LOCKDOWN BANNER (ZERO BYPASS!) ====================
+        if (lockedNow) {
+            val activeCard = makeCard(accentStroke = Color.rgb(225, 29, 72))
+            activeCard.addView(sectionTitle("🔒 SESSION EN COURS — VIDÉOS VERROUILLÉES"))
+            activeCard.addView(sectionSub(
+                "Les vidéos tournent en overlay. Les réglages sont figés et aucun bouton d'arrêt direct n'existe.\n" +
+                    "Seul le créneau imposé de 3 minutes en overlay (spam 0,1 s + pop-ups + puzzle à glissement & reconstitution d'image) permet de retirer les vidéos !"
+            ))
+            activeCard.addView(makeAccentButton("⏳ OUVRIR LE PORTAIL 3 MIN EN OVERLAY (Mini-Jeux)", Color.rgb(162, 28, 175)) {
+                GazeSessionService.openUnlockPortalOverlay()
+            }.apply { textSize = 13.5f; setPadding(dp(14), dp(14), dp(14), dp(14)) })
+            contentBox.addView(activeCard)
+            return
+        }
 
-        val durRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, dp(5)) }
-        listOf(60 to "1 min", 180 to "3 min", 300 to "5 min").forEachIndexed { idx, (sec, lbl) ->
-            durRow1.addView(makeChip(lbl, cfg.durationSec == sec) {
-                gazeConfig.update { putInt("duration_sec", sec) }; refreshUi()
+        // ==================== 1. OVERLAY MODE (GHOST 45-50% vs FULL-LOCK) & LAUNCH CARD ====================
+        val launchCard = makeCard(accentStroke = Color.argb(200, 225, 29, 72))
+        launchCard.addView(sectionTitle("👻 Mode d'Affichage Overlay"))
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(4)) }
+        OverlayMode.values().forEachIndexed { idx, m ->
+            modeRow.addView(makeChip(m.label, cfg.overlayMode == m) {
+                gazeConfig.update { putString("overlay_mode_v3", m.id) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(4) else 0, if (idx < 1) dp(4) else 0))
+        }
+        launchCard.addView(modeRow)
+        launchCard.addView(TextView(this).apply {
+            text = "→ ${cfg.overlayMode.desc}"
+            setTextColor(Color.rgb(216, 180, 254)); textSize = 11.2f; setPadding(0, 0, 0, dp(6))
+        })
+
+        if (cfg.overlayMode == OverlayMode.GHOST_PASSTHROUGH) {
+            launchCard.addView(smallLabel("Opacité de la vidéo en surimpression (tactile 100 % déverrouillé) :"))
+            val opRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(4)) }
+            listOf(45 to "45 %", 48 to "48 % (Idéal)", 50 to "50 %", 55 to "55 %").forEachIndexed { idx, (pct, lbl) ->
+                opRow.addView(makeChip(lbl, cfg.ghostOpacityPct == pct) {
+                    gazeConfig.update { putInt("ghost_opacity_v3", pct) }; refreshUi()
+                }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 3) dp(3) else 0))
+            }
+            launchCard.addView(opRow)
+            launchCard.addView(makeSliderRow("Opacité précise Ghost", 35, 65, cfg.ghostOpacityPct, " %") { pct ->
+                gazeConfig.update { putInt("ghost_opacity_v3", pct) }
+            })
+        }
+
+        val durHeader = if (cfg.infiniteUntilUnlock) "🎬 Durée : ∞ Infini (Sortie 3 min uniquement)" else "🎬 Durée : ${formatDuration(cfg.durationSec)}"
+        launchCard.addView(smallLabel(durHeader))
+
+        val durRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(2), 0, dp(5)) }
+        listOf(180 to "3 min", 300 to "5 min", 600 to "10 min").forEachIndexed { idx, (sec, lbl) ->
+            durRow1.addView(makeChip(lbl, !cfg.infiniteUntilUnlock && cfg.durationSec == sec) {
+                gazeConfig.update { putBoolean("infinite_unlock_v3", false); putInt("duration_sec", sec) }; refreshUi()
             }, gridLp(if (idx > 0) dp(4) else 0, if (idx < 2) dp(4) else 0))
         }
         launchCard.addView(durRow1)
 
-        val durRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(8)) }
-        listOf(600 to "10 min", 900 to "15 min", 1800 to "30 min").forEachIndexed { idx, (sec, lbl) ->
-            durRow2.addView(makeChip(lbl, cfg.durationSec == sec) {
-                gazeConfig.update { putInt("duration_sec", sec) }; refreshUi()
-            }, gridLp(if (idx > 0) dp(4) else 0, if (idx < 2) dp(4) else 0))
-        }
+        val durRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(6)) }
+        durRow2.addView(makeChip("15 min", !cfg.infiniteUntilUnlock && cfg.durationSec == 900) {
+            gazeConfig.update { putBoolean("infinite_unlock_v3", false); putInt("duration_sec", 900) }; refreshUi()
+        }, gridLp(endMargin = dp(4)))
+        durRow2.addView(makeChip("30 min", !cfg.infiniteUntilUnlock && cfg.durationSec == 1800) {
+            gazeConfig.update { putBoolean("infinite_unlock_v3", false); putInt("duration_sec", 1800) }; refreshUi()
+        }, gridLp(startMargin = dp(4), endMargin = dp(4)))
+        durRow2.addView(makeChip("∞ Infini (3m)", cfg.infiniteUntilUnlock) {
+            gazeConfig.update { putBoolean("infinite_unlock_v3", true) }; refreshUi()
+        }, gridLp(startMargin = dp(4)))
         launchCard.addView(durRow2)
 
-        launchCard.addView(makeSliderRow("Durée personnalisée", 1, 60, (cfg.durationSec / 60).coerceIn(1, 60), " min") { min ->
-            gazeConfig.update { putInt("duration_sec", min * 60) }
-        })
+        if (!cfg.infiniteUntilUnlock) {
+            launchCard.addView(makeSliderRow("Durée personnalisée", 1, 60, (cfg.durationSec / 60).coerceIn(1, 60), " min") { min ->
+                gazeConfig.update { putInt("duration_sec", min * 60) }
+            })
+        }
 
-        launchCard.addView(makeAccentButton("👁️🎬 LANCER LE FIL VIDÉO (${formatDuration(cfg.durationSec)})", Color.rgb(225, 29, 72)) {
+        val ctaLabel = if (cfg.overlayMode == OverlayMode.GHOST_PASSTHROUGH) {
+            val d = if (cfg.infiniteUntilUnlock) "∞" else formatDuration(cfg.durationSec)
+            "👻🎬 LANCER OVERLAY SEMI-TRANSPARENT (${cfg.ghostOpacityPct}% · $d)"
+        } else {
+            val d = if (cfg.infiniteUntilUnlock) "∞" else formatDuration(cfg.durationSec)
+            "🔒🎬 LANCER PLEIN ÉCRAN VERROUILLÉ ($d)"
+        }
+        launchCard.addView(makeAccentButton(ctaLabel, Color.rgb(225, 29, 72)) {
             launchGazeLockSession()
         }.apply {
-            textSize = 14.5f; setPadding(dp(14), dp(14), dp(14), dp(14))
+            textSize = 13.8f; setPadding(dp(12), dp(14), dp(12), dp(14))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
         })
         contentBox.addView(launchCard)
 
-        // 2. Live Local AI Head + Iris Calibration Tester
-        val calibCard = makeCard(accentStroke = Color.argb(150, 16, 185, 129))
-        calibCard.addView(sectionTitle("📷 Test & Calibration Regard + Pupilles/Iris IA"))
-        val cTv = TextView(this).apply {
-            text = "Teste en direct la détection de tes angles de tête ET du mouvement de tes pupilles (Iris) — essaie de regarder à côté sans bouger la tête !"
-            setTextColor(Color.rgb(190, 190, 212)); textSize = 11.4f
-            background = roundedBg(Color.rgb(24, 20, 38), 11); setPadding(dp(10), dp(9), dp(10), dp(9))
-        }
-        calibStatusTv = cTv
-        calibCard.addView(cTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6); bottomMargin = dp(8) })
-        val cBtn = makeAccentButton(
-            if (calibrationActive) "⏹️ Arrêter le Test Caméra IA" else "📷 Tester le Suivi Regard + Iris IA en direct",
-            Color.rgb(16, 128, 96)
-        ) { toggleCalibrationPreview() }
-        calibToggleBtn = cBtn
-        calibCard.addView(cBtn)
-        contentBox.addView(calibCard)
+        // ==================== 2. #7 SUBLIMINAL IMAGE FLASHES & NEON MANTRAS ====================
+        val subCard = makeCard(accentStroke = Color.argb(170, 217, 70, 239))
+        subCard.addView(sectionTitle("⚡ #7 Flashs Subliminaux (0,08 s–0,22 s) & Mantras Néon"))
+        subCard.addView(sectionSub("Injecte aléatoirement par-dessus la vidéo des flashs ultra-courts d'images du dossier + tes phrases néon (fonctionne aussi en mode Semi-Transparent sans gêner le tactile !)."))
+        subCard.addView(makeSwitchRow("✨ Activer les flashs subliminaux en pleine vidéo", cfg.subliminalEnabled) {
+            gazeConfig.update { putBoolean("subliminal_en_v3", it) }
+        })
+        subCard.addView(makeSliderRow("Fréquence moyenne (toutes les)", 2, 20, cfg.subliminalIntervalSec, " s") { v ->
+            gazeConfig.update { putInt("subliminal_int_v3", v) }
+        })
+        subCard.addView(makeSliderRow("Durée d'un flash subliminal", 80, 220, cfg.subliminalDurationMs, " ms") { v ->
+            gazeConfig.update { putInt("subliminal_dur_v3", v) }
+        })
+        subCard.addView(makeSliderRow("Opacité du flash subliminal", 30, 95, cfg.subliminalAlphaPct, " %") { v ->
+            gazeConfig.update { putInt("subliminal_alpha_v3", v) }
+        })
+        subCard.addView(makeSecondaryBtn("✏️ Éditer les mantras néon (${cfg.mantraList().size} phrases actives)") {
+            showEditMantrasDialog(cfg)
+        })
+        contentBox.addView(subCard)
 
-        // 3. Video Folder & Spam Image Source Card
+        // ==================== 3. #8 ABSOLUTE VOLUME LOCK, MAX BRIGHTNESS & BINAURAL PULSE ====================
+        val audioCard = makeCard(accentStroke = Color.argb(170, 14, 165, 233))
+        audioCard.addView(sectionTitle("🔊 #8 Audio Verrouillé, Luminosité Max & Battement Hypnotique"))
+        audioCard.addView(sectionSub("Intercepte physiquement les boutons Volume Bas/Muet via l'Accessibilité, force la luminosité à 100 % et synthétise un battement binaural basse fréquence en local."))
+        audioCard.addView(makeSwitchRow("🔒 Verrou Volume Absolu + Blocage Boutons Volume Bas/Muet", cfg.volumeLockEnabled) {
+            gazeConfig.update { putBoolean("volume_lock", it) }
+        })
+        audioCard.addView(makeSliderRow("Plancher minimum du volume média", 40, 100, cfg.volumeFloorPct, " %") { v ->
+            gazeConfig.update { putInt("volume_floor_v3", v) }
+        })
+        audioCard.addView(makeSwitchRow("☀️ Forcer la luminosité de l'overlay à 100 %", cfg.forceMaxBrightness) {
+            gazeConfig.update { putBoolean("force_brightness_v3", it) }
+        })
+        audioCard.addView(makeSwitchRow("🎧 Battement Binaural / Pulsation Hypnotique locale", cfg.binauralBeatEnabled) {
+            gazeConfig.update { putBoolean("binaural_en_v3", it) }
+        })
+        audioCard.addView(makeSliderRow("Intensité du battement hypnotique", 10, 80, cfg.binauralVolumePct, " %") { v ->
+            gazeConfig.update { putInt("binaural_vol_v3", v) }
+        })
+        audioCard.addView(makeSliderRow("Fréquence Binaurale (4–7 Hz Theta · 8–12 Hz Alpha)", 4, 12, cfg.binauralFreqHz, " Hz") { v ->
+            gazeConfig.update { putInt("binaural_hz_v3", v) }
+        })
+        contentBox.addView(audioCard)
+
+        // ==================== 4. 3-MINUTE OVERLAY UNLOCK PORTAL (POP-UPS & MINI-GAMES!) ====================
+        val codeCard = makeCard(accentStroke = Color.argb(175, 192, 38, 211))
+        codeCard.addView(sectionTitle("🧩 Portail de Déblocage 3 min en Overlay (Pop-ups & Mini-Jeux)"))
+        val curValidCode = gazeConfig.getActiveAccessCodeIfValid()
+        codeCard.addView(sectionSub(
+            if (curValidCode != null) {
+                "✅ Code actif (< 2 min) : ${curValidCode.substring(0, 3)} ${curValidCode.substring(3)}\n" +
+                    "Pour retirer les vidéos hors fin de chrono : 3 min en overlay avec spam 0,1 s + pop-ups + Puzzle à glissement 3×3 & Reconstitution d'image !"
+            } else {
+                "Seul moyen d'arrêter les vidéos en cours : 3 minutes imposées en overlay avec spam 0,1 s des images du dossier, pop-ups chronométrés et mini-jeux (Taquin 3×3 + Échange & Rotation d'image)."
+            }
+        ))
+        codeCard.addView(makeSwitchRow("🔔 Pop-ups interactifs pendant les 3 min (+8–10 s si ignorés)", cfg.unlockPopupsEnabled) {
+            gazeConfig.update { putBoolean("unlock_popups_v3", it) }
+        })
+        codeCard.addView(makeSwitchRow("🧩 Mini-jeux obligatoires (Puzzle glissement + Reconstitution)", cfg.unlockMinigamesEnabled) {
+            gazeConfig.update { putBoolean("unlock_minigames_v3", it) }
+        })
+        codeCard.addView(makeAccentButton("⏳ Lancer le Portail 3 min (Spam 0,1 s + Pop-ups + Mini-Jeux)", Color.rgb(162, 28, 175)) {
+            launchThreeMinuteCodeWaitScreen()
+        })
+        contentBox.addView(codeCard)
+
+        // ==================== 5. VIDEO & IMAGE FOLDER SOURCE CARD ====================
         val folderCard = makeCard(accentStroke = Color.argb(145, 168, 85, 247))
-        folderCard.addView(sectionTitle("📂 Dossier Vidéos & Images Spam 0,1 s (.* inclus)"))
+        folderCard.addView(sectionTitle("📂 Dossier Vidéos & Images (.* & .nomedia inclus)"))
         val vcTv = TextView(this).apply {
             text = "⏳ Analyse du dossier…"
             setTextColor(Color.rgb(216, 180, 254)); textSize = 11.4f; typeface = Typeface.MONOSPACE
@@ -354,10 +502,10 @@ class MainActivity : AppCompatActivity() {
         })
         folderCard.addView(makeSecondaryBtn("📁 Ou sélecteur Android standard (SAF)") { pickSafLauncher.launch(null) })
 
-        folderCard.addView(makeSwitchRow("🔀 Ordre aléatoire (fil style TikTok)", cfg.shuffleVideos) {
+        folderCard.addView(makeSwitchRow("🔀 Ordre aléatoire (fil continu)", cfg.shuffleVideos) {
             gazeConfig.update { putBoolean("shuffle", it) }
         })
-        folderCard.addView(makeSwitchRow("⬆️ Autoriser glisser vers le haut (vidéo suivante)", cfg.allowSwipeNext) {
+        folderCard.addView(makeSwitchRow("⏭ Autoriser passer à la vidéo suivante", cfg.allowSwipeNext) {
             gazeConfig.update { putBoolean("swipe_next", it) }
         })
         folderCard.addView(smallLabel("Changement auto de vidéo dans le fil :"))
@@ -371,9 +519,27 @@ class MainActivity : AppCompatActivity() {
         contentBox.addView(folderCard)
         refreshVideoCountAsync(cfg)
 
-        // 4. #2 Iris Tracking, #12 Progressive / Sudden Death Penalties & #13 Anti-Escape Card
+        // ==================== 6. LIVE AI HEAD + IRIS CALIBRATION TESTER ====================
+        val calibCard = makeCard(accentStroke = Color.argb(150, 16, 185, 129))
+        calibCard.addView(sectionTitle("📷 Test & Calibration Regard + Pupilles/Iris IA"))
+        val cTv = TextView(this).apply {
+            text = "Teste en direct la détection de tes angles de tête ET du mouvement de tes pupilles (Iris)."
+            setTextColor(Color.rgb(190, 190, 212)); textSize = 11.4f
+            background = roundedBg(Color.rgb(24, 20, 38), 11); setPadding(dp(10), dp(9), dp(10), dp(9))
+        }
+        calibStatusTv = cTv
+        calibCard.addView(cTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6); bottomMargin = dp(8) })
+        val cBtn = makeAccentButton(
+            if (calibrationActive) "⏹️ Arrêter le Test Caméra IA" else "📷 Tester le Suivi Regard + Iris IA en direct",
+            Color.rgb(16, 128, 96)
+        ) { toggleCalibrationPreview() }
+        calibToggleBtn = cBtn
+        calibCard.addView(cBtn)
+        contentBox.addView(calibCard)
+
+        // ==================== 7. #2 IRIS, #12 PENALTIES & #13 ANTI-ESCAPE ====================
         val rulesCard = makeCard(accentStroke = Color.argb(155, 245, 158, 11))
-        rulesCard.addView(sectionTitle("👁️ Sévérité IA (#2 Iris · #12 Mort Subite · #13 Anti-Évasion)"))
+        rulesCard.addView(sectionTitle("👁️ Sévérité IA (#2 Iris · #12 Sanction · #13 Anti-Évasion)"))
         val preRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(8)) }
         StrictnessPreset.values().forEachIndexed { idx, p ->
             preRow.addView(makeChip("${p.emoji} ${p.label}", cfg.preset == p) {
@@ -384,7 +550,6 @@ class MainActivity : AppCompatActivity() {
         }
         rulesCard.addView(preRow)
 
-        // #12 Penalty Mode Selector!
         rulesCard.addView(smallLabel("Mode de Sanction si regard détourné (#12) :"))
         val pmRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(4)) }
         PenaltyMode.values().forEachIndexed { idx, m ->
@@ -399,7 +564,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         if (cfg.penaltyMode != PenaltyMode.SUDDEN_DEATH) {
-            rulesCard.addView(smallLabel(if (cfg.penaltyMode == PenaltyMode.PROGRESSIVE) "Pénalité de départ (double à chaque écart) :" else "Pénalité fixe ajoutée au chrono :"))
+            rulesCard.addView(smallLabel(if (cfg.penaltyMode == PenaltyMode.PROGRESSIVE) "Pénalité de départ (double à chaque écart) :" else "Pénalité fixe ajoutée :"))
             val penRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(6)) }
             listOf(0 to "0 s", 3 to "+3 s", 5 to "+5 s", 10 to "+10 s").forEachIndexed { idx, (sec, lbl) ->
                 penRow.addView(makeChip(lbl, cfg.lookAwayPenaltySec == sec) {
@@ -409,12 +574,11 @@ class MainActivity : AppCompatActivity() {
             rulesCard.addView(penRow)
         }
 
-        // #2 Iris Tracking & Head Angle Sliders
-        rulesCard.addView(makeSwitchRow("👁️ #2 Suivi Précis des Pupilles / Iris (détecte regard de côté tête fixe)", cfg.irisTrackingEnabled) {
+        rulesCard.addView(makeSwitchRow("👁️ #2 Suivi Précis des Pupilles / Iris", cfg.irisTrackingEnabled) {
             gazeConfig.update { putBoolean("iris_en_v2", it) }
             calibrationTracker?.updateConfig(gazeConfig.snapshot())
         })
-        rulesCard.addView(makeSliderRow("Sensibilité Pupilles/Iris (plus bas = ultra-strict)", 18, 52, cfg.irisThresholdPct, " %") { pct ->
+        rulesCard.addView(makeSliderRow("Sensibilité Pupilles/Iris (plus bas = strict)", 18, 52, cfg.irisThresholdPct, " %") { pct ->
             gazeConfig.update { putInt("iris_pct_v2", pct) }
             calibrationTracker?.updateConfig(gazeConfig.snapshot())
         })
@@ -422,53 +586,31 @@ class MainActivity : AppCompatActivity() {
             gazeConfig.update { putInt("yaw_deg", deg); putInt("pitch_deg", (deg + 2).coerceAtMost(40)) }
             calibrationTracker?.updateConfig(gazeConfig.snapshot())
         })
-
-        // #13 Anti-Escape Total Switch!
-        rulesCard.addView(makeSwitchRow("🚨 #13 Anti-Évasion Total (bloque Paramètres, Récents & Force-Stop +15 s)", cfg.antiEscapeLockEnabled) {
+        rulesCard.addView(makeSwitchRow("🚨 #13 Anti-Évasion (bloque Paramètres, Désinstallation & Force-Stop +15 s)", cfg.antiEscapeLockEnabled) {
             gazeConfig.update { putBoolean("anti_escape_v2", it) }
         })
         rulesCard.addView(makeSwitchRow("⏸️ Geler aussi la vidéo quand tu détournes le regard", cfg.pauseVideoOnLookAway) {
             gazeConfig.update { putBoolean("pause_video_away", it) }
         })
-        rulesCard.addView(makeSwitchRow("🙈 Exiger les yeux ouverts (détecte yeux fermés)", cfg.requireEyesOpen) {
+        rulesCard.addView(makeSwitchRow("🙈 Exiger les yeux ouverts", cfg.requireEyesOpen) {
             gazeConfig.update { putBoolean("eyes_open", it) }
             calibrationTracker?.updateConfig(gazeConfig.snapshot())
         })
-        rulesCard.addView(makeSwitchRow("🗣️ Alerte vocale hors ligne (« Regarde l'écran ! »)", cfg.voiceAlertEnabled) {
+        rulesCard.addView(makeSwitchRow("🗣️ Alerte vocale hors ligne", cfg.voiceAlertEnabled) {
             gazeConfig.update { putBoolean("voice_alert", it) }
         })
         rulesCard.addView(makeSwitchRow("📳 Vibration d'alerte", cfg.vibrateAlertEnabled) {
             gazeConfig.update { putBoolean("vibrate_alert", it) }
         })
-        rulesCard.addView(makeSwitchRow("🔊 Verrou Volume (empêche de couper le son à 0)", cfg.volumeLockEnabled) {
-            gazeConfig.update { putBoolean("volume_lock", it) }
-        })
-        rulesCard.addView(makeSwitchRow("📊 Afficher télémétrie IA (Yaw/Pitch/Iris/Yeux)", cfg.showTelemetryBadge) {
+        rulesCard.addView(makeSwitchRow("📊 Afficher télémétrie IA (mode Verrouillé)", cfg.showTelemetryBadge) {
             gazeConfig.update { putBoolean("show_telemetry", it) }
         })
         contentBox.addView(rulesCard)
 
-        // 5. 3-Minute Imposed Wait + 0.1s Image-Spam Access Code Gate Card!
-        val codeCard = makeCard(accentStroke = Color.argb(170, 192, 38, 211))
-        codeCard.addView(sectionTitle("🔑 Code d'Accès (3 min imposées + Spam images 0,1 s)"))
-        val curValidCode = gazeConfig.getActiveAccessCodeIfValid()
-        codeCard.addView(sectionSub(
-            if (curValidCode != null) {
-                "✅ Code actif (valable < 2 min) : ${curValidCode.substring(0, 3)} ${curValidCode.substring(3)}\n" +
-                    "Sinon, pour générer un code d'accès (ou quitter en urgence après 20 taps sur le chrono), il faut tenir 3 min sous le spam d'images (0,1 s) de ton dossier !"
-            } else {
-                "Aucun code actif. Pour obtenir un code d'accès unique (valable 2 min), tu dois attendre 3 minutes imposées avec un spam à 0,1 s des images du dossier des vidéos."
-            }
-        ))
-        codeCard.addView(makeAccentButton("⏳ Obtenir le Code d'Accès (3 min + Spam images 0,1 s)", Color.rgb(162, 28, 175)) {
-            launchThreeMinuteCodeWaitScreen()
-        })
-        contentBox.addView(codeCard)
-
-        // 6. Optional Automatic Ambush Card
+        // ==================== 8. OPTIONAL AUTOMATIC AMBUSH ====================
         val autoCard = makeCard(accentStroke = Color.argb(120, 14, 165, 233))
         autoCard.addView(sectionTitle("⏰ Embuscades Automatiques (via Accessibilité)"))
-        autoCard.addView(makeSwitchRow("Déclencher un fil vidéo GazeLock automatiquement", cfg.autoTriggerEnabled) {
+        autoCard.addView(makeSwitchRow("Déclencher l'overlay GazeLock automatiquement", cfg.autoTriggerEnabled) {
             gazeConfig.update { putBoolean("auto_en", it) }
         })
         autoCard.addView(makeSliderRow("Toutes les", 5, 60, cfg.autoTriggerEveryMin, " min d'écran") { m ->
@@ -479,7 +621,7 @@ class MainActivity : AppCompatActivity() {
         })
         contentBox.addView(autoCard)
 
-        // 7. Permissions & Stats Card
+        // ==================== 9. PERMISSIONS & STATS ====================
         val permCard = makeCard(accentStroke = Color.argb(120, 16, 185, 129))
         permCard.addView(sectionTitle("🛡️ Autorisations & Statistiques"))
         val pRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(5)) }
@@ -513,7 +655,7 @@ class MainActivity : AppCompatActivity() {
         val tv = videoCountTv ?: return
         Thread {
             val (vids, imgs) = VideoFeedRepository.countMediaInConfig(applicationContext, cfg)
-            val imgNote = if (imgs > 0) "🖼️ $imgs image(s) pour spam 0,1 s" else "🎞️ frames vidéo auto pour spam 0,1 s"
+            val imgNote = if (imgs > 0) "🖼️ $imgs image(s) (spam, subliminal & puzzles)" else "🎞️ frames vidéo auto (spam, subliminal & puzzles)"
             val text = when {
                 cfg.folderPath.isNotBlank() -> "${cfg.folderPath}\n→ 🎬 $vids vidéo(s) • $imgNote"
                 cfg.treeUri.isNotBlank() -> "Dossier SAF\n→ 🎬 $vids vidéo(s) • $imgNote"
@@ -544,16 +686,16 @@ class MainActivity : AppCompatActivity() {
         setPadding(dp(14), dp(13), dp(14), dp(13))
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) }
     }
-    private fun sectionTitle(t: String) = TextView(this).apply { text = t; setTextColor(Color.WHITE); textSize = 14.4f; typeface = Typeface.DEFAULT_BOLD }
-    private fun sectionSub(t: String) = TextView(this).apply { text = t; setTextColor(Color.rgb(168, 168, 192)); textSize = 11.4f; setPadding(0, dp(3), 0, dp(6)) }
-    private fun smallLabel(t: String) = TextView(this).apply { text = t; setTextColor(Color.rgb(212, 212, 232)); textSize = 11.6f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(8), 0, dp(4)) }
+    private fun sectionTitle(t: String) = TextView(this).apply { text = t; setTextColor(Color.WHITE); textSize = 14.2f; typeface = Typeface.DEFAULT_BOLD }
+    private fun sectionSub(t: String) = TextView(this).apply { text = t; setTextColor(Color.rgb(168, 168, 192)); textSize = 11.3f; setPadding(0, dp(3), 0, dp(6)) }
+    private fun smallLabel(t: String) = TextView(this).apply { text = t; setTextColor(Color.rgb(212, 212, 232)); textSize = 11.5f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(8), 0, dp(4)) }
     private fun makeSwitchRow(label: String, initial: Boolean, onChange: (Boolean) -> Unit) = Switch(this).apply {
-        text = label; isChecked = initial; setTextColor(Color.rgb(232, 232, 245)); textSize = 12f
+        text = label; isChecked = initial; setTextColor(Color.rgb(232, 232, 245)); textSize = 11.8f
         setPadding(0, dp(5), 0, dp(5)); setOnCheckedChangeListener { _, c -> onChange(c) }
     }
     private fun makeSliderRow(title: String, min: Int, max: Int, initial: Int, unit: String, onChange: (Int) -> Unit): View {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(5), 0, dp(4)) }
-        val tv = TextView(this).apply { text = "$title : $initial$unit"; setTextColor(Color.rgb(216, 216, 232)); textSize = 11.8f }
+        val tv = TextView(this).apply { text = "$title : $initial$unit"; setTextColor(Color.rgb(216, 216, 232)); textSize = 11.6f }
         val sb = SeekBar(this).apply {
             this.max = (max - min).coerceAtLeast(1); progress = (initial - min).coerceIn(0, this.max)
             thumbTintList = ColorStateList.valueOf(Color.rgb(225, 29, 72))
@@ -569,7 +711,7 @@ class MainActivity : AppCompatActivity() {
         box.addView(tv); box.addView(sb); return box
     }
     private fun makeChip(label: String, active: Boolean, onClick: () -> Unit) = Button(this).apply {
-        text = label; isAllCaps = false; textSize = 11f; typeface = Typeface.DEFAULT_BOLD
+        text = label; isAllCaps = false; textSize = 10.8f; typeface = Typeface.DEFAULT_BOLD
         setTextColor(if (active) Color.WHITE else Color.rgb(195, 195, 215))
         background = roundedBg(if (active) Color.rgb(225, 29, 72) else Color.rgb(30, 25, 44), 11, strokeColor = if (active) Color.rgb(253, 164, 175) else Color.argb(38, 255, 255, 255), strokeDp = 1)
         minHeight = 0; minimumHeight = 0; setPadding(dp(5), dp(8), dp(5), dp(8)); setOnClickListener { onClick() }
@@ -581,11 +723,11 @@ class MainActivity : AppCompatActivity() {
         minHeight = 0; minimumHeight = 0; setPadding(dp(6), dp(9), dp(6), dp(9)); setOnClickListener { onClick() }
     }
     private fun makeAccentButton(label: String, bg: Int, onClick: () -> Unit) = Button(this).apply {
-        text = label; isAllCaps = false; textSize = 12.4f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+        text = label; isAllCaps = false; textSize = 12.2f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
         background = roundedBg(bg, 12); setPadding(dp(12), dp(11), dp(12), dp(11)); minHeight = 0; minimumHeight = 0; setOnClickListener { onClick() }
     }
     private fun makeSecondaryBtn(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label; isAllCaps = false; textSize = 11.4f; setTextColor(Color.rgb(225, 225, 240))
+        text = label; isAllCaps = false; textSize = 11.3f; setTextColor(Color.rgb(225, 225, 240))
         background = roundedBg(Color.rgb(30, 26, 46), 11, strokeColor = Color.argb(42, 255, 255, 255), strokeDp = 1)
         setPadding(dp(10), dp(9), dp(10), dp(9)); minHeight = 0; minimumHeight = 0
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
