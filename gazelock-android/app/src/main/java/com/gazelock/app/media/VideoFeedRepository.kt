@@ -56,6 +56,24 @@ object VideoFeedRepository {
         return vids to imgs
     }
 
+    /** Counts images for the standalone Image Pop-Up Mode (uses dedicated folder if set, else main folder!). */
+    fun countImagesForPopupMode(context: Context, cfg: GazeConfigSnapshot): Int {
+        val effective = cfg.copy(
+            folderPath = cfg.popupFolderPath.ifBlank { cfg.folderPath },
+            treeUri = if (cfg.popupFolderPath.isNotBlank() || cfg.popupTreeUri.isNotBlank()) cfg.popupTreeUri else cfg.treeUri
+        )
+        return collectImageRefs(context, effective, limit = 500).size
+    }
+
+    /** Loads a memory-safe RGB_565 bitmap pool for the standalone Image Pop-Up Mode (dedicated folder or main folder!). */
+    fun loadPopupModeBitmapPool(context: Context, cfg: GazeConfigSnapshot, maxPoolSize: Int = 44): List<Bitmap> {
+        val effective = cfg.copy(
+            folderPath = cfg.popupFolderPath.ifBlank { cfg.folderPath },
+            treeUri = if (cfg.popupFolderPath.isNotBlank() || cfg.popupTreeUri.isNotBlank()) cfg.popupTreeUri else cfg.treeUri
+        )
+        return loadSpamBitmapPool(context, effective, maxPoolSize = maxPoolSize)
+    }
+
     fun countVideosInDir(dir: File): Int {
         val tmp = ArrayList<VideoItem>()
         collectVideosRecursive(dir, tmp, depth = 0, limit = 500)

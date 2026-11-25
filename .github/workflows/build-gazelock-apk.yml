@@ -104,20 +104,17 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: gazelock-v5.0.${{ github.run_number }}
-          name: "GazeLock AI v5.0.${{ github.run_number }} APOCALYPSE (Boss Final 30s • Anti-Clignement • Applis Piégées • Taquin 4×4 • Chasse 9 img/s • Portail Progressif 3→6m • Pavlov)"
+          tag_name: gazelock-v5.1.${{ github.run_number }}
+          name: "GazeLock AI v5.1.${{ github.run_number }} (Nouveau Mode Pop-Ups d'Images Hors Vidéos 100 % Réglable + Tout l'Arsenal APOCALYPSE v5.0)"
           body: |
-            ### 👁️ GazeLock AI v5.0 APOCALYPSE (`gazelock-v5.0.${{ github.run_number }}`)
-            - **👁️ #11 Défi Anti-Clignement Extrême** : t'impose périodiquement `8–20 s` sans cligner des yeux (surveillé en direct par ML Kit) — cligner = **`+15 s` + Opacité `+8 %`** + buzzer !
-            - **🪤 #21 Embuscades sur Applis Piégées (`App-Trap`)** : sélecteur d'applis installées — ouvrir une appli piégée (TikTok, Instagram, Chrome, YouTube…) injecte instantanément une session overlay !
-            - **🚫 #29 Blocage du Panneau de Contrôle en mode Ghost** : referme automatiquement le volet de notifications / raccourcis rapides même en mode Semi-Transparent !
-            - **🔀 #30 Taxe Changement d'Appli (`> 3 applis/min`)** : zapper entre plus de 3 applis par minute en mode Ghost inflige **`+10 s` + `+5 %` d'opacité** !
-            - **🔔 #36 Conditionnement Sonore Pavlovien** : carillon cristallin synthétisé toutes les `30 s` de regard parfait / victoire mini-jeu, et buzzer dissonant immédiat sur chaque faute !
-            - **🔥 #51 Taquin `4×4` Mode Enfer (15 tuiles)** : puzzle à glissement `4×4` avec les vraies photos du dossier + aide optimale instantanée (`+5 s`).
-            - **⚡ #54 Chasse au Motif Éclair à `9 img/s` (`111 ms`)** : mémorise la cible dorée puis frappe STOP en plein vol dans un flux à **`9 images/seconde`** (3 manches, `+5 s` par erreur) !
-            - **📈 #70 Portail Progressif Journalier** : chaque déblocage complété dans la même journée allonge la durée imposée du portail (**`3 min → 4 min → 5 min → 6 min`**) !
-            - **👑 #76 Boss Final de Fin de Session (`30 s`)** : les 30 dernières secondes passent à **`100 %` verrouillé Zéro Faute** (accélération binaurale `118 BPM`) — un écart `> 1 s` inflige **`+60 s` de pénalité** !
-            - **Inclut aussi tout l'arsenal v1–v4** : Ghost 48%→96%, Coupures d'Emprise, Micro-Popups, Zones Mortes, Spirale 60 FPS, Subliminal #7, Verrou Audio/Lum/Binaural #8, Dette de Temps #18, Sprint 20 FPS #17, Portail Regard #22, Chuchotements TTS, Chrono Aveugle & Mode Immortel.
+            ### 👁️ GazeLock AI v5.1 (`gazelock-v5.1.${{ github.run_number }}`)
+            - **🖼️ NOUVEAU — Mode Pop-Ups d'Images (Hors Vidéos)** : tourne de façon totalement indépendante sans lancer de vidéo, par-dessus toutes tes applis, avec un dossier images dédié (masqués `.*` inclus) ou réutilisation du dossier principal !
+              - **Taille réglable** (`25 % – 92 %` largeur écran + presets `35 / 55 / 75 / 90 %`, ratio photo respecté)
+              - **Fréquence réglable** (`0,3 s – 30,0 s` + presets `0,5 s / 1,5 s / 3 s / 8 s`)
+              - **Durée par pop-up** (`0,4 s – 15,0 s`), **Max simultanés** (`1 – 8` pop-ups en même temps !), **Opacité** (`35 % – 100 %`)
+              - **3 Modes Tactiles** : `👻 Tactile Libre`, `👆 Cliquable` (`1–3 clics` + option **🧬 Mitose** qui divise un pop-up ignoré en 2 !), `🔒 Bloquant` (impossible à fermer pendant sa durée)
+              - **Extras** : inclinaison aléatoire (`±13°`), mantras néon, vibrations, durée de session (`∞` / `3–15 min`), et **🔒 Verrouillage de sortie optionnel** (Portail 3–6 min + Anti-Évasion obligatoires !).
+            - **Inclut aussi tout l'arsenal APOCALYPSE v5.0** : Boss Final 30s, Anti-Clignement, Applis Piégées, Blocage Volet Ghost, Taxe Changement d'Appli, Pavlov Audio, Taquin 4×4, Chasse 9 img/s, Portail Progressif 3→6m, Ghost 48%→96%, Spirale 60 FPS & Mode Immortel.
           files: ./GazeLockAI.apk
           draft: false
           prerelease: false

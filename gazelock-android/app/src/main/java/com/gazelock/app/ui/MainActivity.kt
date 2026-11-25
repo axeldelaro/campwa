@@ -35,11 +35,13 @@ import com.gazelock.app.config.GazeConfig
 import com.gazelock.app.config.GazeConfigSnapshot
 import com.gazelock.app.config.OverlayMode
 import com.gazelock.app.config.PenaltyMode
+import com.gazelock.app.config.PopupTouchMode
 import com.gazelock.app.config.StrictnessPreset
 import com.gazelock.app.media.VideoFeedRepository
 import com.gazelock.app.overlay.AccessCodeWaitSpamView
 import com.gazelock.app.service.GazeAccessibilityService
 import com.gazelock.app.service.GazeSessionService
+import com.gazelock.app.service.ImagePopupStormService
 
 /**
  * GazeLock AI v5.0 APOCALYPSE EDITION:
@@ -59,6 +61,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var spamWaitHost: FrameLayout
 
     private var videoCountTv: TextView? = null
+    private var popupFolderCountTv: TextView? = null
     private var calibStatusTv: TextView? = null
     private var calibToggleBtn: Button? = null
     private var calibrationTracker: GazeTrackerEngine? = null
@@ -70,6 +73,14 @@ class MainActivity : AppCompatActivity() {
         try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
         gazeConfig.update { putString("folder_path", ""); putString("tree_uri", uri.toString()) }
         Toast.makeText(this, "Dossier SAF enregistré ✅", Toast.LENGTH_SHORT).show()
+        refreshUi()
+    }
+
+    private val pickPopupSafLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
+        gazeConfig.update { putString("popup_folder_path_v51", ""); putString("popup_tree_uri_v51", uri.toString()) }
+        Toast.makeText(this, "Dossier Images Pop-Ups enregistré ✅", Toast.LENGTH_SHORT).show()
         refreshUi()
     }
 
@@ -111,6 +122,7 @@ class MainActivity : AppCompatActivity() {
         super.onStart()
         GazeAccessibilityService.addStateListener(stateRefresh)
         GazeSessionService.addStateListener(stateRefresh)
+        ImagePopupStormService.addStateListener(stateRefresh)
     }
 
     override fun onResume() { super.onResume(); refreshUi() }
@@ -118,6 +130,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         GazeAccessibilityService.removeStateListener(stateRefresh)
         GazeSessionService.removeStateListener(stateRefresh)
+        ImagePopupStormService.removeStateListener(stateRefresh)
         super.onStop()
     }
     override fun onDestroy() {
@@ -289,6 +302,18 @@ class MainActivity : AppCompatActivity() {
         if (preCfg.folderPath.isBlank() && preCfg.treeUri.isBlank()) {
             Toast.makeText(this, "📂 Sélectionne d'abord un dossier contenant des vidéos !", Toast.LENGTH_LONG).show(); return
         }
+        if (GazeSessionService.isSessionRunning) {
+            Toast.makeText(this, "⚠️ Une session Vidéo GazeLock est déjà active !", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (ImagePopupStormService.isRunning) {
+            if (ImagePopupStormService.isExitLocked) {
+                Toast.makeText(this, "🔒 Pop-ups d'images verrouillés ! Passe par le portail d'abord.", Toast.LENGTH_SHORT).show()
+                return
+            } else {
+                ImagePopupStormService.stop(applicationContext)
+            }
+        }
         stopCalibrationPreview()
         val chaosSummary = if (chaosRoulette) gazeConfig.applyChaosRouletteRoll().second else null
         val cfg = gazeConfig.snapshot()
@@ -313,7 +338,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshUi() {
         val cfg = gazeConfig.snapshot()
-        val lockedNow = GazeSessionService.isSessionRunning
+        val lockedVideo = GazeSessionService.isSessionRunning
+        val lockedPopups = ImagePopupStormService.isRunning && ImagePopupStormService.isExitLocked
+        val lockedNow = lockedVideo || lockedPopups
         val portalMin = cfg.currentPortalWaitSec() / 60
         contentBox.removeAllViews()
 
@@ -321,12 +348,12 @@ class MainActivity : AppCompatActivity() {
         val hdr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, dp(12)) }
         val titleCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         titleCol.addView(TextView(this).apply {
-            text = "👁️ GazeLock AI v5.0"
+            text = "👁️ GazeLock AI v5.1"
             setTextColor(Color.WHITE); textSize = 22f; typeface = Typeface.DEFAULT_BOLD
         })
         titleCol.addView(TextView(this).apply {
-            text = "APOCALYPSE · Boss 30s · Anti-Blink · Taquin 4×4 · Chasse 9 img/s"
-            setTextColor(Color.rgb(253, 224, 71)); textSize = 10.4f
+            text = "Vidéo Ghost · Mode Pop-Ups Images · Boss 30s · 7 Mini-Jeux"
+            setTextColor(Color.rgb(253, 224, 71)); textSize = 10.5f
         })
         hdr.addView(titleCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
@@ -344,17 +371,25 @@ class MainActivity : AppCompatActivity() {
         // ==================== ACTIVE SESSION LOCKDOWN ====================
         if (lockedNow) {
             val activeCard = makeCard(accentStroke = Color.rgb(225, 29, 72))
-            activeCard.addView(sectionTitle("🔒 SESSION APOCALYPSE EN COURS — VIDÉOS VERROUILLÉES"))
+            activeCard.addView(sectionTitle(
+                if (lockedPopups) "🔒 POP-UPS D'IMAGES VERROUILLÉS EN COURS"
+                else "🔒 SESSION APOCALYPSE EN COURS — VIDÉOS VERROUILLÉES"
+            ))
             activeCard.addView(sectionSub(
-                "Les vidéos tournent en overlay. Tous les réglages sont scellés.\n" +
-                    "Seul le portail imposé de $portalMin min en overlay (spam 0,1 s → Sprint 20 FPS + pop-ups + 7 mini-jeux dont Taquin 4×4 & Chasse 9 img/s) permet de retirer les vidéos !"
+                if (lockedPopups) "Le mode Pop-Ups d'Images tourne en mode verrouillé. Seul le portail imposé de $portalMin min en overlay permet d'arrêter les pop-ups !"
+                else "Les vidéos tournent en overlay. Tous les réglages sont scellés.\nSeul le portail imposé de $portalMin min en overlay (spam 0,1 s → Sprint 20 FPS + pop-ups + 7 mini-jeux) permet de retirer les vidéos !"
             ))
             activeCard.addView(makeAccentButton("⏳ OUVRIR LE PORTAIL $portalMin MIN EN OVERLAY", Color.rgb(162, 28, 175)) {
-                GazeSessionService.openUnlockPortalOverlay()
+                if (lockedPopups) ImagePopupStormService.openUnlockPortal()
+                else GazeSessionService.openUnlockPortalOverlay()
             }.apply { textSize = 13.5f; setPadding(dp(14), dp(14), dp(14), dp(14)) })
             contentBox.addView(activeCard)
             return
         }
+
+        // ==================== 0. STANDALONE IMAGE POP-UPS MODE (OUTSIDE VIDEOS!) ====================
+        contentBox.addView(buildStandaloneImagePopupCard(cfg, portalMin))
+        refreshPopupFolderCountAsync(cfg)
 
         // ==================== 1. OVERLAY MODE, DEBT & LAUNCH ====================
         val launchCard = makeCard(accentStroke = Color.argb(215, 225, 29, 72))
@@ -716,6 +751,205 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.rgb(210, 210, 232)); textSize = 11.4f
         })
         contentBox.addView(autoCard)
+    }
+
+    private fun buildStandaloneImagePopupCard(cfg: GazeConfigSnapshot, portalMin: Int): LinearLayout {
+        val popRunning = ImagePopupStormService.isRunning
+        val card = makeCard(accentStroke = if (popRunning) Color.rgb(16, 185, 129) else Color.rgb(236, 72, 153))
+        card.addView(sectionTitle("🖼️ Mode Pop-Ups d'Images (Hors Vidéos)"))
+        card.addView(sectionSub("Affiche des pop-ups d'images du dossier par-dessus toutes tes applis sans aucune vidéo ! Taille, fréquence, durée, opacité, mode tactile et verrouillage entièrement réglables en direct."))
+
+        val pCountTv = TextView(this).apply {
+            text = "⏳ Analyse du dossier images…"
+            setTextColor(Color.rgb(249, 168, 212)); textSize = 11.2f; typeface = Typeface.MONOSPACE
+            background = roundedBg(Color.rgb(28, 18, 42), 10); setPadding(dp(10), dp(7), dp(10), dp(7))
+        }
+        popupFolderCountTv = pCountTv
+        card.addView(pCountTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4); bottomMargin = dp(6) })
+
+        val folderBtnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(4)) }
+        folderBtnRow.addView(makeAccentButton("📂 Dossier Images dédié (.*)", Color.rgb(147, 51, 234)) {
+            if (!VideoFeedRepository.hasAllFilesAccess()) {
+                Toast.makeText(this, "Autorise « Accès à tous les fichiers » !", Toast.LENGTH_LONG).show(); requestAllFilesAccess()
+            } else {
+                FolderPickerDialog.show(this, cfg.popupFolderPath.ifBlank { cfg.folderPath }) { chosen ->
+                    gazeConfig.update { putString("popup_folder_path_v51", chosen); putString("popup_tree_uri_v51", "") }; refreshUi()
+                }
+            }
+        }, gridLp(endMargin = dp(4)))
+        folderBtnRow.addView(makeAccentButton("📁 SAF", Color.rgb(79, 70, 229)) {
+            pickPopupSafLauncher.launch(null)
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
+        card.addView(folderBtnRow)
+
+        if (cfg.popupFolderPath.isNotBlank() || cfg.popupTreeUri.isNotBlank()) {
+            card.addView(makeSecondaryBtn("↩ Réutiliser le même dossier que les vidéos") {
+                gazeConfig.update { putString("popup_folder_path_v51", ""); putString("popup_tree_uri_v51", "") }; refreshUi()
+            })
+        }
+
+        // Size presets + slider (25..92%)
+        card.addView(smallLabel("📐 Taille des pop-ups (${cfg.popupSizePct} % de la largeur écran) :"))
+        val szRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(2)) }
+        listOf(35 to "Petit 35%", 55 to "Moyen 55%", 75 to "Grand 75%", 90 to "Énorme 90%").forEachIndexed { idx, (pct, lbl) ->
+            szRow.addView(makeChip(lbl, cfg.popupSizePct == pct) {
+                gazeConfig.update { putInt("popup_size_pct_v51", pct) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 3) dp(3) else 0))
+        }
+        card.addView(szRow)
+        card.addView(makeSliderRow("Taille précise", 25, 92, cfg.popupSizePct, " %") { v ->
+            gazeConfig.update { putInt("popup_size_pct_v51", v) }
+        })
+
+        // Frequency presets + decimal slider (0.3s .. 30.0s)
+        card.addView(smallLabel("⚡ Fréquence d'apparition (toutes les ${formatDeciSec(cfg.popupIntervalDeciSec)}) :"))
+        val fqRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(2)) }
+        listOf(5 to "0,5 s (Spam)", 15 to "1,5 s", 30 to "3 s", 80 to "8 s").forEachIndexed { idx, (ds, lbl) ->
+            fqRow.addView(makeChip(lbl, cfg.popupIntervalDeciSec == ds) {
+                gazeConfig.update { putInt("popup_int_ds_v51", ds) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 3) dp(3) else 0))
+        }
+        card.addView(fqRow)
+        card.addView(makeDecimalSliderRow("Fréquence exacte", 3, 300, cfg.popupIntervalDeciSec) { ds ->
+            gazeConfig.update { putInt("popup_int_ds_v51", ds) }
+        })
+
+        // Display duration per pop-up (0.4s .. 15.0s)
+        card.addView(smallLabel("⏱️ Durée d'affichage par pop-up (${formatDeciSec(cfg.popupDurationDeciSec)}) :"))
+        val duRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(2)) }
+        listOf(10 to "1 s", 30 to "3 s", 60 to "6 s", 120 to "12 s").forEachIndexed { idx, (ds, lbl) ->
+            duRow.addView(makeChip(lbl, cfg.popupDurationDeciSec == ds) {
+                gazeConfig.update { putInt("popup_dur_ds_v51", ds) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 3) dp(3) else 0))
+        }
+        card.addView(duRow)
+        card.addView(makeDecimalSliderRow("Durée exacte d'un pop-up", 4, 150, cfg.popupDurationDeciSec) { ds ->
+            gazeConfig.update { putInt("popup_dur_ds_v51", ds) }
+        })
+
+        // Max simultaneous & Opacity
+        card.addView(makeSliderRow("Nombre max simultanés à l'écran", 1, 8, cfg.popupMaxSimultaneous, " pop-ups") { v ->
+            gazeConfig.update { putInt("popup_max_simul_v51", v) }
+        })
+        card.addView(makeSliderRow("Opacité des pop-ups", 35, 100, cfg.popupOpacityPct, " %") { v ->
+            gazeConfig.update { putInt("popup_opacity_v51", v) }
+        })
+
+        // Touch mode selector
+        card.addView(smallLabel("👆 Comportement tactile des pop-ups :"))
+        val tmRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(4)) }
+        PopupTouchMode.values().forEachIndexed { idx, tm ->
+            tmRow.addView(makeChip(tm.label, cfg.popupTouchMode == tm) {
+                gazeConfig.update { putString("popup_touch_mode_v51", tm.id) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 2) dp(3) else 0))
+        }
+        card.addView(tmRow)
+        card.addView(TextView(this).apply {
+            text = "→ ${cfg.popupTouchMode.desc}"
+            setTextColor(Color.rgb(216, 180, 254)); textSize = 10.8f; setPadding(0, 0, 0, dp(4))
+        })
+
+        if (cfg.popupTouchMode == PopupTouchMode.TAP_DISMISS) {
+            val tapRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(2), 0, dp(4)) }
+            listOf(1 to "1 clic", 2 to "2 clics", 3 to "3 clics").forEachIndexed { idx, (t, lbl) ->
+                tapRow.addView(makeChip(lbl, cfg.popupTapsToClose == t) {
+                    gazeConfig.update { putInt("popup_taps_close_v51", t) }; refreshUi()
+                }, gridLp(if (idx > 0) dp(4) else 0, if (idx < 2) dp(4) else 0))
+            }
+            card.addView(tapRow)
+            card.addView(makeSwitchRow("🧬 Mitose : un pop-up ignoré se divise en 2 pop-ups !", cfg.popupMitosisEnabled) {
+                gazeConfig.update { putBoolean("popup_mitosis_v51", it) }
+            })
+        }
+
+        card.addView(makeSwitchRow("🔀 Inclinaison aléatoire des photos (±13°)", cfg.popupRandomRotation) {
+            gazeConfig.update { putBoolean("popup_rotation_v51", it) }
+        })
+        card.addView(makeSwitchRow("✨ Afficher un Mantra Néon sur chaque image", cfg.popupShowMantra) {
+            gazeConfig.update { putBoolean("popup_mantra_v51", it) }
+        })
+        card.addView(makeSwitchRow("📳 Vibration subtile à chaque pop-up", cfg.popupVibrate) {
+            gazeConfig.update { putBoolean("popup_vibrate_v51", it) }
+        })
+        card.addView(makeSwitchRow("🔒 Verrouiller la sortie (Portail $portalMin min + Anti-Évasion obligatoires)", cfg.popupLockExitWithPortal) {
+            gazeConfig.update { putBoolean("popup_lock_exit_v51", it) }; refreshUi()
+        })
+
+        // Session duration chips
+        card.addView(smallLabel("⏳ Durée de la session Pop-Ups :"))
+        val sdRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(8)) }
+        listOf(0 to "∞ Infini", 180 to "3 min", 300 to "5 min", 900 to "15 min").forEachIndexed { idx, (sec, lbl) ->
+            sdRow.addView(makeChip(lbl, cfg.popupSessionDurationSec == sec) {
+                gazeConfig.update { putInt("popup_sess_dur_v51", sec) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 3) dp(3) else 0))
+        }
+        card.addView(sdRow)
+
+        if (popRunning) {
+            card.addView(makeAccentButton("⏹️ ARRÊTER LES POP-UPS D'IMAGES", Color.rgb(225, 29, 72)) {
+                ImagePopupStormService.stop(applicationContext)
+            }.apply { textSize = 13.8f; setPadding(dp(12), dp(14), dp(12), dp(14)) })
+        } else {
+            val lockTag = if (cfg.popupLockExitWithPortal) " · 🔒 VERROUILLÉ" else ""
+            card.addView(makeAccentButton("🖼️⚡ LANCER POP-UPS D'IMAGES (${cfg.popupSizePct}% · ${formatDeciSec(cfg.popupIntervalDeciSec)}$lockTag)", Color.rgb(219, 39, 119)) {
+                launchImagePopupStormMode()
+            }.apply { textSize = 13.2f; setPadding(dp(12), dp(14), dp(12), dp(14)) })
+        }
+        return card
+    }
+
+    private fun launchImagePopupStormMode() {
+        val cfg = gazeConfig.snapshot()
+        if (!GazeAccessibilityService.isServiceActive() && !hasOverlayPerm()) {
+            Toast.makeText(this, "⚠️ Active l'Accessibilité (recommandé) ou Superposition pour les pop-ups !", Toast.LENGTH_LONG).show()
+            openAccessibilitySettings()
+            return
+        }
+        if (cfg.popupFolderPath.isBlank() && cfg.popupTreeUri.isBlank() &&
+            cfg.folderPath.isBlank() && cfg.treeUri.isBlank()
+        ) {
+            Toast.makeText(this, "📂 Choisis d'abord un dossier contenant des images !", Toast.LENGTH_LONG).show()
+            return
+        }
+        stopCalibrationPreview()
+        ImagePopupStormService.start(applicationContext)
+    }
+
+    private fun refreshPopupFolderCountAsync(cfg: GazeConfigSnapshot) {
+        val tv = popupFolderCountTv ?: return
+        Thread {
+            val imgs = VideoFeedRepository.countImagesForPopupMode(applicationContext, cfg)
+            val srcLabel = when {
+                cfg.popupFolderPath.isNotBlank() -> cfg.popupFolderPath
+                cfg.popupTreeUri.isNotBlank() -> "Dossier Images dédié (SAF)"
+                cfg.folderPath.isNotBlank() -> "Dossier principal : ${cfg.folderPath}"
+                cfg.treeUri.isNotBlank() -> "Dossier principal (SAF)"
+                else -> "Aucun dossier choisi"
+            }
+            val countStr = if (imgs > 0) "🖼️ $imgs image(s) prête(s)" else "🎞️ extraction auto depuis vidéos si 0 photo"
+            mainHandler.post { tv.text = "$srcLabel\n→ $countStr" }
+        }.start()
+    }
+
+    private fun formatDeciSec(ds: Int): String =
+        if (ds % 10 == 0) "${ds / 10} s" else String.format("%d,%d s", ds / 10, ds % 10)
+
+    private fun makeDecimalSliderRow(title: String, minDs: Int, maxDs: Int, initialDs: Int, onChange: (Int) -> Unit): View {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
+        val tv = TextView(this).apply { text = "$title : ${formatDeciSec(initialDs)}"; setTextColor(Color.rgb(216, 216, 232)); textSize = 11.4f }
+        val sb = SeekBar(this).apply {
+            this.max = (maxDs - minDs).coerceAtLeast(1); progress = (initialDs - minDs).coerceIn(0, this.max)
+            thumbTintList = ColorStateList.valueOf(Color.rgb(236, 72, 153))
+            progressTintList = ColorStateList.valueOf(Color.rgb(236, 72, 153))
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                    val v = minDs + p; tv.text = "$title : ${formatDeciSec(v)}"; if (fromUser) onChange(v)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+        }
+        box.addView(tv); box.addView(sb); return box
     }
 
     private fun refreshVideoCountAsync(cfg: GazeConfigSnapshot) {

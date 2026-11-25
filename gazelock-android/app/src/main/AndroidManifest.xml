@@ -78,6 +78,16 @@
                 android:value="Local on-device eye-tracking video attention overlay with user-configured timer and emergency exit" />
         </service>
 
+        <!-- Standalone Image Pop-Up Storm Mode Service (outside of videos!) -->
+        <service
+            android:name=".service.ImagePopupStormService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-configured customizable floating image pop-up overlay service" />
+        </service>
+
         <!-- #26 Immortal Mode: Resume interrupted session after reboot / screen unlock -->
         <receiver
             android:name=".service.GazeBootReceiver"

@@ -14,6 +14,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import com.gazelock.app.config.GazeConfig
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.random.Random
 
@@ -43,6 +44,9 @@ class GazeAccessibilityService : AccessibilityService() {
     private var deadZoneParams: WindowManager.LayoutParams? = null
     private var portalView: View? = null
     private var portalParams: WindowManager.LayoutParams? = null
+    private val stormPopupViews = CopyOnWriteArrayList<View>()
+    private var stormPillView: View? = null
+    private var stormPillParams: WindowManager.LayoutParams? = null
 
     private var activeScreenSec = 0
     private var lastShadeDismissMs = 0L
@@ -70,7 +74,7 @@ class GazeAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                if (interactive && cfg.autoTriggerEnabled && !GazeSessionService.isSessionRunning) {
+                if (interactive && cfg.autoTriggerEnabled && !GazeSessionService.isSessionRunning && !ImagePopupStormService.isRunning) {
                     activeScreenSec += 10
                     if (activeScreenSec >= cfg.autoTriggerEveryMin * 60) {
                         activeScreenSec = 0
@@ -113,6 +117,21 @@ class GazeAccessibilityService : AccessibilityService() {
         val pkg = event.packageName?.toString()?.lowercase().orEmpty()
         val cls = event.className?.toString()?.lowercase().orEmpty()
         val now = System.currentTimeMillis()
+
+        // ==================== STANDALONE IMAGE POP-UP MODE ANTI-ESCAPE (WHEN LOCKED!) ====================
+        if (!GazeSessionService.isSessionRunning && ImagePopupStormService.isRunning) {
+            if (ImagePopupStormService.isExitLocked && cfg.antiEscapeLockEnabled &&
+                isBlockedSettingsOrSystem(pkg) && now - lastEscapeEjectMs > 2_500L
+            ) {
+                lastEscapeEjectMs = now
+                try { performGlobalAction(GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
+                }
+                ImagePopupStormService.onEscapeBlocked()
+            }
+            return
+        }
 
         // ==================== #21 APP-TRAP AMBUSH (WHEN NO SESSION IS RUNNING) ====================
         if (!GazeSessionService.isSessionRunning) {
@@ -401,8 +420,88 @@ class GazeAccessibilityService : AccessibilityService() {
         try { wm?.removeViewImmediate(v) } catch (_: Throwable) {}
     }
 
+    // ==================== STANDALONE IMAGE POP-UP STORM MULTI-WINDOW SLOTS ====================
+    fun mountStormPopupWindow(view: View, x: Int, y: Int, widthPx: Int, heightPx: Int, touchable: Boolean): Boolean {
+        val winMgr = wm ?: return false
+        return try {
+            val flags = if (touchable) {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            } else {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            }
+            val lp = WindowManager.LayoutParams(
+                widthPx,
+                heightPx,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                flags,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                this.x = x
+                this.y = y
+            }
+            winMgr.addView(view, lp)
+            stormPopupViews.add(view)
+            true
+        } catch (_: Throwable) { false }
+    }
+
+    fun removeStormPopupWindow(view: View) {
+        stormPopupViews.remove(view)
+        try { wm?.removeViewImmediate(view) } catch (_: Throwable) {}
+    }
+
+    fun mountStormPillOverlay(view: View): Boolean {
+        val winMgr = wm ?: return false
+        removeStormPillOverlay()
+        return try {
+            val dm = resources.displayMetrics
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = (dm.widthPixels - (170 * dm.density).toInt()).coerceAtLeast((8 * dm.density).toInt())
+                y = (44 * dm.density).toInt()
+            }
+            winMgr.addView(view, lp)
+            stormPillView = view; stormPillParams = lp
+            true
+        } catch (_: Throwable) { false }
+    }
+
+    fun dragStormPillBy(dx: Int, dy: Int) {
+        val winMgr = wm ?: return
+        val v = stormPillView ?: return
+        val lp = stormPillParams ?: return
+        val dm = resources.displayMetrics
+        lp.x = (lp.x + dx).coerceIn(0, (dm.widthPixels - v.width.coerceAtLeast(80)).coerceAtLeast(0))
+        lp.y = (lp.y + dy).coerceIn((20 * dm.density).toInt(), (dm.heightPixels - v.height.coerceAtLeast(60)).coerceAtLeast(0))
+        try { winMgr.updateViewLayout(v, lp) } catch (_: Throwable) {}
+    }
+
+    fun removeStormPillOverlay() {
+        val v = stormPillView ?: return
+        stormPillView = null; stormPillParams = null
+        try { wm?.removeViewImmediate(v) } catch (_: Throwable) {}
+    }
+
+    fun removeAllStormOverlays() {
+        for (v in stormPopupViews.toList()) {
+            try { wm?.removeViewImmediate(v) } catch (_: Throwable) {}
+        }
+        stormPopupViews.clear()
+        removeStormPillOverlay()
+    }
+
     fun removeAllOverlays() {
         removePortalOverlay()
+        removeAllStormOverlays()
         removeMicroPopupOverlay()
         removeDeadZoneOverlay()
         removeGhostPillOverlay()
