@@ -104,17 +104,28 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: gazelock-v5.1.${{ github.run_number }}
-          name: "GazeLock AI v5.1.${{ github.run_number }} (Nouveau Mode Pop-Ups d'Images Hors Vidéos 100 % Réglable + Tout l'Arsenal APOCALYPSE v5.0)"
+          tag_name: gazelock-v6.0.${{ github.run_number }}
+          name: "GazeLock AI v6.0.${{ github.run_number }} MEGA (Pop-Ups d'Images ∞ Illimités 60 FPS jusqu'à 33/s + 14 Mini-Jeux Visuels + Portail 3–12 Défis)"
           body: |
-            ### 👁️ GazeLock AI v5.1 (`gazelock-v5.1.${{ github.run_number }}`)
-            - **🖼️ NOUVEAU — Mode Pop-Ups d'Images (Hors Vidéos)** : tourne de façon totalement indépendante sans lancer de vidéo, par-dessus toutes tes applis, avec un dossier images dédié (masqués `.*` inclus) ou réutilisation du dossier principal !
-              - **Taille réglable** (`25 % – 92 %` largeur écran + presets `35 / 55 / 75 / 90 %`, ratio photo respecté)
-              - **Fréquence réglable** (`0,3 s – 30,0 s` + presets `0,5 s / 1,5 s / 3 s / 8 s`)
-              - **Durée par pop-up** (`0,4 s – 15,0 s`), **Max simultanés** (`1 – 8` pop-ups en même temps !), **Opacité** (`35 % – 100 %`)
-              - **3 Modes Tactiles** : `👻 Tactile Libre`, `👆 Cliquable` (`1–3 clics` + option **🧬 Mitose** qui divise un pop-up ignoré en 2 !), `🔒 Bloquant` (impossible à fermer pendant sa durée)
-              - **Extras** : inclinaison aléatoire (`±13°`), mantras néon, vibrations, durée de session (`∞` / `3–15 min`), et **🔒 Verrouillage de sortie optionnel** (Portail 3–6 min + Anti-Évasion obligatoires !).
-            - **Inclut aussi tout l'arsenal APOCALYPSE v5.0** : Boss Final 30s, Anti-Clignement, Applis Piégées, Blocage Volet Ghost, Taxe Changement d'Appli, Pavlov Audio, Taquin 4×4, Chasse 9 img/s, Portail Progressif 3→6m, Ghost 48%→96%, Spirale 60 FPS & Mode Immortel.
+            ### 👁️ GazeLock AI v6.0 MEGA (`gazelock-v6.0.${{ github.run_number }}`)
+            - **🖼️🔥 Mode Pop-Ups d'Images MEGA (Hors Vidéos · Moteur GPU 60 FPS)** :
+              - **Nombre simultanés ÉNORME ou ∞ ILLIMITÉ** : `1..150` ou **`∞ ILLIMITÉ`** (jusqu'à **360 pop-ups empilés à 60 FPS** sur scène GPU unique, zéro lag !), mode fenêtres flottantes individuelles conservé pour `≤ 12` en mode cliquable
+              - **Fréquences ultra-larges** : **`30 ms` (33 pop-ups/s !)** jusqu'à **`60 s`** (curseurs logarithmiques ultra-précis + presets `30 ms / 50 ms / 0,1 s / 0,25 s / 0,5 s / 1,5 s / 5 s / 15 s`)
+              - **Salves simultanées** : **`×1` à `×12` images d'un coup** par tick + **🌊 Rampe d'Accélération** (accélère progressivement jusqu'à **4×** sur 3 min !)
+              - **Taille MIN / MAX aléatoire** (`12 % – 100 %`, presets `Vignettes`, `Moyen`, `Géant`, `Chaos ∞`)
+              - **Durée de vie** : `0,1 s – 60 s` ou **`∞ Persistant`** (ne disparaît jamais tout seul !)
+              - **4 Zones d'apparition** (`🎲 Partout`, `🎯 Centre`, `🖼️ Bords`, `🧱 Collage`), **5 Animations d'entrée** (`💥 Zoom`, `⚡ Flash`, `🌊 Glisse`, `🌀 Tourbillon`, `🎲 Aléatoire`), **5 Styles de cadre** (`🌈 Néon`, `❤️ Rouge`, `📸 Polaroid`, `🚫 Sans bord`, `⚡ Double`)
+              - **Opacité `15–100 %`** + **Opacité aléatoire**, **💨 Swipe-Away (glisser pour éjecter)**, **🧬 Mitose**, **🔊 Son Pavlov**, sessions `∞ / 1–60 min` et **🔒 Verrouillage de sortie optionnel** (Portail + Anti-Évasion).
+            - **🧩 14 Mini-Jeux Visuels dans le Portail 3–6 min (+6 NOUVEAUX v6.0 + 3 à 12 Défis configurables + ⚡ Combo Sans-Faute !)** :
+              1. **🪙 Gratte & Identifie** *(NOUVEAU)* — Gratte la pellicule métallique au doigt puis identifie la bonne photo parmi 4
+              2. **🔗 Chaîne Mahjong d'Images 4×4** *(NOUVEAU)* — Relie les 8 paires adjacentes, sur ligne dégagée, bord ou angle en L
+              3. **🎨 Cherche la Copie Altérée 3×3** *(NOUVEAU)* — 9 copies de la même photo, repère celle à teinte/contraste modifié sous 8,5 s
+              4. **🔢 Réflexe Visuel de Symboles** *(NOUVEAU)* — Compte les symboles `★`/`◆` lumineux sur la photo sous 7,5 s
+              5. **⏱️ Verrous de Précision** *(NOUVEAU)* — 4 jauges de plus en plus rapides à stopper dans la zone verte pour révéler la photo
+              6. **🎞️ Réalignement de Bandes 5×1** *(NOUVEAU)* — Reconstitue 2 photos découpées en 5 bandes verticales puis horizontales
+              - **+ les 8 mini-jeux existants** : Taquin 3×3, Taquin 4×4 Enfer, Chasse Éclair 9 img/s, Échange 3×3, Rotation 3×3, Memory 4×3, Séquence 1→9 & Intrus 3×3
+              - **Nombre de défis réglable (`3` / `6 Intense` / `9 Extrême` / `12 Marathon`)** + **⚡ Combo Sans-Faute (`COMBO ×N`)** !
+            - **Inclut aussi tout l'arsenal APOCALYPSE v5.0** : Ghost 48%→96%, Boss Final 30s, Anti-Clignement, Applis Piégées, Blocage Volet Ghost, Taxe Changement d'Appli, Pavlov Audio, Spirale 60 FPS & Mode Immortel.
           files: ./GazeLockAI.apk
           draft: false
           prerelease: false

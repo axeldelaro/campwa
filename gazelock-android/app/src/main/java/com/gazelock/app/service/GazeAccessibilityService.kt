@@ -45,6 +45,7 @@ class GazeAccessibilityService : AccessibilityService() {
     private var portalView: View? = null
     private var portalParams: WindowManager.LayoutParams? = null
     private val stormPopupViews = CopyOnWriteArrayList<View>()
+    private var stormStageView: View? = null
     private var stormPillView: View? = null
     private var stormPillParams: WindowManager.LayoutParams? = null
 
@@ -491,11 +492,50 @@ class GazeAccessibilityService : AccessibilityService() {
         try { wm?.removeViewImmediate(v) } catch (_: Throwable) {}
     }
 
+    fun mountStormStageOverlay(view: View, touchable: Boolean): Boolean {
+        val winMgr = wm ?: return false
+        removeStormStageOverlay()
+        return try {
+            val flags = if (touchable) {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            } else {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            }
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                flags,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+            winMgr.addView(view, lp)
+            stormStageView = view
+            true
+        } catch (_: Throwable) { false }
+    }
+
+    fun removeStormStageOverlay() {
+        val v = stormStageView ?: return
+        stormStageView = null
+        try { wm?.removeViewImmediate(v) } catch (_: Throwable) {}
+    }
+
     fun removeAllStormOverlays() {
         for (v in stormPopupViews.toList()) {
             try { wm?.removeViewImmediate(v) } catch (_: Throwable) {}
         }
         stormPopupViews.clear()
+        removeStormStageOverlay()
         removeStormPillOverlay()
     }
 

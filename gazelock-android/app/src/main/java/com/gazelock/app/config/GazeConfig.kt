@@ -47,12 +47,47 @@ enum class OverlayMode(val id: String, val label: String, val emoji: String, val
 }
 
 enum class PopupTouchMode(val id: String, val label: String, val desc: String) {
-    PASS_THROUGH("pass", "👻 Tactile Libre", "Les pop-ups s'affichent par-dessus tes applis sans bloquer tes clics"),
-    TAP_DISMISS("tap", "👆 Cliquable", "Touche le pop-up (1 à 3 clics) pour le fermer — option mitose si ignoré !"),
+    PASS_THROUGH("pass", "👻 Tactile Libre", "Les pop-ups s'affichent par-dessus tes applis sans bloquer tes clics (supporte ∞ illimité à 60 FPS !)"),
+    TAP_DISMISS("tap", "👆 Cliquable", "Touche ou balaie chaque pop-up (1–3 clics) pour l'éjecter — option mitose si ignoré !"),
     TOUCH_LOCKED("locked", "🔒 Bloquant", "Impossible à fermer manuellement pendant toute sa durée d'affichage");
 
     companion object {
         fun fromId(id: String?): PopupTouchMode = values().firstOrNull { it.id == id } ?: TAP_DISMISS
+    }
+}
+
+enum class PopupSpawnZone(val id: String, val label: String) {
+    ANYWHERE("anywhere", "🎲 Partout"),
+    CENTER("center", "🎯 Centre"),
+    EDGES("edges", "🖼️ Bords"),
+    GRID("grid", "🧱 Collage");
+
+    companion object {
+        fun fromId(id: String?): PopupSpawnZone = values().firstOrNull { it.id == id } ?: ANYWHERE
+    }
+}
+
+enum class PopupAnimStyle(val id: String, val label: String) {
+    POP_ZOOM("zoom", "💥 Pop Zoom"),
+    INSTANT_FLASH("flash", "⚡ Flash Brut"),
+    SLIDE_IN("slide", "🌊 Glissement"),
+    SPIN_IN("spin", "🌀 Tourbillon"),
+    RANDOM("random", "🎲 Aléatoire");
+
+    companion object {
+        fun fromId(id: String?): PopupAnimStyle = values().firstOrNull { it.id == id } ?: RANDOM
+    }
+}
+
+enum class PopupFrameStyle(val id: String, val label: String) {
+    NEON_MULTI("neon", "🌈 Néon"),
+    CRIMSON("crimson", "❤️ Rouge"),
+    POLAROID("polaroid", "📸 Polaroid"),
+    BORDERLESS("none", "🚫 Sans bord"),
+    DOUBLE_PULSE("double", "⚡ Double");
+
+    companion object {
+        fun fromId(id: String?): PopupFrameStyle = values().firstOrNull { it.id == id } ?: NEON_MULTI
     }
 }
 
@@ -93,6 +128,7 @@ data class GazeConfigSnapshot(
     // Portal & Mini-Games (#16, #17, #22, #51, #54, #70)
     val unlockPopupsEnabled: Boolean,
     val unlockMinigamesEnabled: Boolean,
+    val portalMinigameCount: Int,            // v6.0: 3..12 mini-games inside the 3-minute portal (default 6!)
     val overloadSprintEnabled: Boolean,
     val gazeGatedPortalEnabled: Boolean,
     val hellPuzzle4x4Enabled: Boolean,       // #51 4x4 Hell Sliding Puzzle (15 tiles)!
@@ -126,22 +162,31 @@ data class GazeConfigSnapshot(
     val appSwitchTaxEnabled: Boolean,        // #30 >3 app switches/min -> +10s & +5% opacity!
     val pavlovSoundEnabled: Boolean,         // #36 Pavlovian chime on 30s streak & harsh buzz on faults!
     val finalBossEnabled: Boolean,           // #76 Final 30s 100% Zero-Fault Boss (fail = +60s!)
-    // v5.1 Standalone Image Pop-Up Storm Mode (outside of videos!)
-    val popupFolderPath: String,             // Optional dedicated image folder (blank = reuse main folder!)
+    // v5.1 / v6.0 MEGA Standalone Image Pop-Up Storm Mode (outside of videos!)
+    val popupFolderPath: String,
     val popupTreeUri: String,
-    val popupSizePct: Int,                   // 25..92 % of screen width
-    val popupIntervalDeciSec: Int,           // 3..300 tenths of a second (0.3s .. 30.0s!)
-    val popupDurationDeciSec: Int,           // 4..150 tenths of a second (0.4s .. 15.0s!)
-    val popupMaxSimultaneous: Int,           // 1..8 simultaneous pop-ups on screen!
-    val popupOpacityPct: Int,                // 35..100 %
-    val popupTouchMode: PopupTouchMode,      // PASS_THROUGH / TAP_DISMISS / TOUCH_LOCKED
-    val popupTapsToClose: Int,               // 1..3 taps in TAP_DISMISS mode
-    val popupMitosisEnabled: Boolean,        // Ignoring a clickable pop-up splits it into 2!
-    val popupRandomRotation: Boolean,        // Random tilt -13..+13 deg
-    val popupShowMantra: Boolean,            // Neon mantra badge on each image pop-up
-    val popupVibrate: Boolean,               // Subtle haptic tick per pop-up
-    val popupSessionDurationSec: Int,        // 0 = infinite, else 180/300/900/1800s
-    val popupLockExitWithPortal: Boolean,    // true = ONLY stoppable via 3-6 min overlay portal + Anti-Escape!
+    val popupMinSizePct: Int,                // v6.0: 12..100 % min width
+    val popupSizePct: Int,                   // v6.0: 15..100 % max width
+    val popupIntervalMs: Int,                // v6.0: 30..60000 ms (up to 33 pop-ups/sec!)
+    val popupDurationMs: Int,                // v6.0: 100..60000 ms (0 = ∞ PERSISTENT until click/end!)
+    val popupMaxSimultaneous: Int,           // v6.0: 0 = ∞ UNLIMITED (up to 400 GPU layers!), else 1..150!
+    val popupBurstCount: Int,                // v6.0: 1..12 pop-ups spawned per burst!
+    val popupOpacityPct: Int,                // v6.0: 15..100 %
+    val popupRandomOpacity: Boolean,         // v6.0: varies opacity per pop-up
+    val popupRampUpEnabled: Boolean,         // v6.0: gradually accelerates up to 4x faster over session!
+    val popupSpawnZone: PopupSpawnZone,      // v6.0: ANYWHERE / CENTER / EDGES / GRID
+    val popupAnimStyle: PopupAnimStyle,      // v6.0: POP_ZOOM / INSTANT_FLASH / SLIDE_IN / SPIN_IN / RANDOM
+    val popupFrameStyle: PopupFrameStyle,    // v6.0: NEON_MULTI / CRIMSON / POLAROID / BORDERLESS / DOUBLE_PULSE
+    val popupTouchMode: PopupTouchMode,
+    val popupTapsToClose: Int,
+    val popupSwipeDismiss: Boolean,          // v6.0: swipe to fling pop-ups off screen in TAP_DISMISS mode!
+    val popupMitosisEnabled: Boolean,
+    val popupRandomRotation: Boolean,
+    val popupShowMantra: Boolean,
+    val popupVibrate: Boolean,
+    val popupSoundOnSpawn: Boolean,          // v6.0: Pavlov audio cue on bursts/dismiss
+    val popupSessionDurationSec: Int,        // 0 = infinite, else 60..3600 s
+    val popupLockExitWithPortal: Boolean,
     val showTelemetryBadge: Boolean,
     val preset: StrictnessPreset,
     // Optional Auto-Ambush timer via Accessibility
@@ -233,6 +278,7 @@ class GazeConfig(context: Context) {
         binauralFreqHz = prefs.getInt(KEY_BINAURAL_HZ, 6).coerceIn(4, 12),
         unlockPopupsEnabled = prefs.getBoolean(KEY_UNLOCK_POPUPS, true),
         unlockMinigamesEnabled = prefs.getBoolean(KEY_UNLOCK_MINIGAMES, true),
+        portalMinigameCount = prefs.getInt(KEY_PORTAL_GAME_COUNT, 6).coerceIn(3, 12),
         overloadSprintEnabled = prefs.getBoolean(KEY_OVERLOAD_SPRINT, true),
         gazeGatedPortalEnabled = prefs.getBoolean(KEY_GAZE_PORTAL, true),
         hellPuzzle4x4Enabled = prefs.getBoolean(KEY_HELL_4X4, true),
@@ -266,17 +312,26 @@ class GazeConfig(context: Context) {
         finalBossEnabled = prefs.getBoolean(KEY_FINAL_BOSS, true),
         popupFolderPath = prefs.getString(KEY_POPUP_FOLDER_PATH, "").orEmpty(),
         popupTreeUri = prefs.getString(KEY_POPUP_TREE_URI, "").orEmpty(),
-        popupSizePct = prefs.getInt(KEY_POPUP_SIZE_PCT, 54).coerceIn(25, 92),
-        popupIntervalDeciSec = prefs.getInt(KEY_POPUP_INTERVAL_DS, 25).coerceIn(3, 300),
-        popupDurationDeciSec = prefs.getInt(KEY_POPUP_DURATION_DS, 32).coerceIn(4, 150),
-        popupMaxSimultaneous = prefs.getInt(KEY_POPUP_MAX_SIMUL, 3).coerceIn(1, 8),
-        popupOpacityPct = prefs.getInt(KEY_POPUP_OPACITY_PCT, 88).coerceIn(35, 100),
+        popupMinSizePct = prefs.getInt(KEY_POPUP_MIN_SIZE_PCT, 28).coerceIn(12, 100),
+        popupSizePct = prefs.getInt(KEY_POPUP_SIZE_PCT, 62).coerceIn(15, 100),
+        popupIntervalMs = prefs.getInt(KEY_POPUP_INTERVAL_MS, 1000).coerceIn(30, 60_000),
+        popupDurationMs = prefs.getInt(KEY_POPUP_DURATION_MS, 3500).coerceIn(0, 60_000),
+        popupMaxSimultaneous = prefs.getInt(KEY_POPUP_MAX_SIMUL_V6, 20).coerceIn(0, 150),
+        popupBurstCount = prefs.getInt(KEY_POPUP_BURST_CNT, 1).coerceIn(1, 12),
+        popupOpacityPct = prefs.getInt(KEY_POPUP_OPACITY_PCT, 88).coerceIn(15, 100),
+        popupRandomOpacity = prefs.getBoolean(KEY_POPUP_RAND_OPACITY, false),
+        popupRampUpEnabled = prefs.getBoolean(KEY_POPUP_RAMP_UP, false),
+        popupSpawnZone = PopupSpawnZone.fromId(prefs.getString(KEY_POPUP_ZONE, PopupSpawnZone.ANYWHERE.id)),
+        popupAnimStyle = PopupAnimStyle.fromId(prefs.getString(KEY_POPUP_ANIM, PopupAnimStyle.RANDOM.id)),
+        popupFrameStyle = PopupFrameStyle.fromId(prefs.getString(KEY_POPUP_FRAME, PopupFrameStyle.NEON_MULTI.id)),
         popupTouchMode = PopupTouchMode.fromId(prefs.getString(KEY_POPUP_TOUCH_MODE, PopupTouchMode.TAP_DISMISS.id)),
         popupTapsToClose = prefs.getInt(KEY_POPUP_TAPS_CLOSE, 1).coerceIn(1, 3),
+        popupSwipeDismiss = prefs.getBoolean(KEY_POPUP_SWIPE_DISMISS, true),
         popupMitosisEnabled = prefs.getBoolean(KEY_POPUP_MITOSIS, false),
         popupRandomRotation = prefs.getBoolean(KEY_POPUP_ROTATION, true),
         popupShowMantra = prefs.getBoolean(KEY_POPUP_MANTRA, true),
         popupVibrate = prefs.getBoolean(KEY_POPUP_VIBRATE, true),
+        popupSoundOnSpawn = prefs.getBoolean(KEY_POPUP_SOUND_SPAWN, false),
         popupSessionDurationSec = prefs.getInt(KEY_POPUP_SESSION_DUR, 0).coerceIn(0, 3600),
         popupLockExitWithPortal = prefs.getBoolean(KEY_POPUP_LOCK_EXIT, false),
         showTelemetryBadge = prefs.getBoolean(KEY_TELEMETRY, true),
@@ -528,6 +583,7 @@ class GazeConfig(context: Context) {
         private const val KEY_BINAURAL_HZ = "binaural_hz_v3"
         private const val KEY_UNLOCK_POPUPS = "unlock_popups_v3"
         private const val KEY_UNLOCK_MINIGAMES = "unlock_minigames_v3"
+        private const val KEY_PORTAL_GAME_COUNT = "portal_game_count_v6"
         private const val KEY_OVERLOAD_SPRINT = "overload_sprint_v4"
         private const val KEY_GAZE_PORTAL = "gaze_portal_v4"
         private const val KEY_HELL_4X4 = "hell_4x4_v5"
@@ -566,17 +622,26 @@ class GazeConfig(context: Context) {
         private const val KEY_FINAL_BOSS = "final_boss_v5"
         private const val KEY_POPUP_FOLDER_PATH = "popup_folder_path_v51"
         private const val KEY_POPUP_TREE_URI = "popup_tree_uri_v51"
+        private const val KEY_POPUP_MIN_SIZE_PCT = "popup_min_size_v6"
         private const val KEY_POPUP_SIZE_PCT = "popup_size_pct_v51"
-        private const val KEY_POPUP_INTERVAL_DS = "popup_int_ds_v51"
-        private const val KEY_POPUP_DURATION_DS = "popup_dur_ds_v51"
-        private const val KEY_POPUP_MAX_SIMUL = "popup_max_simul_v51"
+        private const val KEY_POPUP_INTERVAL_MS = "popup_int_ms_v6"
+        private const val KEY_POPUP_DURATION_MS = "popup_dur_ms_v6"
+        private const val KEY_POPUP_MAX_SIMUL_V6 = "popup_max_simul_v6"
+        private const val KEY_POPUP_BURST_CNT = "popup_burst_cnt_v6"
         private const val KEY_POPUP_OPACITY_PCT = "popup_opacity_v51"
+        private const val KEY_POPUP_RAND_OPACITY = "popup_rand_op_v6"
+        private const val KEY_POPUP_RAMP_UP = "popup_ramp_up_v6"
+        private const val KEY_POPUP_ZONE = "popup_zone_v6"
+        private const val KEY_POPUP_ANIM = "popup_anim_v6"
+        private const val KEY_POPUP_FRAME = "popup_frame_v6"
         private const val KEY_POPUP_TOUCH_MODE = "popup_touch_mode_v51"
         private const val KEY_POPUP_TAPS_CLOSE = "popup_taps_close_v51"
+        private const val KEY_POPUP_SWIPE_DISMISS = "popup_swipe_dismiss_v6"
         private const val KEY_POPUP_MITOSIS = "popup_mitosis_v51"
         private const val KEY_POPUP_ROTATION = "popup_rotation_v51"
         private const val KEY_POPUP_MANTRA = "popup_mantra_v51"
         private const val KEY_POPUP_VIBRATE = "popup_vibrate_v51"
+        private const val KEY_POPUP_SOUND_SPAWN = "popup_sound_spawn_v6"
         private const val KEY_POPUP_SESSION_DUR = "popup_sess_dur_v51"
         private const val KEY_POPUP_LOCK_EXIT = "popup_lock_exit_v51"
         private const val KEY_TELEMETRY = "show_telemetry"

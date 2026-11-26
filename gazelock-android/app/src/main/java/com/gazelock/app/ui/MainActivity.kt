@@ -35,6 +35,9 @@ import com.gazelock.app.config.GazeConfig
 import com.gazelock.app.config.GazeConfigSnapshot
 import com.gazelock.app.config.OverlayMode
 import com.gazelock.app.config.PenaltyMode
+import com.gazelock.app.config.PopupAnimStyle
+import com.gazelock.app.config.PopupFrameStyle
+import com.gazelock.app.config.PopupSpawnZone
 import com.gazelock.app.config.PopupTouchMode
 import com.gazelock.app.config.StrictnessPreset
 import com.gazelock.app.media.VideoFeedRepository
@@ -42,15 +45,18 @@ import com.gazelock.app.overlay.AccessCodeWaitSpamView
 import com.gazelock.app.service.GazeAccessibilityService
 import com.gazelock.app.service.GazeSessionService
 import com.gazelock.app.service.ImagePopupStormService
+import kotlin.math.exp
+import kotlin.math.ln
+import kotlin.math.roundToInt
 
 /**
- * GazeLock AI v5.0 APOCALYPSE EDITION:
- * - Includes ALL v1..v4 features + 9 new v5.0 extremes:
- *   #11 Anti-Blink Streak (+15s), #21 Trapped Apps Ambush (with full App Picker!),
- *   #29 Block Quick Settings/Shade in Ghost Mode, #30 App-Switch Tax (>3/min -> +10s & +5% opacity),
- *   #36 Pavlovian Audio Conditioning, #51 4x4 Hell Sliding Puzzle (15 tiles),
- *   #54 Flash Target Hunt at 9 img/s (111ms), #70 Daily Escalating Portal (3m->4m->5m->6m),
- *   and #76 Final 30s Zero-Fault Boss (100% locked, fail = +60s)!
+ * GazeLock AI v6.0 MEGA EDITION:
+ * - MEGA Standalone Image Pop-Ups Mode (60 FPS GPU Canvas Engine: 30ms..60s, bursts x12, ∞ unlimited count,
+ *   ∞ persistent duration, min/max size 12..100%, 4x Ramp-Up, 4 Spawn Zones, 5 Animations, 5 Frame Styles,
+ *   Swipe-Away Fling, Mitosis, Pavlov Audio, Optional Locked Portal Exit).
+ * - 14 Unique Visual Mini-Games inside the 3-to-6 min Unlock Portal (6 brand-new v6.0 games + Flawless Combo
+ *   Streak + configurable 3..12 challenges per portal, zero previously skipped ideas!).
+ * - Plus full v1..v5 APOCALYPSE arsenal (Ghost Mode, Boss 30s, Anti-Blink, Trapped Apps, Pavlov Audio, etc.).
  */
 class MainActivity : AppCompatActivity() {
 
@@ -348,12 +354,12 @@ class MainActivity : AppCompatActivity() {
         val hdr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, dp(12)) }
         val titleCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         titleCol.addView(TextView(this).apply {
-            text = "👁️ GazeLock AI v5.1"
-            setTextColor(Color.WHITE); textSize = 22f; typeface = Typeface.DEFAULT_BOLD
+            text = "👁️ GazeLock AI v6.0 MEGA"
+            setTextColor(Color.WHITE); textSize = 21.5f; typeface = Typeface.DEFAULT_BOLD
         })
         titleCol.addView(TextView(this).apply {
-            text = "Vidéo Ghost · Mode Pop-Ups Images · Boss 30s · 7 Mini-Jeux"
-            setTextColor(Color.rgb(253, 224, 71)); textSize = 10.5f
+            text = "Pop-Ups ∞ 60 FPS · 14 Mini-Jeux · Portail 3–12 Défis · Boss 30s"
+            setTextColor(Color.rgb(253, 224, 71)); textSize = 10.4f
         })
         hdr.addView(titleCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
@@ -376,8 +382,8 @@ class MainActivity : AppCompatActivity() {
                 else "🔒 SESSION APOCALYPSE EN COURS — VIDÉOS VERROUILLÉES"
             ))
             activeCard.addView(sectionSub(
-                if (lockedPopups) "Le mode Pop-Ups d'Images tourne en mode verrouillé. Seul le portail imposé de $portalMin min en overlay permet d'arrêter les pop-ups !"
-                else "Les vidéos tournent en overlay. Tous les réglages sont scellés.\nSeul le portail imposé de $portalMin min en overlay (spam 0,1 s → Sprint 20 FPS + pop-ups + 7 mini-jeux) permet de retirer les vidéos !"
+                if (lockedPopups) "Le mode Pop-Ups d'Images MEGA tourne en mode verrouillé. Seul le portail imposé de $portalMin min en overlay (${cfg.portalMinigameCount} défis / 14 jeux) permet d'arrêter les pop-ups !"
+                else "Les vidéos tournent en overlay. Tous les réglages sont scellés.\nSeul le portail imposé de $portalMin min en overlay (spam 0,1 s → Sprint 20 FPS + pop-ups + ${cfg.portalMinigameCount} défis tirés de 14 mini-jeux) permet de retirer les vidéos !"
             ))
             activeCard.addView(makeAccentButton("⏳ OUVRIR LE PORTAIL $portalMin MIN EN OVERLAY", Color.rgb(162, 28, 175)) {
                 if (lockedPopups) ImagePopupStormService.openUnlockPortal()
@@ -511,13 +517,28 @@ class MainActivity : AppCompatActivity() {
         })
         contentBox.addView(v5Card)
 
-        // ==================== 3. PORTAIL OVERLAY (#51 4×4, #54 9 IMG/S, #70 PROGRESSIF, #17 SURCHARGE, #22 REGARD) ====================
-        val codeCard = makeCard(accentStroke = Color.argb(195, 192, 38, 211))
-        codeCard.addView(sectionTitle("🧩 Portail Overlay ($portalMin min aujourd'hui · #51 · #54 · #70 · #17)"))
+        // ==================== 3. PORTAIL OVERLAY (14 MINI-JEUX · 3..12 DÉFIS · #51·#54·#70·#17·#22) ====================
+        val codeCard = makeCard(accentStroke = Color.argb(210, 192, 38, 211))
+        codeCard.addView(sectionTitle("🧩 Portail Overlay ($portalMin min · 14 Mini-Jeux · Combo ×N)"))
         val dayNote = if (cfg.dailyEscalatingPortalEnabled) {
             "Durée actuelle aujourd'hui : $portalMin min (déblocage #${cfg.portalUsesToday + 1} · escalade 3m → 4m → 5m → 6m) !"
         } else "Durée fixe : 3 min."
-        codeCard.addView(sectionSub("$dayNote\n7 mini-jeux visuels avec les images du dossier (sans dictée) : Taquin 4×4 Enfer, Chasse 9 img/s, Échange 3×3, Rotation 3×3, Memory 4×3, Séquence 1→9 & Intrus !"))
+        codeCard.addView(sectionSub(
+            "$dayNote\n14 mini-jeux visuels uniques avec tes photos (dont 6 nouveaux v6.0 : Gratte & Identifie, Chaîne Mahjong 4×4, Copie Altérée 3×3, Réflexe Symboles, Verrous de Précision, Bandes 5×1 + Taquin 3×3/4×4, Chasse 9 img/s, Échange, Rotation, Memory, Séquence & Intrus) + ⚡ Combo Sans-Faute !"
+        ))
+
+        codeCard.addView(smallLabel("🎯 Nombre de mini-jeux pendant les $portalMin min (${cfg.portalMinigameCount} défis) :"))
+        val mgRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(2)) }
+        listOf(3 to "3 Défis", 6 to "6 (Intense)", 9 to "9 (Extrême)", 12 to "12 (Marathon)").forEachIndexed { idx, (cnt, lbl) ->
+            mgRow.addView(makeChip(lbl, cfg.portalMinigameCount == cnt) {
+                gazeConfig.update { putInt("portal_game_count_v6", cnt) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 3) dp(3) else 0))
+        }
+        codeCard.addView(mgRow)
+        codeCard.addView(makeSliderRow("Nombre exact de mini-jeux par portail", 3, 12, cfg.portalMinigameCount, " défis") { v ->
+            gazeConfig.update { putInt("portal_game_count_v6", v) }
+        })
+
         codeCard.addView(makeSwitchRow("🔥 #51 Taquin 4×4 Mode Enfer (15 tuiles + aide optimale)", cfg.hellPuzzle4x4Enabled) {
             gazeConfig.update { putBoolean("hell_4x4_v5", it) }
         })
@@ -539,7 +560,7 @@ class MainActivity : AppCompatActivity() {
         codeCard.addView(makeSwitchRow("👁️ #22 Portail Verrouillé par le Regard Caméra (+5 s si détourné)", cfg.gazeGatedPortalEnabled) {
             gazeConfig.update { putBoolean("gaze_portal_v4", it) }
         })
-        codeCard.addView(makeAccentButton("⏳ Tester / Lancer le Portail ($portalMin min · 7 Mini-Jeux)", Color.rgb(162, 28, 175)) {
+        codeCard.addView(makeAccentButton("⏳ Tester / Lancer le Portail ($portalMin min · ${cfg.portalMinigameCount} Défis / 14 Jeux)", Color.rgb(162, 28, 175)) {
             launchThreeMinuteCodeWaitScreen()
         })
         contentBox.addView(codeCard)
@@ -756,8 +777,10 @@ class MainActivity : AppCompatActivity() {
     private fun buildStandaloneImagePopupCard(cfg: GazeConfigSnapshot, portalMin: Int): LinearLayout {
         val popRunning = ImagePopupStormService.isRunning
         val card = makeCard(accentStroke = if (popRunning) Color.rgb(16, 185, 129) else Color.rgb(236, 72, 153))
-        card.addView(sectionTitle("🖼️ Mode Pop-Ups d'Images (Hors Vidéos)"))
-        card.addView(sectionSub("Affiche des pop-ups d'images du dossier par-dessus toutes tes applis sans aucune vidéo ! Taille, fréquence, durée, opacité, mode tactile et verrouillage entièrement réglables en direct."))
+        card.addView(sectionTitle("🖼️🔥 Mode Pop-Ups d'Images MEGA (Hors Vidéos · 60 FPS)"))
+        card.addView(sectionSub(
+            "Bombardement d'images par-dessus toutes tes applis sans vidéo ! Jusqu'à 33 pop-ups/s, salves ×12, nombre ∞ ILLIMITÉ (moteur GPU 60 FPS), durée ∞ persistante, rampe 4×, zones, animations, cadres & balayage !"
+        ))
 
         val pCountTv = TextView(this).apply {
             text = "⏳ Analyse du dossier images…"
@@ -788,54 +811,173 @@ class MainActivity : AppCompatActivity() {
             })
         }
 
-        // Size presets + slider (25..92%)
-        card.addView(smallLabel("📐 Taille des pop-ups (${cfg.popupSizePct} % de la largeur écran) :"))
+        // ---- 1. MIN & MAX SIZE (12% .. 100%) ----
+        val curMinSz = cfg.popupMinSizePct.coerceAtMost(cfg.popupSizePct)
+        val curMaxSz = cfg.popupSizePct.coerceAtLeast(curMinSz)
+        card.addView(smallLabel("📐 Taille aléatoire des pop-ups ($curMinSz % → $curMaxSz % de l'écran) :"))
         val szRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(2)) }
-        listOf(35 to "Petit 35%", 55 to "Moyen 55%", 75 to "Grand 75%", 90 to "Énorme 90%").forEachIndexed { idx, (pct, lbl) ->
-            szRow.addView(makeChip(lbl, cfg.popupSizePct == pct) {
-                gazeConfig.update { putInt("popup_size_pct_v51", pct) }; refreshUi()
+        listOf(
+            Triple(15, 35, "Vignettes"),
+            Triple(30, 62, "Moyen"),
+            Triple(65, 96, "Géant"),
+            Triple(15, 100, "Chaos ∞")
+        ).forEachIndexed { idx, (mn, mx, lbl) ->
+            szRow.addView(makeChip(lbl, curMinSz == mn && curMaxSz == mx) {
+                gazeConfig.update { putInt("popup_min_size_v6", mn); putInt("popup_size_pct_v51", mx) }; refreshUi()
             }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 3) dp(3) else 0))
         }
         card.addView(szRow)
-        card.addView(makeSliderRow("Taille précise", 25, 92, cfg.popupSizePct, " %") { v ->
-            gazeConfig.update { putInt("popup_size_pct_v51", v) }
+        card.addView(makeSliderRow("Taille MIN", 12, 100, curMinSz, " %") { v ->
+            val maxNow = gazeConfig.snapshot().popupSizePct
+            gazeConfig.update {
+                putInt("popup_min_size_v6", v)
+                if (v > maxNow) putInt("popup_size_pct_v51", v.coerceAtLeast(15))
+            }
+        })
+        card.addView(makeSliderRow("Taille MAX", 15, 100, curMaxSz, " %") { v ->
+            val minNow = gazeConfig.snapshot().popupMinSizePct
+            gazeConfig.update {
+                putInt("popup_size_pct_v51", v)
+                if (v < minNow) putInt("popup_min_size_v6", v.coerceAtLeast(12))
+            }
         })
 
-        // Frequency presets + decimal slider (0.3s .. 30.0s)
-        card.addView(smallLabel("⚡ Fréquence d'apparition (toutes les ${formatDeciSec(cfg.popupIntervalDeciSec)}) :"))
-        val fqRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(2)) }
-        listOf(5 to "0,5 s (Spam)", 15 to "1,5 s", 30 to "3 s", 80 to "8 s").forEachIndexed { idx, (ds, lbl) ->
-            fqRow.addView(makeChip(lbl, cfg.popupIntervalDeciSec == ds) {
-                gazeConfig.update { putInt("popup_int_ds_v51", ds) }; refreshUi()
+        // ---- 2. ULTRA-WIDE FREQUENCY (30 ms .. 60 000 ms, up to 33/s!) ----
+        card.addView(smallLabel("⚡ Fréquence d'apparition (${formatMs(cfg.popupIntervalMs)} · ${formatRatePerSec(cfg.popupIntervalMs)}) :"))
+        val fqRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(3)) }
+        listOf(30 to "30ms (33/s🔥)", 50 to "50ms (20/s)", 100 to "0,1s (10/s)", 250 to "0,25s").forEachIndexed { idx, (ms, lbl) ->
+            fqRow1.addView(makeChip(lbl, cfg.popupIntervalMs == ms) {
+                gazeConfig.update { putInt("popup_int_ms_v6", ms) }; refreshUi()
             }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 3) dp(3) else 0))
         }
-        card.addView(fqRow)
-        card.addView(makeDecimalSliderRow("Fréquence exacte", 3, 300, cfg.popupIntervalDeciSec) { ds ->
-            gazeConfig.update { putInt("popup_int_ds_v51", ds) }
-        })
-
-        // Display duration per pop-up (0.4s .. 15.0s)
-        card.addView(smallLabel("⏱️ Durée d'affichage par pop-up (${formatDeciSec(cfg.popupDurationDeciSec)}) :"))
-        val duRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(2)) }
-        listOf(10 to "1 s", 30 to "3 s", 60 to "6 s", 120 to "12 s").forEachIndexed { idx, (ds, lbl) ->
-            duRow.addView(makeChip(lbl, cfg.popupDurationDeciSec == ds) {
-                gazeConfig.update { putInt("popup_dur_ds_v51", ds) }; refreshUi()
+        card.addView(fqRow1)
+        val fqRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(2)) }
+        listOf(500 to "0,5 s", 1500 to "1,5 s", 5000 to "5 s", 15000 to "15 s").forEachIndexed { idx, (ms, lbl) ->
+            fqRow2.addView(makeChip(lbl, cfg.popupIntervalMs == ms) {
+                gazeConfig.update { putInt("popup_int_ms_v6", ms) }; refreshUi()
             }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 3) dp(3) else 0))
         }
-        card.addView(duRow)
-        card.addView(makeDecimalSliderRow("Durée exacte d'un pop-up", 4, 150, cfg.popupDurationDeciSec) { ds ->
-            gazeConfig.update { putInt("popup_dur_ds_v51", ds) }
+        card.addView(fqRow2)
+        card.addView(makeMsLogSliderRow("Fréquence exacte (30 ms → 60 s)", 30, 60_000, cfg.popupIntervalMs) { ms ->
+            gazeConfig.update { putInt("popup_int_ms_v6", ms) }
         })
 
-        // Max simultaneous & Opacity
-        card.addView(makeSliderRow("Nombre max simultanés à l'écran", 1, 8, cfg.popupMaxSimultaneous, " pop-ups") { v ->
-            gazeConfig.update { putInt("popup_max_simul_v51", v) }
+        // ---- 3. BURST COUNT (1..12 photos spawned per tick!) ----
+        card.addView(smallLabel("💥 Salves simultanées (${cfg.popupBurstCount} image(s) à chaque tick) :"))
+        val burstRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(2)) }
+        listOf(1 to "×1", 2 to "×2", 4 to "×4", 8 to "×8", 12 to "×12 🔥").forEachIndexed { idx, (b, lbl) ->
+            burstRow.addView(makeChip(lbl, cfg.popupBurstCount == b) {
+                gazeConfig.update { putInt("popup_burst_cnt_v6", b) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(2) else 0, if (idx < 4) dp(2) else 0))
+        }
+        card.addView(burstRow)
+        card.addView(makeSliderRow("Nombre par salve", 1, 12, cfg.popupBurstCount, " img/salve") { v ->
+            gazeConfig.update { putInt("popup_burst_cnt_v6", v) }
         })
-        card.addView(makeSliderRow("Opacité des pop-ups", 35, 100, cfg.popupOpacityPct, " %") { v ->
+
+        // ---- 4. MAX SIMULTANEOUS (1..150 OR 0 = ∞ UNLIMITED!) ----
+        val maxLblText = if (cfg.popupMaxSimultaneous == 0) "∞ ILLIMITÉ (GPU 60 FPS)" else "${cfg.popupMaxSimultaneous} pop-ups max"
+        card.addView(smallLabel("🌪️ Nombre max simultanés à l'écran ($maxLblText) :"))
+        val maxRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(3)) }
+        listOf(5 to "5", 15 to "15", 40 to "40", 100 to "100", 0 to "∞ ILLIMITÉ").forEachIndexed { idx, (cnt, lbl) ->
+            maxRow.addView(makeChip(lbl, cfg.popupMaxSimultaneous == cnt) {
+                gazeConfig.update { putInt("popup_max_simul_v6", cnt) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(2) else 0, if (idx < 4) dp(2) else 0))
+        }
+        card.addView(maxRow)
+        if (cfg.popupMaxSimultaneous > 0) {
+            card.addView(makeSliderRow("Limite exacte simultanés", 1, 150, cfg.popupMaxSimultaneous, " pop-ups") { v ->
+                gazeConfig.update { putInt("popup_max_simul_v6", v) }
+            })
+        } else {
+            card.addView(TextView(this).apply {
+                text = "🔥 Moteur GPU 60 FPS illimité actif : empile jusqu'à 360 pop-ups simultanés sans aucun lag !"
+                setTextColor(Color.rgb(253, 224, 71)); textSize = 10.8f; setPadding(0, dp(2), 0, dp(4))
+            })
+        }
+
+        // ---- 5. DISPLAY DURATION PER POP-UP (100 ms .. 60 s OR 0 = ∞ PERSISTENT!) ----
+        val durLblText = if (cfg.popupDurationMs == 0) "∞ PERSISTANT (ne disparaît jamais seul !)" else formatMs(cfg.popupDurationMs)
+        card.addView(smallLabel("⏱️ Durée de vie par pop-up ($durLblText) :"))
+        val duRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(3)) }
+        listOf(300 to "0,3 s", 1000 to "1 s", 3000 to "3 s").forEachIndexed { idx, (ms, lbl) ->
+            duRow1.addView(makeChip(lbl, cfg.popupDurationMs == ms) {
+                gazeConfig.update { putInt("popup_dur_ms_v6", ms) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 2) dp(3) else 0))
+        }
+        card.addView(duRow1)
+        val duRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(2)) }
+        listOf(10_000 to "10 s", 30_000 to "30 s", 0 to "∞ Persistant").forEachIndexed { idx, (ms, lbl) ->
+            duRow2.addView(makeChip(lbl, cfg.popupDurationMs == ms) {
+                gazeConfig.update { putInt("popup_dur_ms_v6", ms) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 2) dp(3) else 0))
+        }
+        card.addView(duRow2)
+        if (cfg.popupDurationMs > 0) {
+            card.addView(makeMsLogSliderRow("Durée exacte (0,1 s → 60 s)", 100, 60_000, cfg.popupDurationMs) { ms ->
+                gazeConfig.update { putInt("popup_dur_ms_v6", ms) }
+            })
+        }
+
+        // ---- 6. OPACITY (15..100%) + RANDOM OPACITY ----
+        card.addView(makeSliderRow("Opacité des pop-ups", 15, 100, cfg.popupOpacityPct, " %") { v ->
             gazeConfig.update { putInt("popup_opacity_v51", v) }
         })
+        card.addView(makeSwitchRow("🎲 Opacité aléatoire variée sur chaque image", cfg.popupRandomOpacity) {
+            gazeConfig.update { putBoolean("popup_rand_op_v6", it) }
+        })
 
-        // Touch mode selector
+        // ---- 7. SPAWN ZONE ----
+        card.addView(smallLabel("🗺️ Zone d'apparition sur l'écran :"))
+        val zoneRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(4)) }
+        PopupSpawnZone.values().forEachIndexed { idx, z ->
+            zoneRow.addView(makeChip(z.label, cfg.popupSpawnZone == z) {
+                gazeConfig.update { putString("popup_zone_v6", z.id) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(2) else 0, if (idx < 3) dp(2) else 0))
+        }
+        card.addView(zoneRow)
+
+        // ---- 8. ENTRANCE ANIMATION ----
+        card.addView(smallLabel("🎬 Animation d'entrée des pop-ups :"))
+        val animVals = PopupAnimStyle.values()
+        val animRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(3)) }
+        for (i in 0 until 3) {
+            val a = animVals[i]
+            animRow1.addView(makeChip(a.label, cfg.popupAnimStyle == a) {
+                gazeConfig.update { putString("popup_anim_v6", a.id) }; refreshUi()
+            }, gridLp(if (i > 0) dp(3) else 0, if (i < 2) dp(3) else 0))
+        }
+        card.addView(animRow1)
+        val animRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(4)) }
+        for (i in 3 until animVals.size) {
+            val a = animVals[i]
+            animRow2.addView(makeChip(a.label, cfg.popupAnimStyle == a) {
+                gazeConfig.update { putString("popup_anim_v6", a.id) }; refreshUi()
+            }, gridLp(if (i > 3) dp(3) else 0, if (i < animVals.size - 1) dp(3) else 0))
+        }
+        card.addView(animRow2)
+
+        // ---- 9. FRAME STYLE ----
+        card.addView(smallLabel("🖼️ Style de cadre :"))
+        val frameVals = PopupFrameStyle.values()
+        val frameRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(3)) }
+        for (i in 0 until 3) {
+            val f = frameVals[i]
+            frameRow1.addView(makeChip(f.label, cfg.popupFrameStyle == f) {
+                gazeConfig.update { putString("popup_frame_v6", f.id) }; refreshUi()
+            }, gridLp(if (i > 0) dp(3) else 0, if (i < 2) dp(3) else 0))
+        }
+        card.addView(frameRow1)
+        val frameRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(4)) }
+        for (i in 3 until frameVals.size) {
+            val f = frameVals[i]
+            frameRow2.addView(makeChip(f.label, cfg.popupFrameStyle == f) {
+                gazeConfig.update { putString("popup_frame_v6", f.id) }; refreshUi()
+            }, gridLp(if (i > 3) dp(3) else 0, if (i < frameVals.size - 1) dp(3) else 0))
+        }
+        card.addView(frameRow2)
+
+        // ---- 10. TOUCH BEHAVIOR ----
         card.addView(smallLabel("👆 Comportement tactile des pop-ups :"))
         val tmRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(4)) }
         PopupTouchMode.values().forEachIndexed { idx, tm ->
@@ -857,33 +999,50 @@ class MainActivity : AppCompatActivity() {
                 }, gridLp(if (idx > 0) dp(4) else 0, if (idx < 2) dp(4) else 0))
             }
             card.addView(tapRow)
+            card.addView(makeSwitchRow("💨 Balayer (Swipe) pour éjecter un pop-up", cfg.popupSwipeDismiss) {
+                gazeConfig.update { putBoolean("popup_swipe_dismiss_v6", it) }
+            })
             card.addView(makeSwitchRow("🧬 Mitose : un pop-up ignoré se divise en 2 pop-ups !", cfg.popupMitosisEnabled) {
                 gazeConfig.update { putBoolean("popup_mitosis_v51", it) }
             })
         }
 
+        // ---- 11. EXTRAS & STORM ESCALATION ----
+        card.addView(makeSwitchRow("🌊 Rampe d'Accélération (vitesse ×4 progressive sur 3 min !)", cfg.popupRampUpEnabled) {
+            gazeConfig.update { putBoolean("popup_ramp_up_v6", it) }
+        })
         card.addView(makeSwitchRow("🔀 Inclinaison aléatoire des photos (±13°)", cfg.popupRandomRotation) {
             gazeConfig.update { putBoolean("popup_rotation_v51", it) }
         })
         card.addView(makeSwitchRow("✨ Afficher un Mantra Néon sur chaque image", cfg.popupShowMantra) {
             gazeConfig.update { putBoolean("popup_mantra_v51", it) }
         })
-        card.addView(makeSwitchRow("📳 Vibration subtile à chaque pop-up", cfg.popupVibrate) {
+        card.addView(makeSwitchRow("📳 Vibration subtile à chaque salve", cfg.popupVibrate) {
             gazeConfig.update { putBoolean("popup_vibrate_v51", it) }
+        })
+        card.addView(makeSwitchRow("🔊 Son Pavlov sur salve & fermeture", cfg.popupSoundOnSpawn) {
+            gazeConfig.update { putBoolean("popup_sound_spawn_v6", it) }
         })
         card.addView(makeSwitchRow("🔒 Verrouiller la sortie (Portail $portalMin min + Anti-Évasion obligatoires)", cfg.popupLockExitWithPortal) {
             gazeConfig.update { putBoolean("popup_lock_exit_v51", it) }; refreshUi()
         })
 
-        // Session duration chips
+        // ---- 12. SESSION DURATION (∞ / 1..60 min) ----
         card.addView(smallLabel("⏳ Durée de la session Pop-Ups :"))
-        val sdRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(8)) }
-        listOf(0 to "∞ Infini", 180 to "3 min", 300 to "5 min", 900 to "15 min").forEachIndexed { idx, (sec, lbl) ->
-            sdRow.addView(makeChip(lbl, cfg.popupSessionDurationSec == sec) {
+        val sdRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(3)) }
+        listOf(0 to "∞ Infini", 60 to "1 min", 180 to "3 min", 300 to "5 min").forEachIndexed { idx, (sec, lbl) ->
+            sdRow1.addView(makeChip(lbl, cfg.popupSessionDurationSec == sec) {
                 gazeConfig.update { putInt("popup_sess_dur_v51", sec) }; refreshUi()
             }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 3) dp(3) else 0))
         }
-        card.addView(sdRow)
+        card.addView(sdRow1)
+        val sdRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(8)) }
+        listOf(900 to "15 min", 1800 to "30 min", 3600 to "60 min").forEachIndexed { idx, (sec, lbl) ->
+            sdRow2.addView(makeChip(lbl, cfg.popupSessionDurationSec == sec) {
+                gazeConfig.update { putInt("popup_sess_dur_v51", sec) }; refreshUi()
+            }, gridLp(if (idx > 0) dp(3) else 0, if (idx < 2) dp(3) else 0))
+        }
+        card.addView(sdRow2)
 
         if (popRunning) {
             card.addView(makeAccentButton("⏹️ ARRÊTER LES POP-UPS D'IMAGES", Color.rgb(225, 29, 72)) {
@@ -891,9 +1050,11 @@ class MainActivity : AppCompatActivity() {
             }.apply { textSize = 13.8f; setPadding(dp(12), dp(14), dp(12), dp(14)) })
         } else {
             val lockTag = if (cfg.popupLockExitWithPortal) " · 🔒 VERROUILLÉ" else ""
-            card.addView(makeAccentButton("🖼️⚡ LANCER POP-UPS D'IMAGES (${cfg.popupSizePct}% · ${formatDeciSec(cfg.popupIntervalDeciSec)}$lockTag)", Color.rgb(219, 39, 119)) {
+            val maxShort = if (cfg.popupMaxSimultaneous == 0) "∞" else "${cfg.popupMaxSimultaneous} max"
+            val burstShort = if (cfg.popupBurstCount > 1) " · ×${cfg.popupBurstCount}" else ""
+            card.addView(makeAccentButton("🖼️🔥 LANCER POP-UPS (${formatMs(cfg.popupIntervalMs)}$burstShort · $maxShort$lockTag)", Color.rgb(219, 39, 119)) {
                 launchImagePopupStormMode()
-            }.apply { textSize = 13.2f; setPadding(dp(12), dp(14), dp(12), dp(14)) })
+            }.apply { textSize = 13f; setPadding(dp(12), dp(14), dp(12), dp(14)) })
         }
         return card
     }
@@ -931,19 +1092,53 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun formatDeciSec(ds: Int): String =
-        if (ds % 10 == 0) "${ds / 10} s" else String.format("%d,%d s", ds / 10, ds % 10)
+    private fun formatMs(ms: Int): String = when {
+        ms < 1000 -> "${ms} ms"
+        ms % 1000 == 0 -> "${ms / 1000} s"
+        ms < 10_000 -> String.format("%.2f s", ms / 1000.0).replace('.', ',')
+        else -> String.format("%.1f s", ms / 1000.0).replace('.', ',')
+    }
 
-    private fun makeDecimalSliderRow(title: String, minDs: Int, maxDs: Int, initialDs: Int, onChange: (Int) -> Unit): View {
+    private fun formatRatePerSec(ms: Int): String {
+        val r = 1000.0 / ms.coerceAtLeast(30)
+        return if (r >= 1.0) String.format("%.1f/s", r).replace(".0", "") else String.format("1/%ds", (ms / 1000.0).roundToInt().coerceAtLeast(1))
+    }
+
+    /** Logarithmic millisecond slider so 30ms..500ms AND 1s..60s both feel ultra-precise! */
+    private fun makeMsLogSliderRow(title: String, minMs: Int, maxMs: Int, initialMs: Int, onChange: (Int) -> Unit): View {
+        val steps = 200
+        val lnMin = ln(minMs.toDouble())
+        val lnMax = ln(maxMs.toDouble())
+        fun progressToMs(p: Int): Int {
+            val frac = p.coerceIn(0, steps).toDouble() / steps.toDouble()
+            val raw = exp(lnMin + frac * (lnMax - lnMin)).roundToInt().coerceIn(minMs, maxMs)
+            return when {
+                raw < 100 -> ((raw + 2) / 5) * 5
+                raw < 1000 -> ((raw + 12) / 25) * 25
+                raw < 10_000 -> ((raw + 50) / 100) * 100
+                else -> ((raw + 250) / 500) * 500
+            }.coerceIn(minMs, maxMs)
+        }
+        fun msToProgress(ms: Int): Int {
+            val clamped = ms.coerceIn(minMs, maxMs).toDouble()
+            return (((ln(clamped) - lnMin) / (lnMax - lnMin)) * steps).roundToInt().coerceIn(0, steps)
+        }
+
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
-        val tv = TextView(this).apply { text = "$title : ${formatDeciSec(initialDs)}"; setTextColor(Color.rgb(216, 216, 232)); textSize = 11.4f }
+        val tv = TextView(this).apply {
+            text = "$title : ${formatMs(initialMs)}"
+            setTextColor(Color.rgb(216, 216, 232)); textSize = 11.4f
+        }
         val sb = SeekBar(this).apply {
-            this.max = (maxDs - minDs).coerceAtLeast(1); progress = (initialDs - minDs).coerceIn(0, this.max)
+            max = steps
+            progress = msToProgress(initialMs)
             thumbTintList = ColorStateList.valueOf(Color.rgb(236, 72, 153))
             progressTintList = ColorStateList.valueOf(Color.rgb(236, 72, 153))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                    val v = minDs + p; tv.text = "$title : ${formatDeciSec(v)}"; if (fromUser) onChange(v)
+                    val v = progressToMs(p)
+                    tv.text = "$title : ${formatMs(v)}"
+                    if (fromUser) onChange(v)
                 }
                 override fun onStartTrackingTouch(s: SeekBar?) {}
                 override fun onStopTrackingTouch(s: SeekBar?) {}
@@ -956,7 +1151,7 @@ class MainActivity : AppCompatActivity() {
         val tv = videoCountTv ?: return
         Thread {
             val (vids, imgs) = VideoFeedRepository.countMediaInConfig(applicationContext, cfg)
-            val imgNote = if (imgs > 0) "🖼️ $imgs image(s) (spam, subliminal & 7 mini-jeux)" else "🎞️ frames vidéo auto (spam, subliminal & 7 mini-jeux)"
+            val imgNote = if (imgs > 0) "🖼️ $imgs image(s) (spam, subliminal & 14 mini-jeux)" else "🎞️ frames vidéo auto (spam, subliminal & 14 mini-jeux)"
             val text = when {
                 cfg.folderPath.isNotBlank() -> "${cfg.folderPath}\n→ 🎬 $vids vidéo(s) • $imgNote"
                 cfg.treeUri.isNotBlank() -> "Dossier SAF\n→ 🎬 $vids vidéo(s) • $imgNote"

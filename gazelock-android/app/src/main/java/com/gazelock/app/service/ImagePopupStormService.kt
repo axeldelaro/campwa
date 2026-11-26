@@ -37,25 +37,35 @@ import androidx.core.content.ContextCompat
 import com.gazelock.app.audio.PavlovSoundEngine
 import com.gazelock.app.config.GazeConfig
 import com.gazelock.app.config.GazeConfigSnapshot
+import com.gazelock.app.config.PopupAnimStyle
+import com.gazelock.app.config.PopupFrameStyle
+import com.gazelock.app.config.PopupSpawnZone
 import com.gazelock.app.config.PopupTouchMode
 import com.gazelock.app.media.VideoFeedRepository
 import com.gazelock.app.overlay.AccessCodeWaitSpamView
+import com.gazelock.app.overlay.PopupStormCanvasView
 import com.gazelock.app.ui.MainActivity
 import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.random.Random
 
 /**
- * Standalone Image Pop-Up Storm Mode (v5.1 — runs OUTSIDE of videos over all phone apps!):
- * - Fully customizable Size (25-92%), Frequency (0.3s-30s), Duration (0.4s-15s), Max Simultaneous (1-8),
- *   Opacity (35-100%), Touch Mode (Pass-Through / Tap-to-Close 1-3x + Mitosis / Touch-Locked),
- *   Random Tilt, Neon Mantras, Haptics & Optional Portal Exit Lock + Anti-Escape!
+ * MEGA Standalone Image Pop-Up Storm Service (v6.0 — runs OUTSIDE of videos over all apps!):
+ * - Hybrid Engine:
+ *   1) GPU 60 FPS [PopupStormCanvasView] stage for PASS_THROUGH (always!) OR massive/unlimited count (>12 or ∞):
+ *      handles 30ms (33/s!) frequencies, bursts of 1..12 photos, and 350+ simultaneous sprites with ZERO lag!
+ *   2) Individual compact floating windows when touchable & maxSimultaneous <= 12 so touches outside
+ *      the pop-ups still interact cleanly with apps underneath!
+ * - Full v6.0 features: Min/Max Size (12%..100%), Ramp-Up Acceleration (up to 4x), 4 Spawn Zones,
+ *   5 Entrance Animations, 5 Frame Styles, Persistent ∞ Duration, Swipe-Away Fling, Mitosis,
+ *   Pavlov Audio Cues, and Optional Portal Exit Lock + Anti-Escape!
  */
 class ImagePopupStormService : Service() {
 
-    private data class ActivePopup(
+    private data class ActiveWindowPopup(
         val view: View,
-        val expireRunnable: Runnable
+        val expireRunnable: Runnable?
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -64,8 +74,11 @@ class ImagePopupStormService : Service() {
     private var mountedViaA11y = false
 
     private val bitmapPool = ArrayList<Bitmap>()
-    private val activePopups = ArrayList<ActivePopup>()
+    private val activeWindowPopups = ArrayList<ActiveWindowPopup>()
+    private var canvasStage: PopupStormCanvasView? = null
+    private var canvasStageTouchable = false
     private var lastBmpIdx = -1
+    private var gridCursor = 0
 
     private var stormPillView: LinearLayout? = null
     private var stormPillLabelTv: TextView? = null
@@ -74,6 +87,7 @@ class ImagePopupStormService : Service() {
     private var activePortalWait: AccessCodeWaitSpamView? = null
     private var portalOpen = false
 
+    private var sessionStartElapsedMs = 0L
     private var sessionRemainingMs = 0L
     private var sessionInfinite = true
     private var lastSessionTickMs = 0L
@@ -93,14 +107,14 @@ class ImagePopupStormService : Service() {
                 sessionRemainingMs = (sessionRemainingMs - dt).coerceAtLeast(0L)
                 if (sessionRemainingMs <= 0L) {
                     mainHandler.post {
-                        Toast.makeText(applicationContext, "✨ Session Pop-Ups d'Images terminée !", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(applicationContext, "✨ Session Pop-Ups d'Images terminée ($totalSpawnedCount images) !", Toast.LENGTH_SHORT).show()
                         stopStormCleanly()
                     }
                     return
                 }
             }
             updatePillLabel()
-            mainHandler.postDelayed(this, 500L)
+            mainHandler.postDelayed(this, 450L)
         }
     }
 
@@ -109,9 +123,20 @@ class ImagePopupStormService : Service() {
             if (!isRunning) return
             val cfg = gazeConfig.snapshot()
             if (!portalOpen && bitmapPool.isNotEmpty()) {
-                spawnSingleImagePopup(cfg)
+                val burst = cfg.popupBurstCount.coerceIn(1, 12)
+                repeat(burst) { spawnOnePopup(cfg) }
+                if (cfg.popupVibrate) vibrateShort(22L)
+                if (cfg.popupSoundOnSpawn) PavlovSoundEngine.playRewardChime()
             }
-            val delayMs = (cfg.popupIntervalDeciSec.coerceIn(3, 300) * 100L)
+
+            // Optional Ramp-Up Storm: smoothly accelerates up to 4x faster over 3 minutes!
+            val baseDelay = cfg.popupIntervalMs.coerceIn(30, 60_000).toLong()
+            val delayMs = if (cfg.popupRampUpEnabled) {
+                val elapsedSec = ((SystemClock.elapsedRealtime() - sessionStartElapsedMs) / 1000.0).coerceAtLeast(0.0)
+                val speedFactor = (1.0 + (elapsedSec / 60.0)).coerceIn(1.0, 4.0)
+                (baseDelay / speedFactor).toLong().coerceAtLeast(30L)
+            } else baseDelay
+
             mainHandler.postDelayed(this, delayMs)
         }
     }
@@ -135,15 +160,12 @@ class ImagePopupStormService : Service() {
         if (cfg.popupFolderPath.isBlank() && cfg.popupTreeUri.isBlank() &&
             cfg.folderPath.isBlank() && cfg.treeUri.isBlank()
         ) {
-            mainHandler.post {
-                Toast.makeText(applicationContext, "📂 Choisis d'abord un dossier contenant des images !", Toast.LENGTH_LONG).show()
-            }
-            stopSelf()
-            return START_NOT_STICKY
+            mainHandler.post { Toast.makeText(applicationContext, "📂 Choisis d'abord un dossier contenant des images !", Toast.LENGTH_LONG).show() }
+            stopSelf(); return START_NOT_STICKY
         }
 
         createChannel()
-        val notif = buildNotification("🖼️ Mode Pop-Ups d'Images actif…")
+        val notif = buildNotification("🖼️ Tempête Pop-Ups d'Images v6.0 active…")
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -155,11 +177,8 @@ class ImagePopupStormService : Service() {
         val a11y = GazeAccessibilityService.activeInstance
         val canDraw = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
         if (a11y == null && !canDraw) {
-            mainHandler.post {
-                Toast.makeText(applicationContext, "⚠️ Active l'Accessibilité (ou Superposition) pour afficher les pop-ups d'images !", Toast.LENGTH_LONG).show()
-            }
-            stopSelf()
-            return START_NOT_STICKY
+            mainHandler.post { Toast.makeText(applicationContext, "⚠️ Active l'Accessibilité (ou Superposition) !", Toast.LENGTH_LONG).show() }
+            stopSelf(); return START_NOT_STICKY
         }
         mountedViaA11y = (a11y != null)
 
@@ -168,214 +187,300 @@ class ImagePopupStormService : Service() {
         activeInstance = this
         portalOpen = false
         totalSpawnedCount = 0
+        gridCursor = 0
+        sessionStartElapsedMs = SystemClock.elapsedRealtime()
         sessionInfinite = (cfg.popupSessionDurationSec <= 0)
         sessionRemainingMs = cfg.popupSessionDurationSec * 1000L
-        lastSessionTickMs = SystemClock.elapsedRealtime()
+        lastSessionTickMs = sessionStartElapsedMs
         notifyListeners()
 
+        ensureAppropriateStage(cfg)
         mountControlPill(cfg)
 
-        // Preload RGB_565 folder image pool off UI thread!
         Thread {
-            val loaded = VideoFeedRepository.loadPopupModeBitmapPool(applicationContext, cfg, maxPoolSize = 44)
+            val loaded = VideoFeedRepository.loadPopupModeBitmapPool(applicationContext, cfg, maxPoolSize = 52)
             mainHandler.post {
                 if (!isRunning) {
                     for (b in loaded) if (!b.isRecycled) b.recycle()
                     return@post
                 }
                 if (loaded.isEmpty()) {
-                    Toast.makeText(applicationContext, "⚠️ Aucune image (ni vidéo) trouvée dans le dossier choisi !", Toast.LENGTH_LONG).show()
-                    stopStormCleanly()
-                    return@post
+                    Toast.makeText(applicationContext, "⚠️ Aucune image (ni vidéo) trouvée dans ce dossier !", Toast.LENGTH_LONG).show()
+                    stopStormCleanly(); return@post
                 }
                 bitmapPool.addAll(loaded)
-                // Immediately launch first pop-up so feedback is instant!
                 mainHandler.post(spawnLoopRunnable)
             }
         }.start()
 
-        mainHandler.postDelayed(sessionTimerTick, 500L)
+        mainHandler.postDelayed(sessionTimerTick, 450L)
 
-        // Drop user to home screen so they can immediately keep using their phone while pop-ups fire!
         mainHandler.postDelayed({
-            try {
-                GazeAccessibilityService.activeInstance?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
-            } catch (_: Throwable) {}
-        }, 280L)
+            try { GazeAccessibilityService.activeInstance?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
+        }, 260L)
 
         return START_STICKY
     }
 
-    private fun spawnSingleImagePopup(cfg: GazeConfigSnapshot, fromMitosis: Boolean = false) {
-        if (!isRunning || portalOpen) return
-        val validBmps = bitmapPool.filter { !it.isRecycled }
-        if (validBmps.isEmpty()) return
+    private fun shouldUseCanvasStage(cfg: GazeConfigSnapshot): Boolean =
+        cfg.popupTouchMode == PopupTouchMode.PASS_THROUGH ||
+            cfg.popupMaxSimultaneous == 0 ||
+            cfg.popupMaxSimultaneous > 12
 
-        val maxSimul = cfg.popupMaxSimultaneous.coerceIn(1, 8)
-        while (activePopups.size >= maxSimul) {
-            removePopup(activePopups.first())
+    private fun ensureAppropriateStage(cfg: GazeConfigSnapshot) {
+        val wantCanvas = shouldUseCanvasStage(cfg)
+        val wantTouchable = cfg.popupTouchMode != PopupTouchMode.PASS_THROUGH
+        if (wantCanvas) {
+            if (activeWindowPopups.isNotEmpty()) clearWindowPopupsOnly()
+            if (canvasStage == null || canvasStageTouchable != wantTouchable) {
+                removeCanvasStageOnly()
+                val stage = PopupStormCanvasView(
+                    context = applicationContext,
+                    interactiveMode = wantTouchable,
+                    onMitosisRequested = {
+                        val c = gazeConfig.snapshot()
+                        if (isRunning && !portalOpen) {
+                            if (c.pavlovSoundEnabled) PavlovSoundEngine.playPunishmentTone()
+                            spawnOnePopup(c, fromMitosis = true)
+                            spawnOnePopup(c, fromMitosis = true)
+                        }
+                    },
+                    onActiveCountChanged = { updatePillLabel() },
+                    onSpriteDismissed = {
+                        if (gazeConfig.snapshot().popupSoundOnSpawn) PavlovSoundEngine.playRewardChime()
+                    }
+                )
+                if (mountStageWindow(stage, wantTouchable)) {
+                    canvasStage = stage
+                    canvasStageTouchable = wantTouchable
+                    // Keep control pill ALWAYS above the canvas stage!
+                    stormPillView?.let { remountPillOnTop() }
+                }
+            }
+        } else {
+            if (canvasStage != null) removeCanvasStageOnly()
+        }
+    }
+
+    private fun pickNextBitmap(): Bitmap? {
+        val valid = bitmapPool.filter { !it.isRecycled }
+        if (valid.isEmpty()) return null
+        var idx = Random.nextInt(valid.size)
+        if (valid.size > 1 && idx == lastBmpIdx) idx = (idx + 1) % valid.size
+        lastBmpIdx = idx
+        return valid[idx]
+    }
+
+    private fun spawnOnePopup(cfg: GazeConfigSnapshot, fromMitosis: Boolean = false) {
+        if (!isRunning || portalOpen) return
+        ensureAppropriateStage(cfg)
+        val bmp = pickNextBitmap() ?: return
+
+        val stage = canvasStage
+        if (stage != null) {
+            stage.spawnSprite(bmp, cfg, fromMitosis)
+            totalSpawnedCount++
+            updatePillLabel()
+            return
         }
 
-        var idx = Random.nextInt(validBmps.size)
-        if (validBmps.size > 1 && idx == lastBmpIdx) idx = (idx + 1) % validBmps.size
-        lastBmpIdx = idx
-        val bmp = validBmps[idx]
+        // Individual floating window mode (touchable <= 12 so apps underneath remain clickable around pop-ups!)
+        val maxSimul = cfg.popupMaxSimultaneous.coerceIn(1, 12)
+        while (activeWindowPopups.size >= maxSimul) {
+            removeWindowPopup(activeWindowPopups.first())
+        }
 
         val dm = resources.displayMetrics
-        val sw = dm.widthPixels
-        val sh = dm.heightPixels
-        val sizeFrac = cfg.popupSizePct.coerceIn(25, 92) / 100f
-        val targetW = (sw * sizeFrac).toInt().coerceIn(dp(96), sw - dp(16))
-        val ratio = (bmp.width.toFloat() / bmp.height.coerceAtLeast(1).toFloat()).coerceIn(0.55f, 1.85f)
-        val targetH = (targetW / ratio).toInt().coerceIn(dp(96), (sh * 0.72f).toInt())
+        val sw = dm.widthPixels; val sh = dm.heightPixels
+        val minPct = minOf(cfg.popupMinSizePct, cfg.popupSizePct).coerceIn(12, 100)
+        val maxPct = maxOf(cfg.popupMinSizePct, cfg.popupSizePct).coerceIn(15, 100)
+        val chosenPct = if (minPct == maxPct) maxPct else Random.nextInt(minPct, maxPct + 1)
 
-        val padX = dp(10)
-        val minY = dp(52)
-        val maxX = (sw - targetW - padX).coerceAtLeast(padX + 1)
-        val maxY = (sh - targetH - dp(42)).coerceAtLeast(minY + 1)
-        val posX = Random.nextInt(padX, maxX)
-        val posY = Random.nextInt(minY, maxY)
+        val targetW = (sw * chosenPct / 100f).toInt().coerceIn(dp(64), sw - dp(10))
+        val ratio = (bmp.width.toFloat() / bmp.height.coerceAtLeast(1).toFloat()).coerceIn(0.50f, 1.95f)
+        val targetH = (targetW / ratio).toInt().coerceIn(dp(64), (sh * 0.80f).toInt())
 
-        val touchMode = cfg.popupTouchMode
-        val touchable = touchMode != PopupTouchMode.PASS_THROUGH
-        val targetAlpha = cfg.popupOpacityPct.coerceIn(35, 100) / 100f
-        val accentColors = intArrayOf(
-            Color.rgb(236, 72, 153),
-            Color.rgb(168, 85, 247),
-            Color.rgb(244, 63, 94),
-            Color.rgb(250, 204, 21),
-            Color.rgb(14, 165, 233)
-        )
-        val strokeCol = if (fromMitosis) Color.rgb(244, 63, 94) else accentColors[Random.nextInt(accentColors.size)]
+        val (posX, posY) = pickWindowTopLeft(cfg.popupSpawnZone, sw, sh, targetW, targetH)
+        val baseAlpha = cfg.popupOpacityPct.coerceIn(15, 100) / 100f
+        val targetAlpha = if (cfg.popupRandomOpacity) (baseAlpha * (0.55f + Random.nextFloat() * 0.45f)).coerceIn(0.20f, 1f) else baseAlpha
+        val accentColors = intArrayOf(Color.rgb(236, 72, 153), Color.rgb(168, 85, 247), Color.rgb(244, 63, 94), Color.rgb(250, 204, 21), Color.rgb(14, 165, 233))
+        val strokeCol = if (fromMitosis || cfg.popupFrameStyle == PopupFrameStyle.CRIMSON) Color.rgb(244, 63, 94) else accentColors[Random.nextInt(accentColors.size)]
 
         val card = FrameLayout(applicationContext).apply {
-            setPadding(dp(3), dp(3), dp(3), dp(3))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(Color.argb(235, 18, 12, 28))
-                setStroke(dp(2), strokeCol)
+            val padPx = when (cfg.popupFrameStyle) {
+                PopupFrameStyle.BORDERLESS -> 0
+                PopupFrameStyle.POLAROID -> dp(5)
+                else -> dp(3)
             }
-            if (cfg.popupRandomRotation) {
-                rotation = Random.nextInt(-13, 14).toFloat()
+            val botPad = if (cfg.popupFrameStyle == PopupFrameStyle.POLAROID) dp(24) else padPx
+            setPadding(padPx, padPx, padPx, botPad)
+            if (cfg.popupFrameStyle != PopupFrameStyle.BORDERLESS) {
+                background = GradientDrawable().apply {
+                    cornerRadius = if (cfg.popupFrameStyle == PopupFrameStyle.POLAROID) dp(4).toFloat() else dp(14).toFloat()
+                    setColor(if (cfg.popupFrameStyle == PopupFrameStyle.POLAROID) Color.rgb(245, 245, 250) else Color.argb(235, 18, 12, 28))
+                    setStroke(dp(if (cfg.popupFrameStyle == PopupFrameStyle.DOUBLE_PULSE) 3 else 2), strokeCol)
+                }
             }
-            alpha = 0f
-            scaleX = 0.68f
-            scaleY = 0.68f
+            if (cfg.popupRandomRotation) rotation = Random.nextInt(-13, 14).toFloat()
         }
 
-        val iv = ImageView(applicationContext).apply {
-            setImageBitmap(bmp)
-            scaleType = ImageView.ScaleType.CENTER_CROP
-        }
-        card.addView(iv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        card.addView(ImageView(applicationContext).apply { setImageBitmap(bmp); scaleType = ImageView.ScaleType.CENTER_CROP },
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         if (cfg.popupShowMantra) {
-            val mantra = cfg.mantraList().random()
+            val isPol = cfg.popupFrameStyle == PopupFrameStyle.POLAROID
             card.addView(TextView(applicationContext).apply {
-                text = mantra
-                setTextColor(Color.WHITE)
-                textSize = if (cfg.popupSizePct < 42) 10.5f else 13f
-                typeface = Typeface.DEFAULT_BOLD
-                gravity = Gravity.CENTER
-                setBackgroundColor(Color.argb(170, 20, 8, 30))
-                setPadding(dp(6), dp(4), dp(6), dp(4))
-                setShadowLayer(8f, 0f, 0f, strokeCol)
+                text = cfg.mantraList().random()
+                setTextColor(if (isPol) Color.rgb(24, 14, 38) else Color.WHITE)
+                textSize = if (chosenPct < 38) 10f else 12.5f
+                typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+                if (!isPol) setBackgroundColor(Color.argb(175, 20, 8, 30))
+                setPadding(dp(5), dp(3), dp(5), dp(3))
             }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         }
 
-        var activeEntry: ActivePopup? = null
-        val durationMs = cfg.popupDurationDeciSec.coerceIn(4, 150) * 100L
-        val expireRunnable = Runnable {
-            val entry = activeEntry ?: return@Runnable
-            if (entry in activePopups) {
-                removePopup(entry)
-                // Optional Mitosis: ignoring a clickable pop-up splits it into 2!
-                if (touchMode == PopupTouchMode.TAP_DISMISS && cfg.popupMitosisEnabled && isRunning && !portalOpen) {
+        var activeEntry: ActiveWindowPopup? = null
+        val expireRunnable: Runnable? = if (cfg.popupDurationMs <= 0) null else Runnable {
+            val e = activeEntry ?: return@Runnable
+            if (e in activeWindowPopups) {
+                removeWindowPopup(e)
+                if (cfg.popupTouchMode == PopupTouchMode.TAP_DISMISS && cfg.popupMitosisEnabled && isRunning && !portalOpen) {
                     if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playPunishmentTone()
-                    spawnSingleImagePopup(cfg, fromMitosis = true)
-                    spawnSingleImagePopup(cfg, fromMitosis = true)
+                    spawnOnePopup(cfg, fromMitosis = true)
+                    spawnOnePopup(cfg, fromMitosis = true)
                 }
             }
         }
 
-        // Corner interactive badge + tap logic
-        when (touchMode) {
-            PopupTouchMode.TAP_DISMISS -> {
-                var tapsLeft = cfg.popupTapsToClose.coerceIn(1, 3)
-                val badge = TextView(applicationContext).apply {
-                    text = if (tapsLeft > 1) "×$tapsLeft" else "✕"
-                    setTextColor(Color.WHITE); textSize = 11f; typeface = Typeface.DEFAULT_BOLD
-                    background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.argb(215, 225, 29, 72)) }
-                    setPadding(dp(7), dp(2), dp(7), dp(2))
-                }
-                card.addView(badge, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
-                    topMargin = dp(5); marginEnd = dp(5)
-                })
-                card.setOnClickListener {
-                    tapsLeft--
-                    if (tapsLeft <= 0) {
-                        activeEntry?.let { removePopup(it) }
-                    } else {
-                        badge.text = "×$tapsLeft"
-                        card.animate().scaleX(0.92f).scaleY(0.92f).setDuration(55L).withEndAction {
-                            card.animate().scaleX(1f).scaleY(1f).setDuration(55L).start()
-                        }.start()
+        if (cfg.popupTouchMode == PopupTouchMode.TAP_DISMISS) {
+            var tapsLeft = cfg.popupTapsToClose.coerceIn(1, 3)
+            val badge = TextView(applicationContext).apply {
+                text = if (tapsLeft > 1) "×$tapsLeft" else "✕"
+                setTextColor(Color.WHITE); textSize = 11f; typeface = Typeface.DEFAULT_BOLD
+                background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.argb(218, 225, 29, 72)) }
+                setPadding(dp(7), dp(2), dp(7), dp(2))
+            }
+            card.addView(badge, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(4); marginEnd = dp(4)
+            })
+            var dX = 0f; var dY = 0f
+            card.setOnTouchListener { _, ev ->
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> { dX = ev.rawX; dY = ev.rawY; true }
+                    MotionEvent.ACTION_UP -> {
+                        val dist = hypot((ev.rawX - dX).toDouble(), (ev.rawY - dY).toDouble()).toFloat()
+                        if (cfg.popupSwipeDismiss && dist >= dp(42)) {
+                            activeEntry?.let { removeWindowPopup(it) }
+                        } else {
+                            tapsLeft--
+                            if (tapsLeft <= 0) activeEntry?.let { removeWindowPopup(it) }
+                            else {
+                                badge.text = "×$tapsLeft"
+                                card.animate().scaleX(0.92f).scaleY(0.92f).setDuration(50L).withEndAction {
+                                    card.animate().scaleX(1f).scaleY(1f).setDuration(50L).start()
+                                }.start()
+                            }
+                        }
+                        true
                     }
+                    else -> true
                 }
             }
-            PopupTouchMode.TOUCH_LOCKED -> {
-                val lockBadge = TextView(applicationContext).apply {
-                    text = "🔒"
-                    setTextColor(Color.WHITE); textSize = 10.5f
-                    background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.argb(190, 20, 12, 32)) }
-                    setPadding(dp(6), dp(2), dp(6), dp(2))
-                }
-                card.addView(lockBadge, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
-                    topMargin = dp(5); marginEnd = dp(5)
-                })
-                card.setOnClickListener {
-                    card.animate().translationX(dp(7).toFloat()).setDuration(40L).withEndAction {
-                        card.animate().translationX(-dp(7).toFloat()).setDuration(40L).withEndAction {
-                            card.animate().translationX(0f).setDuration(40L).start()
-                        }.start()
+        } else {
+            card.setOnClickListener {
+                card.animate().translationX(dp(7).toFloat()).setDuration(40L).withEndAction {
+                    card.animate().translationX(-dp(7).toFloat()).setDuration(40L).withEndAction {
+                        card.animate().translationX(0f).setDuration(40L).start()
                     }.start()
-                }
+                }.start()
             }
-            PopupTouchMode.PASS_THROUGH -> { /* Pure pass-through, no touch listener */ }
         }
 
-        val mounted = mountPopupWindow(card, posX, posY, targetW, targetH, touchable)
-        if (!mounted) return
+        if (!mountIndividualPopupWindow(card, posX, posY, targetW, targetH)) return
 
-        val entry = ActivePopup(card, expireRunnable)
+        // Apply entrance animation style!
+        val anim = if (cfg.popupAnimStyle == PopupAnimStyle.RANDOM) {
+            listOf(PopupAnimStyle.POP_ZOOM, PopupAnimStyle.INSTANT_FLASH, PopupAnimStyle.SLIDE_IN, PopupAnimStyle.SPIN_IN)[Random.nextInt(4)]
+        } else cfg.popupAnimStyle
+        when (anim) {
+            PopupAnimStyle.INSTANT_FLASH -> card.alpha = targetAlpha
+            PopupAnimStyle.SPIN_IN -> {
+                card.alpha = 0f; card.scaleX = 0.4f; card.scaleY = 0.4f; card.rotation -= 220f
+                card.animate().alpha(targetAlpha).scaleX(1f).scaleY(1f).rotationBy(220f).setDuration(190L).start()
+            }
+            PopupAnimStyle.SLIDE_IN -> {
+                card.alpha = 0.3f; card.translationX = (if (Random.nextBoolean()) 1 else -1) * dp(95).toFloat()
+                card.animate().alpha(targetAlpha).translationX(0f).setDuration(170L).start()
+            }
+            else -> {
+                card.alpha = 0f; card.scaleX = 0.65f; card.scaleY = 0.65f
+                card.animate().alpha(targetAlpha).scaleX(1f).scaleY(1f).setDuration(150L).start()
+            }
+        }
+
+        val entry = ActiveWindowPopup(card, expireRunnable)
         activeEntry = entry
-        activePopups.add(entry)
+        activeWindowPopups.add(entry)
         totalSpawnedCount++
         updatePillLabel()
-
-        card.animate().alpha(targetAlpha).scaleX(1.0f).scaleY(1.0f).setDuration(150L).start()
-        if (cfg.popupVibrate) vibrateShort(28L)
-        mainHandler.postDelayed(expireRunnable, durationMs)
+        if (expireRunnable != null) {
+            mainHandler.postDelayed(expireRunnable, cfg.popupDurationMs.coerceIn(100, 60_000).toLong())
+        }
     }
 
-    private fun removePopup(entry: ActivePopup) {
-        mainHandler.removeCallbacks(entry.expireRunnable)
-        activePopups.remove(entry)
-        if (mountedViaA11y) {
-            GazeAccessibilityService.activeInstance?.removeStormPopupWindow(entry.view)
-        } else {
-            try { fallbackWm?.removeViewImmediate(entry.view) } catch (_: Throwable) {}
+    private fun pickWindowTopLeft(zone: PopupSpawnZone, sw: Int, sh: Int, w: Int, h: Int): Pair<Int, Int> {
+        val pad = dp(8)
+        val minY = dp(48)
+        val maxX = (sw - w - pad).coerceAtLeast(pad + 1)
+        val maxY = (sh - h - dp(38)).coerceAtLeast(minY + 1)
+        return when (zone) {
+            PopupSpawnZone.CENTER -> {
+                val cx = ((sw - w) / 2 + Random.nextInt(-dp(45), dp(46))).coerceIn(pad, maxX)
+                val cy = ((sh - h) / 2 + Random.nextInt(-dp(65), dp(66))).coerceIn(minY, maxY)
+                cx to cy
+            }
+            PopupSpawnZone.EDGES -> when (Random.nextInt(4)) {
+                0 -> Random.nextInt(pad, maxX) to minY
+                1 -> Random.nextInt(pad, maxX) to maxY
+                2 -> pad to Random.nextInt(minY, maxY)
+                else -> maxX to Random.nextInt(minY, maxY)
+            }
+            PopupSpawnZone.GRID -> {
+                val cols = (sw / w.coerceAtLeast(dp(64))).coerceIn(2, 4)
+                val rows = (sh / h.coerceAtLeast(dp(64))).coerceIn(3, 6)
+                val cell = gridCursor++ % (cols * rows)
+                val r = cell / cols; val c = cell % cols
+                val x = (c * (sw / cols)).coerceIn(pad, maxX)
+                val y = (minY + r * ((sh - minY) / rows)).coerceIn(minY, maxY)
+                x to y
+            }
+            PopupSpawnZone.ANYWHERE -> Random.nextInt(pad, maxX) to Random.nextInt(minY, maxY)
         }
+    }
+
+    private fun removeWindowPopup(entry: ActiveWindowPopup) {
+        entry.expireRunnable?.let { mainHandler.removeCallbacks(it) }
+        activeWindowPopups.remove(entry)
+        if (mountedViaA11y) GazeAccessibilityService.activeInstance?.removeStormPopupWindow(entry.view)
+        else try { fallbackWm?.removeViewImmediate(entry.view) } catch (_: Throwable) {}
         updatePillLabel()
     }
 
-    private fun clearAllActivePopups() {
-        for (p in activePopups.toList()) {
-            mainHandler.removeCallbacks(p.expireRunnable)
+    private fun clearWindowPopupsOnly() {
+        for (p in activeWindowPopups.toList()) {
+            p.expireRunnable?.let { mainHandler.removeCallbacks(it) }
             if (mountedViaA11y) GazeAccessibilityService.activeInstance?.removeStormPopupWindow(p.view)
             else try { fallbackWm?.removeViewImmediate(p.view) } catch (_: Throwable) {}
         }
-        activePopups.clear()
+        activeWindowPopups.clear()
+    }
+
+    private fun removeCanvasStageOnly() {
+        val st = canvasStage ?: return
+        canvasStage = null
+        st.clearAll()
+        if (mountedViaA11y) GazeAccessibilityService.activeInstance?.removeStormStageOverlay()
+        else try { fallbackWm?.removeViewImmediate(st) } catch (_: Throwable) {}
     }
 
     // ==================== COMPACT DRAGGABLE CONTROL PILL ====================
@@ -385,14 +490,13 @@ class ImagePopupStormService : Service() {
             setPadding(dp(9), dp(5), dp(7), dp(5))
             background = GradientDrawable().apply {
                 cornerRadius = dp(18).toFloat()
-                setColor(Color.argb(215, 22, 10, 36))
+                setColor(Color.argb(220, 22, 10, 36))
                 setStroke(dp(1), Color.rgb(236, 72, 153))
             }
         }
         val lbl = TextView(applicationContext).apply {
             text = "🖼️ Pop-ups"
-            setTextColor(Color.WHITE); textSize = 11.2f; typeface = Typeface.MONOSPACE
-            setPadding(0, 0, dp(6), 0)
+            setTextColor(Color.WHITE); textSize = 11f; typeface = Typeface.MONOSPACE; setPadding(0, 0, dp(6), 0)
         }
         stormPillLabelTv = lbl
         pill.addView(lbl)
@@ -432,6 +536,12 @@ class ImagePopupStormService : Service() {
         }
 
         stormPillView = pill
+        attachPillWindow(pill)
+        updatePillLabel()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun attachPillWindow(pill: View) {
         if (mountedViaA11y) {
             GazeAccessibilityService.activeInstance?.mountStormPillOverlay(pill)
         } else {
@@ -441,14 +551,21 @@ class ImagePopupStormService : Service() {
                 val lp = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, winType,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT
-                ).apply {
-                    gravity = Gravity.TOP or Gravity.START
-                    x = (dm.widthPixels - dp(170)).coerceAtLeast(dp(8)); y = dp(44)
-                }
+                ).apply { gravity = Gravity.TOP or Gravity.START; x = (dm.widthPixels - dp(190)).coerceAtLeast(dp(8)); y = dp(44) }
                 fallbackWm?.addView(pill, lp); fbPillParams = lp
             } catch (_: Throwable) {}
         }
-        updatePillLabel()
+    }
+
+    private fun remountPillOnTop() {
+        val pill = stormPillView ?: return
+        if (mountedViaA11y) {
+            GazeAccessibilityService.activeInstance?.removeStormPillOverlay()
+            GazeAccessibilityService.activeInstance?.mountStormPillOverlay(pill)
+        } else {
+            try { fallbackWm?.removeViewImmediate(pill) } catch (_: Throwable) {}
+            attachPillWindow(pill)
+        }
     }
 
     private fun updatePillLabel() {
@@ -456,7 +573,8 @@ class ImagePopupStormService : Service() {
             val s = ((sessionRemainingMs + 999L) / 1000L).coerceAtLeast(0L)
             String.format("%02d:%02d", s / 60L, s % 60L)
         }
-        stormPillLabelTv?.text = "🖼️ $timeTxt · ×${activePopups.size}"
+        val liveCnt = (canvasStage?.activeCount() ?: 0) + activeWindowPopups.size
+        stormPillLabelTv?.text = "🖼️ $timeTxt · ×$liveCnt (#$totalSpawnedCount)"
     }
 
     private fun dragPillWindow(dx: Int, dy: Int) {
@@ -476,7 +594,8 @@ class ImagePopupStormService : Service() {
         mainHandler.post {
             if (!isRunning || portalOpen) return@post
             portalOpen = true
-            clearAllActivePopups()
+            clearWindowPopupsOnly()
+            canvasStage?.clearAll()
             val cfg = gazeConfig.snapshot()
 
             val host = object : FrameLayout(applicationContext) {
@@ -499,9 +618,7 @@ class ImagePopupStormService : Service() {
                         stopStormCleanly()
                     }
                 },
-                onCancelWait = {
-                    closePortalWindow()
-                }
+                onCancelWait = { closePortalWindow() }
             )
             activePortalWait = waitView
             host.addView(waitView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -532,24 +649,36 @@ class ImagePopupStormService : Service() {
             val cfg = gazeConfig.snapshot()
             if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playPunishmentTone()
             Toast.makeText(applicationContext, "🚫 Paramètres verrouillés ! Passe par le portail 🔓 !", Toast.LENGTH_SHORT).show()
-            // Spawn 2 punishment pop-ups immediately!
-            spawnSingleImagePopup(cfg, fromMitosis = true)
-            spawnSingleImagePopup(cfg, fromMitosis = true)
+            repeat(4) { spawnOnePopup(cfg, fromMitosis = true) }
         }
     }
 
     @Suppress("DEPRECATION")
-    private fun mountPopupWindow(view: View, x: Int, y: Int, w: Int, h: Int, touchable: Boolean): Boolean {
+    private fun mountStageWindow(view: View, touchable: Boolean): Boolean {
         if (mountedViaA11y) {
-            return GazeAccessibilityService.activeInstance?.mountStormPopupWindow(view, x, y, w, h, touchable) == true
+            return GazeAccessibilityService.activeInstance?.mountStormStageOverlay(view, touchable) == true
         }
         return try {
             val winType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
-            val flags = if (touchable) WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-            else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-            val lp = WindowManager.LayoutParams(w, h, winType, flags, PixelFormat.TRANSLUCENT).apply {
-                gravity = Gravity.TOP or Gravity.START; this.x = x; this.y = y
-            }
+            val flags = if (touchable) WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, winType, flags, PixelFormat.TRANSLUCENT
+            ).apply { gravity = Gravity.TOP or Gravity.START }
+            fallbackWm?.addView(view, lp); true
+        } catch (_: Throwable) { false }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun mountIndividualPopupWindow(view: View, x: Int, y: Int, w: Int, h: Int): Boolean {
+        if (mountedViaA11y) {
+            return GazeAccessibilityService.activeInstance?.mountStormPopupWindow(view, x, y, w, h, touchable = true) == true
+        }
+        return try {
+            val winType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
+            val lp = WindowManager.LayoutParams(
+                w, h, winType, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT
+            ).apply { gravity = Gravity.TOP or Gravity.START; this.x = x; this.y = y }
             fallbackWm?.addView(view, lp); true
         } catch (_: Throwable) { false }
     }
@@ -574,11 +703,11 @@ class ImagePopupStormService : Service() {
     private fun stopStormCleanly() {
         mainHandler.removeCallbacks(spawnLoopRunnable)
         mainHandler.removeCallbacks(sessionTimerTick)
-        isRunning = false
-        isExitLocked = false
+        isRunning = false; isExitLocked = false
         if (activeInstance === this) activeInstance = null
         closePortalWindow()
-        clearAllActivePopups()
+        clearWindowPopupsOnly()
+        removeCanvasStageOnly()
         stormPillView?.let { pill ->
             if (mountedViaA11y) GazeAccessibilityService.activeInstance?.removeStormPillOverlay()
             else try { fallbackWm?.removeViewImmediate(pill) } catch (_: Throwable) {}
@@ -597,7 +726,8 @@ class ImagePopupStormService : Service() {
         isRunning = false; isExitLocked = false
         if (activeInstance === this) activeInstance = null
         closePortalWindow()
-        clearAllActivePopups()
+        clearWindowPopupsOnly()
+        removeCanvasStageOnly()
         try { GazeAccessibilityService.activeInstance?.removeAllStormOverlays() } catch (_: Throwable) {}
         for (b in bitmapPool) { try { if (!b.isRecycled) b.recycle() } catch (_: Throwable) {} }
         bitmapPool.clear()
@@ -625,7 +755,7 @@ class ImagePopupStormService : Service() {
         val openPi = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_gallery)
-            .setContentTitle("🖼️ GazeLock AI — Mode Pop-Ups d'Images")
+            .setContentTitle("🖼️ GazeLock AI v6.0 — Tempête Pop-Ups")
             .setContentText(content)
             .setOngoing(true)
             .setContentIntent(openPi)
