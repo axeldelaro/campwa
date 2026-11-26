@@ -57,6 +57,11 @@ class PopupStormCanvasView(
         val mitosisOnExpire: Boolean,
         val spawnMs: Long,
         val expireMs: Long, // Long.MAX_VALUE = ∞ Persistent!
+        var driftVx: Float = 0f,
+        var driftVy: Float = 0f,
+        val pulseEnabled: Boolean = false,
+        val pulsePhase: Float = 0f,
+        var dodgesLeft: Int = 0,
         var shakeUntilMs: Long = 0L,
         var flingVx: Float = 0f,
         var flingVy: Float = 0f,
@@ -68,6 +73,17 @@ class PopupStormCanvasView(
 
     private val sprites = ArrayList<StormSprite>(64)
     private var gridCursor = 0
+    private var surgeActive = false
+    private val surgeRimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; color = Color.rgb(250, 204, 21)
+    }
+
+    fun setSurgeActive(active: Boolean) {
+        if (surgeActive != active) {
+            surgeActive = active
+            invalidate()
+        }
+    }
 
     // Reusable Paints (zero per-frame GC allocation -> silky 60 FPS!)
     private val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -151,6 +167,18 @@ class PopupStormCanvasView(
         val now = SystemClock.elapsedRealtime()
         val expire = if (cfg.popupDurationMs <= 0) Long.MAX_VALUE else now + cfg.popupDurationMs.coerceIn(100, 60_000).toLong()
 
+        // #22 Diagonal Drift & Wall-Bounce Physics
+        var dvx = 0f; var dvy = 0f
+        if (cfg.popupDriftPhysicsEnabled) {
+            val angle = Random.nextDouble(0.0, Math.PI * 2.0)
+            val spd = (0.7f + Random.nextFloat() * 1.4f) * density
+            dvx = (kotlin.math.cos(angle) * spd).toFloat()
+            dvy = (kotlin.math.sin(angle) * spd).toFloat()
+        }
+
+        // #24 Evasive Dodge Mode (35% of clickable sprites dodge first tap!)
+        val dodges = if (cfg.popupEvasiveDodgeEnabled && cfg.popupTouchMode == PopupTouchMode.TAP_DISMISS && Random.nextFloat() < 0.35f) 1 else 0
+
         val sp = StormSprite(
             bitmap = bitmap,
             cx = cx,
@@ -170,7 +198,12 @@ class PopupStormCanvasView(
             swipeDismiss = cfg.popupSwipeDismiss,
             mitosisOnExpire = cfg.popupMitosisEnabled && cfg.popupTouchMode == PopupTouchMode.TAP_DISMISS,
             spawnMs = now,
-            expireMs = expire
+            expireMs = expire,
+            driftVx = dvx,
+            driftVy = dvy,
+            pulseEnabled = cfg.popupPulseScaleEnabled,
+            pulsePhase = Random.nextFloat() * 6.28f,
+            dodgesLeft = dodges
         )
         sprites.add(sp)
         onActiveCountChanged(sprites.size)
@@ -242,16 +275,35 @@ class PopupStormCanvasView(
                 it.remove(); removedAny = true
                 if (sp.mitosisOnExpire) mitosisCount++
                 continue
+            } else if (sp.driftVx != 0f || sp.driftVy != 0f) {
+                // #22 Smooth 60 FPS Drift & 4-Wall Bounce!
+                val mult = if (surgeActive) 2.1f else 1.0f
+                sp.cx += sp.driftVx * mult
+                sp.cy += sp.driftVy * mult
+                val hw = (sp.w * 0.45f).coerceAtMost(width * 0.48f)
+                val hh = (sp.h * 0.45f).coerceAtMost(height * 0.48f)
+                if (sp.cx < hw) { sp.cx = hw; sp.driftVx = abs(sp.driftVx) }
+                else if (sp.cx > width - hw) { sp.cx = width - hw; sp.driftVx = -abs(sp.driftVx) }
+                if (sp.cy < hh + dp(28)) { sp.cy = hh + dp(28); sp.driftVy = abs(sp.driftVy) }
+                else if (sp.cy > height - hh) { sp.cy = height - hh; sp.driftVy = -abs(sp.driftVy) }
             }
 
             drawSprite(canvas, sp, now)
+        }
+
+        // #25 Storm Surge Neon Rim Glow
+        if (surgeActive && width > 0 && height > 0) {
+            val pulse = 0.55f + 0.45f * sin(now / 95.0).toFloat()
+            surgeRimPaint.strokeWidth = dp(6).toFloat() * (0.85f + 0.4f * pulse)
+            surgeRimPaint.color = Color.argb((160 + 90 * pulse).toInt().coerceIn(0, 255), 250, 204, 21)
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), surgeRimPaint)
         }
 
         if (removedAny) onActiveCountChanged(sprites.size)
         if (mitosisCount > 0) {
             repeat(mitosisCount.coerceAtMost(3)) { onMitosisRequested() }
         }
-        if (sprites.isNotEmpty()) postInvalidateOnAnimation()
+        if (sprites.isNotEmpty() || surgeActive) postInvalidateOnAnimation()
     }
 
     private fun drawSprite(canvas: Canvas, sp: StormSprite, now: Long) {
@@ -292,6 +344,11 @@ class PopupStormCanvasView(
 
         if (now < sp.shakeUntilMs) {
             drawX += sin(now / 18.0).toFloat() * dp(8)
+        }
+        // #23 Scale Pulse Breathing at 60 FPS!
+        if (sp.pulseEnabled && inFrac >= 1f) {
+            val speedDiv = if (surgeActive) 180.0 else 360.0
+            scale *= (1.0f + sin(now / speedDiv + sp.pulsePhase).toFloat() * 0.068f)
         }
 
         val alphaByte = (alpha * 255f).toInt().coerceIn(0, 255)
@@ -405,6 +462,17 @@ class PopupStormCanvasView(
                 if (sp !in sprites || sp.flinging) return true
                 if (sp.touchMode == PopupTouchMode.TOUCH_LOCKED) {
                     sp.shakeUntilMs = SystemClock.elapsedRealtime() + 220L
+                    invalidate()
+                    return true
+                }
+                // #24 Evasive Dodge: sprite teleports away on first attempt!
+                if (sp.dodgesLeft > 0) {
+                    sp.dodgesLeft--
+                    val hw = (sp.w * 0.5f).coerceAtMost(width * 0.45f)
+                    val hh = (sp.h * 0.5f).coerceAtMost(height * 0.45f)
+                    sp.cx = hw + Random.nextFloat() * (width - hw * 2).coerceAtLeast(1f)
+                    sp.cy = (hh + dp(40)) + Random.nextFloat() * (height - hh * 2 - dp(40)).coerceAtLeast(1f)
+                    sp.shakeUntilMs = SystemClock.elapsedRealtime() + 180L
                     invalidate()
                     return true
                 }

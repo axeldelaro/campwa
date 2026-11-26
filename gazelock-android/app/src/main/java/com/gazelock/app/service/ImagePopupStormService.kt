@@ -1,21 +1,22 @@
 package com.gazelock.app.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
-import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
@@ -34,6 +35,9 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleService
+import com.gazelock.app.ai.GazeTrackerEngine
+import com.gazelock.app.audio.HypnoticAudioEngine
 import com.gazelock.app.audio.PavlovSoundEngine
 import com.gazelock.app.config.GazeConfig
 import com.gazelock.app.config.GazeConfigSnapshot
@@ -43,6 +47,7 @@ import com.gazelock.app.config.PopupSpawnZone
 import com.gazelock.app.config.PopupTouchMode
 import com.gazelock.app.media.VideoFeedRepository
 import com.gazelock.app.overlay.AccessCodeWaitSpamView
+import com.gazelock.app.overlay.HypnoticSpiralView
 import com.gazelock.app.overlay.PopupStormCanvasView
 import com.gazelock.app.ui.MainActivity
 import java.util.concurrent.CopyOnWriteArraySet
@@ -51,17 +56,15 @@ import kotlin.math.hypot
 import kotlin.random.Random
 
 /**
- * MEGA Standalone Image Pop-Up Storm Service (v6.0 — runs OUTSIDE of videos over all apps!):
- * - Hybrid Engine:
- *   1) GPU 60 FPS [PopupStormCanvasView] stage for PASS_THROUGH (always!) OR massive/unlimited count (>12 or ∞):
- *      handles 30ms (33/s!) frequencies, bursts of 1..12 photos, and 350+ simultaneous sprites with ZERO lag!
- *   2) Individual compact floating windows when touchable & maxSimultaneous <= 12 so touches outside
- *      the pop-ups still interact cleanly with apps underneath!
- * - Full v6.0 features: Min/Max Size (12%..100%), Ramp-Up Acceleration (up to 4x), 4 Spawn Zones,
- *   5 Entrance Animations, 5 Frame Styles, Persistent ∞ Duration, Swipe-Away Fling, Mitosis,
- *   Pavlov Audio Cues, and Optional Portal Exit Lock + Anti-Escape!
+ * TITAN Standalone Image Pop-Up Storm Service (v7.0 — runs OUTSIDE of videos over all apps!):
+ * - Hybrid 60 FPS GPU Canvas + Individual Window Engine (30ms..60s, bursts x12, ∞ unlimited!).
+ * - v7.0 TITAN Upgrades:
+ *   #1 FLAG_SECURE Portal, #3 Watchdog, #4 Strict Audio Guard, #6 Immortal Reboot Survival,
+ *   #22 Drift & Bounce Physics, #23 Scale Breathing Pulse, #24 Evasive Dodge, #25 Storm Surge Waves (×3),
+ *   #26 Hypnotic Spiral Backdrop, #27 Binaural Audio, #28 Optional Gaze-Boost (look away = ×2 speed!),
+ *   #29 Clear Screen Pill Button (unlocked only), #34a Portal Cancel Tax!
  */
-class ImagePopupStormService : Service() {
+class ImagePopupStormService : LifecycleService() {
 
     private data class ActiveWindowPopup(
         val view: View,
@@ -77,6 +80,13 @@ class ImagePopupStormService : Service() {
     private val activeWindowPopups = ArrayList<ActiveWindowPopup>()
     private var canvasStage: PopupStormCanvasView? = null
     private var canvasStageTouchable = false
+    private var spiralBackdrop: HypnoticSpiralView? = null
+    private var fbSpiralAttached = false
+    private var hypnoticAudio: HypnoticAudioEngine? = null
+    private var gazeTracker: GazeTrackerEngine? = null
+    @Volatile
+    private var gazeLookingNow = true
+
     private var lastBmpIdx = -1
     private var gridCursor = 0
 
@@ -91,17 +101,73 @@ class ImagePopupStormService : Service() {
     private var sessionRemainingMs = 0L
     private var sessionInfinite = true
     private var lastSessionTickMs = 0L
+    private var lastCheckpointSaveMs = 0L
+    private var lastWatchdogMs = 0L
     private var totalSpawnedCount = 0
+    private var lockedVolumeTarget = -1
+
+    // #25 Storm Surge Waves (every 25s -> 6s 3x speed surge!)
+    private var surgeActive = false
+    private var nextSurgeToggleMs = 0L
 
     private val density get() = resources.displayMetrics.density
     private fun dp(v: Int) = (v * density).toInt()
 
+    private fun enforceVolumeFloorInternal() {
+        val cfg = gazeConfig.snapshot()
+        if (!isExitLocked || !cfg.strictAudioGuardEnabled || lockedVolumeTarget <= 0) return
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && am.isStreamMute(AudioManager.STREAM_MUSIC)) {
+                am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
+            }
+            if (am.getStreamVolume(AudioManager.STREAM_MUSIC) < lockedVolumeTarget) {
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, lockedVolumeTarget, 0)
+            }
+        } catch (_: Throwable) {}
+    }
+
     private val sessionTimerTick = object : Runnable {
         override fun run() {
             if (!isRunning) return
+            val cfg = gazeConfig.snapshot()
             val now = SystemClock.elapsedRealtime()
             val dt = (now - lastSessionTickMs).coerceIn(100L, 1_500L)
             lastSessionTickMs = now
+
+            enforceVolumeFloorInternal()
+
+            // #3 Self-Healing Z-Order Watchdog every 2s when locked
+            if (isExitLocked && cfg.overlayWatchdogEnabled && now - lastWatchdogMs >= 2_000L) {
+                lastWatchdogMs = now
+                if (mountedViaA11y) GazeAccessibilityService.activeInstance?.bringStormOverlaysToFront()
+            }
+
+            // #6 Immortal Locked Pop-Up Checkpoint Save every 4s
+            if (isExitLocked && cfg.popupRebootSurvivalEnabled && now - lastCheckpointSaveMs >= 4_000L) {
+                lastCheckpointSaveMs = now
+                gazeConfig.saveActivePopupCheckpoint((sessionRemainingMs / 1000L).toInt(), sessionInfinite)
+            }
+
+            // #25 Storm Surge Wave scheduler (every 25s -> 6s 3x SURGE!)
+            if (cfg.popupSurgeWavesEnabled && !portalOpen) {
+                if (now >= nextSurgeToggleMs) {
+                    surgeActive = !surgeActive
+                    nextSurgeToggleMs = now + if (surgeActive) 6_000L else 25_000L
+                    canvasStage?.setSurgeActive(surgeActive)
+                    spiralBackdrop?.setIntenseMode(surgeActive)
+                    hypnoticAudio?.setOverloadSprint(surgeActive)
+                    if (surgeActive) {
+                        vibrateShort(90L)
+                        if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playSurgeWhoosh()
+                    }
+                }
+            } else if (surgeActive) {
+                surgeActive = false
+                canvasStage?.setSurgeActive(false)
+                spiralBackdrop?.setIntenseMode(false)
+                hypnoticAudio?.setOverloadSprint(false)
+            }
 
             if (!portalOpen && !sessionInfinite) {
                 sessionRemainingMs = (sessionRemainingMs - dt).coerceAtLeast(0L)
@@ -114,7 +180,7 @@ class ImagePopupStormService : Service() {
                 }
             }
             updatePillLabel()
-            mainHandler.postDelayed(this, 450L)
+            mainHandler.postDelayed(this, 400L)
         }
     }
 
@@ -123,25 +189,27 @@ class ImagePopupStormService : Service() {
             if (!isRunning) return
             val cfg = gazeConfig.snapshot()
             if (!portalOpen && bitmapPool.isNotEmpty()) {
-                val burst = cfg.popupBurstCount.coerceIn(1, 12)
+                val baseBurst = cfg.popupBurstCount.coerceIn(1, 12)
+                val burst = if (surgeActive) (baseBurst * 2).coerceAtMost(14) else baseBurst
                 repeat(burst) { spawnOnePopup(cfg) }
                 if (cfg.popupVibrate) vibrateShort(22L)
                 if (cfg.popupSoundOnSpawn) PavlovSoundEngine.playRewardChime()
             }
 
-            // Optional Ramp-Up Storm: smoothly accelerates up to 4x faster over 3 minutes!
-            val baseDelay = cfg.popupIntervalMs.coerceIn(30, 60_000).toLong()
-            val delayMs = if (cfg.popupRampUpEnabled) {
+            // Optional Ramp-Up Storm (up to 4x) × Surge Wave (3x) × Gaze-Away Boost (2x)!
+            val baseDelay = cfg.popupIntervalMs.coerceIn(30, 60_000).toDouble()
+            var mult = 1.0
+            if (cfg.popupRampUpEnabled) {
                 val elapsedSec = ((SystemClock.elapsedRealtime() - sessionStartElapsedMs) / 1000.0).coerceAtLeast(0.0)
-                val speedFactor = (1.0 + (elapsedSec / 60.0)).coerceIn(1.0, 4.0)
-                (baseDelay / speedFactor).toLong().coerceAtLeast(30L)
-            } else baseDelay
+                mult *= (1.0 + (elapsedSec / 60.0)).coerceIn(1.0, 4.0)
+            }
+            if (surgeActive) mult *= 3.0
+            if (cfg.popupGazeBoostEnabled && !gazeLookingNow) mult *= 2.0
 
+            val delayMs = (baseDelay / mult).toLong().coerceAtLeast(30L)
             mainHandler.postDelayed(this, delayMs)
         }
     }
-
-    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -150,6 +218,7 @@ class ImagePopupStormService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
         if (intent?.action == ACTION_STOP) {
             stopStormCleanly()
             return START_NOT_STICKY
@@ -164,11 +233,17 @@ class ImagePopupStormService : Service() {
             stopSelf(); return START_NOT_STICKY
         }
 
+        val hasCamPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        val wantGazeBoost = cfg.popupGazeBoostEnabled && hasCamPerm
+
         createChannel()
-        val notif = buildNotification("🖼️ Tempête Pop-Ups d'Images v6.0 active…")
+        val notif = buildNotification("🖼️ Tempête Pop-Ups TITAN v7.0 active…")
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                val fgsType = if (wantGazeBoost) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                } else ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                startForeground(NOTIF_ID, notif, fgsType)
             } else startForeground(NOTIF_ID, notif)
         } catch (_: Throwable) {
             try { startForeground(NOTIF_ID, notif) } catch (_: Throwable) { stopSelf(); return START_NOT_STICKY }
@@ -182,17 +257,63 @@ class ImagePopupStormService : Service() {
         }
         mountedViaA11y = (a11y != null)
 
+        val resumedSec = intent?.getIntExtra(EXTRA_RESUMED_SEC, -1) ?: -1
+        val resumedInf = intent?.getBooleanExtra(EXTRA_RESUMED_INF, false) ?: false
+
         isRunning = true
-        isExitLocked = cfg.popupLockExitWithPortal
+        isExitLocked = cfg.popupLockExitWithPortal || resumedSec >= 0
         activeInstance = this
         portalOpen = false
         totalSpawnedCount = 0
         gridCursor = 0
+        surgeActive = false
+        gazeLookingNow = true
         sessionStartElapsedMs = SystemClock.elapsedRealtime()
-        sessionInfinite = (cfg.popupSessionDurationSec <= 0)
-        sessionRemainingMs = cfg.popupSessionDurationSec * 1000L
+        nextSurgeToggleMs = sessionStartElapsedMs + 22_000L
+        if (resumedSec >= 0) {
+            sessionInfinite = resumedInf || resumedSec == 0
+            sessionRemainingMs = resumedSec * 1000L
+        } else {
+            sessionInfinite = (cfg.popupSessionDurationSec <= 0)
+            sessionRemainingMs = cfg.popupSessionDurationSec * 1000L
+        }
         lastSessionTickMs = sessionStartElapsedMs
+        lastCheckpointSaveMs = sessionStartElapsedMs
+        lastWatchdogMs = sessionStartElapsedMs
+
+        // #4 Strict Audio Guard floor setup
+        lockedVolumeTarget = -1
+        if (isExitLocked && cfg.strictAudioGuardEnabled) {
+            try {
+                val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                if (am != null) {
+                    val maxV = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                    lockedVolumeTarget = ((maxV * cfg.volumeFloorPct.coerceIn(40, 100)) / 100f).toInt().coerceIn(1, maxV)
+                    enforceVolumeFloorInternal()
+                }
+            } catch (_: Throwable) {}
+        }
+
+        if (isExitLocked && cfg.popupRebootSurvivalEnabled) {
+            gazeConfig.saveActivePopupCheckpoint((sessionRemainingMs / 1000L).toInt(), sessionInfinite)
+        }
         notifyListeners()
+
+        // #26 Optional 60 FPS Hypnotic Spiral Backdrop underneath pop-ups!
+        if (cfg.popupSpiralOverlayEnabled) mountSpiralBackdrop(cfg)
+
+        // #27 Optional Binaural Audio Engine in Pop-Up mode!
+        if (cfg.popupBinauralEnabled) {
+            hypnoticAudio = HypnoticAudioEngine().apply { start(cfg.binauralVolumePct, cfg.binauralFreqHz) }
+        }
+
+        // #28 Optional Gaze-Boost AI Camera (look away -> 2x pop-up speed!)
+        if (wantGazeBoost) {
+            gazeTracker = GazeTrackerEngine(
+                context = applicationContext,
+                onReading = { r -> gazeLookingNow = r.isLookingAtScreen }
+            ).also { it.start(this, cfg) }
+        }
 
         ensureAppropriateStage(cfg)
         mountControlPill(cfg)
@@ -213,13 +334,44 @@ class ImagePopupStormService : Service() {
             }
         }.start()
 
-        mainHandler.postDelayed(sessionTimerTick, 450L)
+        mainHandler.postDelayed(sessionTimerTick, 400L)
 
         mainHandler.postDelayed({
             try { GazeAccessibilityService.activeInstance?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
         }, 260L)
 
         return START_STICKY
+    }
+
+    @Suppress("DEPRECATION")
+    private fun mountSpiralBackdrop(cfg: GazeConfigSnapshot) {
+        removeSpiralBackdrop()
+        val sv = HypnoticSpiralView(applicationContext, cfg.spiralOpacityPct.coerceIn(12, 50), cfg.binauralFreqHz)
+        val ok = if (mountedViaA11y) {
+            GazeAccessibilityService.activeInstance?.mountStormSpiralOverlay(sv) == true
+        } else {
+            try {
+                val winType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
+                val lp = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, winType,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    PixelFormat.TRANSLUCENT
+                ).apply { gravity = Gravity.TOP or Gravity.START }
+                fallbackWm?.addView(sv, lp); fbSpiralAttached = true; true
+            } catch (_: Throwable) { false }
+        }
+        if (ok) spiralBackdrop = sv
+    }
+
+    private fun removeSpiralBackdrop() {
+        val sv = spiralBackdrop ?: return
+        spiralBackdrop = null
+        if (mountedViaA11y) GazeAccessibilityService.activeInstance?.removeStormSpiralOverlay()
+        else if (fbSpiralAttached) {
+            fbSpiralAttached = false
+            try { fallbackWm?.removeViewImmediate(sv) } catch (_: Throwable) {}
+        }
     }
 
     private fun shouldUseCanvasStage(cfg: GazeConfigSnapshot): Boolean =
@@ -501,7 +653,7 @@ class ImagePopupStormService : Service() {
         stormPillLabelTv = lbl
         pill.addView(lbl)
 
-        if (cfg.popupLockExitWithPortal) {
+        if (isExitLocked) {
             val waitMin = cfg.currentPortalWaitSec() / 60
             pill.addView(TextView(applicationContext).apply {
                 text = "🔓 ${waitMin}m"
@@ -511,6 +663,17 @@ class ImagePopupStormService : Service() {
                 setOnClickListener { openUnlockPortalForStorm() }
             })
         } else {
+            // #29 Clear Screen button when NOT locked!
+            pill.addView(TextView(applicationContext).apply {
+                text = "🧹"
+                setTextColor(Color.WHITE); textSize = 11.5f
+                setPadding(dp(5), dp(2), dp(6), dp(2))
+                setOnClickListener {
+                    clearWindowPopupsOnly()
+                    canvasStage?.clearAll()
+                    updatePillLabel()
+                }
+            })
             pill.addView(TextView(applicationContext).apply {
                 text = "⏹ Stop"
                 setTextColor(Color.WHITE); textSize = 10.6f; typeface = Typeface.DEFAULT_BOLD
@@ -574,7 +737,9 @@ class ImagePopupStormService : Service() {
             String.format("%02d:%02d", s / 60L, s % 60L)
         }
         val liveCnt = (canvasStage?.activeCount() ?: 0) + activeWindowPopups.size
-        stormPillLabelTv?.text = "🖼️ $timeTxt · ×$liveCnt (#$totalSpawnedCount)"
+        val surgeTag = if (surgeActive) " ⚡×3" else ""
+        val gazeTag = if (gazeTracker != null && !gazeLookingNow) " 🔴×2" else ""
+        stormPillLabelTv?.text = "🖼️ $timeTxt · ×$liveCnt (#$totalSpawnedCount)$surgeTag$gazeTag"
     }
 
     private fun dragPillWindow(dx: Int, dy: Int) {
@@ -608,8 +773,8 @@ class ImagePopupStormService : Service() {
             val waitView = AccessCodeWaitSpamView(
                 context = applicationContext,
                 cfg = cfg,
-                gazeLookingSupplier = null,
-                onOverloadSprintChanged = null,
+                gazeLookingSupplier = if (gazeTracker != null) { { gazeLookingNow } } else null,
+                onOverloadSprintChanged = { sprint -> hypnoticAudio?.setOverloadSprint(sprint) },
                 onIssueCode = { gazeConfig.issueUnlockedAccessCode() },
                 onRecordDailyPortalCompletion = { gazeConfig.recordPortalUnlockCompletedToday() },
                 onCodeUnlockedAndExit = { code ->
@@ -618,11 +783,19 @@ class ImagePopupStormService : Service() {
                         stopStormCleanly()
                     }
                 },
-                onCancelWait = { closePortalWindow() }
+                onCancelWait = {
+                    closePortalWindow()
+                    // #34a Cancel Portal Tax on Locked Pop-Up Storm: +30s + 6 punitive pop-ups!
+                    if (cfg.portalCancelTaxEnabled && isExitLocked) {
+                        if (!sessionInfinite) sessionRemainingMs += 30_000L
+                        if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playPunishmentTone()
+                        repeat(6) { spawnOnePopup(cfg, fromMitosis = true) }
+                    }
+                }
             )
             activePortalWait = waitView
             host.addView(waitView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            if (mountPortalWindow(host)) {
+            if (mountPortalWindow(host, cfg.portalFlagSecureEnabled)) {
                 portalHost = host
                 waitView.startThreeMinuteSpamWait()
             } else {
@@ -684,17 +857,19 @@ class ImagePopupStormService : Service() {
     }
 
     @Suppress("DEPRECATION")
-    private fun mountPortalWindow(view: View): Boolean {
+    private fun mountPortalWindow(view: View, flagSecure: Boolean = true): Boolean {
         if (mountedViaA11y) {
             val a11y = GazeAccessibilityService.activeInstance
-            if (a11y != null && a11y.mountPortalOverlay(view, forceMaxBrightness = true)) return true
+            if (a11y != null && a11y.mountPortalOverlay(view, forceMaxBrightness = true, flagSecure = flagSecure)) return true
         }
         return try {
             val winType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
+            var flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            if (flagSecure) flags = flags or WindowManager.LayoutParams.FLAG_SECURE
             val lp = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, winType,
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
-                PixelFormat.TRANSLUCENT
+                WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, winType, flags, PixelFormat.TRANSLUCENT
             ).apply { gravity = Gravity.TOP or Gravity.START }
             fallbackWm?.addView(view, lp); true
         } catch (_: Throwable) { false }
@@ -703,11 +878,15 @@ class ImagePopupStormService : Service() {
     private fun stopStormCleanly() {
         mainHandler.removeCallbacks(spawnLoopRunnable)
         mainHandler.removeCallbacks(sessionTimerTick)
-        isRunning = false; isExitLocked = false
+        gazeConfig.clearActivePopupCheckpoint()
+        isRunning = false; isExitLocked = false; surgeActive = false
         if (activeInstance === this) activeInstance = null
+        gazeTracker?.shutdown(); gazeTracker = null
+        hypnoticAudio?.stop(); hypnoticAudio = null
         closePortalWindow()
         clearWindowPopupsOnly()
         removeCanvasStageOnly()
+        removeSpiralBackdrop()
         stormPillView?.let { pill ->
             if (mountedViaA11y) GazeAccessibilityService.activeInstance?.removeStormPillOverlay()
             else try { fallbackWm?.removeViewImmediate(pill) } catch (_: Throwable) {}
@@ -723,11 +902,14 @@ class ImagePopupStormService : Service() {
     override fun onDestroy() {
         mainHandler.removeCallbacks(spawnLoopRunnable)
         mainHandler.removeCallbacks(sessionTimerTick)
-        isRunning = false; isExitLocked = false
+        isRunning = false; isExitLocked = false; surgeActive = false
         if (activeInstance === this) activeInstance = null
+        gazeTracker?.shutdown(); gazeTracker = null
+        hypnoticAudio?.stop(); hypnoticAudio = null
         closePortalWindow()
         clearWindowPopupsOnly()
         removeCanvasStageOnly()
+        removeSpiralBackdrop()
         try { GazeAccessibilityService.activeInstance?.removeAllStormOverlays() } catch (_: Throwable) {}
         for (b in bitmapPool) { try { if (!b.isRecycled) b.recycle() } catch (_: Throwable) {} }
         bitmapPool.clear()
@@ -755,7 +937,7 @@ class ImagePopupStormService : Service() {
         val openPi = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_gallery)
-            .setContentTitle("🖼️ GazeLock AI v6.0 — Tempête Pop-Ups")
+            .setContentTitle("🖼️ GazeLock AI v7.0 TITAN — Tempête Pop-Ups")
             .setContentText(content)
             .setOngoing(true)
             .setContentIntent(openPi)
@@ -766,6 +948,8 @@ class ImagePopupStormService : Service() {
         private const val CHANNEL_ID = "gazelock_popup_storm_ch"
         private const val NOTIF_ID = 4109
         const val ACTION_STOP = "com.gazelock.app.STOP_POPUP_STORM"
+        const val EXTRA_RESUMED_SEC = "extra_resumed_sec"
+        const val EXTRA_RESUMED_INF = "extra_resumed_inf"
 
         @Volatile
         var isRunning: Boolean = false
@@ -785,9 +969,15 @@ class ImagePopupStormService : Service() {
 
         fun onEscapeBlocked() { activeInstance?.handleEscapeBlockedInternal() }
         fun openUnlockPortal() { activeInstance?.openUnlockPortalForStorm() }
+        fun enforceVolumeFloorNow() { activeInstance?.mainHandler?.post { activeInstance?.enforceVolumeFloorInternal() } }
 
-        fun start(context: Context) {
-            val i = Intent(context.applicationContext, ImagePopupStormService::class.java)
+        fun start(context: Context, resumedOverrideSec: Int = -1, resumedInfinite: Boolean = false) {
+            val i = Intent(context.applicationContext, ImagePopupStormService::class.java).apply {
+                if (resumedOverrideSec >= 0) {
+                    putExtra(EXTRA_RESUMED_SEC, resumedOverrideSec)
+                    putExtra(EXTRA_RESUMED_INF, resumedInfinite)
+                }
+            }
             ContextCompat.startForegroundService(context.applicationContext, i)
         }
 

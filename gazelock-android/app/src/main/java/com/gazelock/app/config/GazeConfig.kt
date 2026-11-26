@@ -38,7 +38,7 @@ enum class OverlayMode(val id: String, val label: String, val emoji: String, val
         "full_lock",
         "🔒 Plein Écran Verrouillé",
         "🔒",
-        "Vidéo 100 % opaque, tactile verrouillé et anti-évasion total (Paramètres, Récents & Panneau bloqués)."
+        "Vidéo 100 % opaque, tactile verrouillé et anti-évasion total (Paramètres, Récents, Split-Screen & Panneau bloqués)."
     );
 
     companion object {
@@ -48,7 +48,7 @@ enum class OverlayMode(val id: String, val label: String, val emoji: String, val
 
 enum class PopupTouchMode(val id: String, val label: String, val desc: String) {
     PASS_THROUGH("pass", "👻 Tactile Libre", "Les pop-ups s'affichent par-dessus tes applis sans bloquer tes clics (supporte ∞ illimité à 60 FPS !)"),
-    TAP_DISMISS("tap", "👆 Cliquable", "Touche ou balaie chaque pop-up (1–3 clics) pour l'éjecter — option mitose si ignoré !"),
+    TAP_DISMISS("tap", "👆 Cliquable", "Touche ou balaie chaque pop-up (1–3 clics) pour l'éjecter — mitose & esquive en option !"),
     TOUCH_LOCKED("locked", "🔒 Bloquant", "Impossible à fermer manuellement pendant toute sa durée d'affichage");
 
     companion object {
@@ -91,6 +91,23 @@ enum class PopupFrameStyle(val id: String, val label: String) {
     }
 }
 
+enum class StormPreset(val id: String, val label: String) {
+    GENTLE("gentle", "🌊 Doux"),
+    INTENSE("intense", "⚡ Intensif"),
+    HURRICANE("hurricane", "🌪️ Ouragan ∞"),
+    APOCALYPSE("apocalypse", "☢️ APOCALYPSE ∞")
+}
+
+data class SessionReport(
+    val grade: String,
+    val focusPct: Int,
+    val focusedSec: Int,
+    val lookAways: Int,
+    val bestStreakSec: Int,
+    val escapesBlocked: Int,
+    val timestampMs: Long
+)
+
 data class GazeConfigSnapshot(
     val folderPath: String,
     val treeUri: String,
@@ -125,17 +142,17 @@ data class GazeConfigSnapshot(
     val binauralBeatEnabled: Boolean,
     val binauralVolumePct: Int,
     val binauralFreqHz: Int,
-    // Portal & Mini-Games (#16, #17, #22, #51, #54, #70)
+    // Portal & Mini-Games (#16, #17, #22, #51, #54, #70 + v6/v7)
     val unlockPopupsEnabled: Boolean,
     val unlockMinigamesEnabled: Boolean,
-    val portalMinigameCount: Int,            // v6.0: 3..12 mini-games inside the 3-minute portal (default 6!)
+    val portalMinigameCount: Int,             // 3..12 mini-games from 18-game pool!
     val overloadSprintEnabled: Boolean,
     val gazeGatedPortalEnabled: Boolean,
-    val hellPuzzle4x4Enabled: Boolean,       // #51 4x4 Hell Sliding Puzzle (15 tiles)!
-    val flashHunt9FpsEnabled: Boolean,       // #54 Flash Target Hunt at 9 images/sec (111ms)!
-    val dailyEscalatingPortalEnabled: Boolean,// #70 Daily escalating portal: 3m -> 4m -> 5m -> 6m!
+    val hellPuzzle4x4Enabled: Boolean,
+    val flashHunt9FpsEnabled: Boolean,
+    val dailyEscalatingPortalEnabled: Boolean,
     val portalUsesToday: Int,
-    // v4.0 Extreme Ghost & Control (#1, #2, #5, #9, #18, #21, #23, #24, #25, #26)
+    // v4.0 Extreme Ghost & Control
     val livingOpacityEnabled: Boolean,
     val attentionHijackEnabled: Boolean,
     val attentionHijackIntervalMin: Int,
@@ -152,44 +169,88 @@ data class GazeConfigSnapshot(
     val blindTimerEnabled: Boolean,
     val antiFlatSensorEnabled: Boolean,
     val rebootSurvivalEnabled: Boolean,
-    // v5.0 APOCALYPSE Additions (#11, #21, #29, #30, #36, #76)
-    val noBlinkChallengeEnabled: Boolean,    // #11 Anti-Blink Streak Challenge (+15s on blink!)
-    val noBlinkDurationSec: Int,             // 8..20 s
-    val appTrapEnabled: Boolean,             // #21 Trapped Apps instant ambush via Accessibility!
+    // v5.0 APOCALYPSE Additions
+    val noBlinkChallengeEnabled: Boolean,
+    val noBlinkDurationSec: Int,
+    val appTrapEnabled: Boolean,
     val trappedPackagesCsv: String,
-    val appTrapDurationSec: Int,             // 60..600 s
-    val blockShadeInGhostEnabled: Boolean,   // #29 Block Quick Settings / Notification Shade in Ghost mode!
-    val appSwitchTaxEnabled: Boolean,        // #30 >3 app switches/min -> +10s & +5% opacity!
-    val pavlovSoundEnabled: Boolean,         // #36 Pavlovian chime on 30s streak & harsh buzz on faults!
-    val finalBossEnabled: Boolean,           // #76 Final 30s 100% Zero-Fault Boss (fail = +60s!)
-    // v5.1 / v6.0 MEGA Standalone Image Pop-Up Storm Mode (outside of videos!)
+    val appTrapDurationSec: Int,
+    val blockShadeInGhostEnabled: Boolean,
+    val appSwitchTaxEnabled: Boolean,
+    val pavlovSoundEnabled: Boolean,
+    val finalBossEnabled: Boolean,
+    // v5.1 / v6.0 MEGA Standalone Image Pop-Up Storm Mode
     val popupFolderPath: String,
     val popupTreeUri: String,
-    val popupMinSizePct: Int,                // v6.0: 12..100 % min width
-    val popupSizePct: Int,                   // v6.0: 15..100 % max width
-    val popupIntervalMs: Int,                // v6.0: 30..60000 ms (up to 33 pop-ups/sec!)
-    val popupDurationMs: Int,                // v6.0: 100..60000 ms (0 = ∞ PERSISTENT until click/end!)
-    val popupMaxSimultaneous: Int,           // v6.0: 0 = ∞ UNLIMITED (up to 400 GPU layers!), else 1..150!
-    val popupBurstCount: Int,                // v6.0: 1..12 pop-ups spawned per burst!
-    val popupOpacityPct: Int,                // v6.0: 15..100 %
-    val popupRandomOpacity: Boolean,         // v6.0: varies opacity per pop-up
-    val popupRampUpEnabled: Boolean,         // v6.0: gradually accelerates up to 4x faster over session!
-    val popupSpawnZone: PopupSpawnZone,      // v6.0: ANYWHERE / CENTER / EDGES / GRID
-    val popupAnimStyle: PopupAnimStyle,      // v6.0: POP_ZOOM / INSTANT_FLASH / SLIDE_IN / SPIN_IN / RANDOM
-    val popupFrameStyle: PopupFrameStyle,    // v6.0: NEON_MULTI / CRIMSON / POLAROID / BORDERLESS / DOUBLE_PULSE
+    val popupMinSizePct: Int,
+    val popupSizePct: Int,
+    val popupIntervalMs: Int,
+    val popupDurationMs: Int,
+    val popupMaxSimultaneous: Int,
+    val popupBurstCount: Int,
+    val popupOpacityPct: Int,
+    val popupRandomOpacity: Boolean,
+    val popupRampUpEnabled: Boolean,
+    val popupSpawnZone: PopupSpawnZone,
+    val popupAnimStyle: PopupAnimStyle,
+    val popupFrameStyle: PopupFrameStyle,
     val popupTouchMode: PopupTouchMode,
     val popupTapsToClose: Int,
-    val popupSwipeDismiss: Boolean,          // v6.0: swipe to fling pop-ups off screen in TAP_DISMISS mode!
+    val popupSwipeDismiss: Boolean,
     val popupMitosisEnabled: Boolean,
     val popupRandomRotation: Boolean,
     val popupShowMantra: Boolean,
     val popupVibrate: Boolean,
-    val popupSoundOnSpawn: Boolean,          // v6.0: Pavlov audio cue on bursts/dismiss
-    val popupSessionDurationSec: Int,        // 0 = infinite, else 60..3600 s
+    val popupSoundOnSpawn: Boolean,
+    val popupSessionDurationSec: Int,
     val popupLockExitWithPortal: Boolean,
+    // ==================== v7.0 TITAN FORTRESS & HARDENING ====================
+    // Pillar 1: Anti-Escape & System Hardening (#1..#7)
+    val portalFlagSecureEnabled: Boolean,       // #1 FLAG_SECURE on Portal, Boss & Hijack (anti-screenshot!)
+    val antiSplitScreenEnabled: Boolean,        // #2 Block Split-Screen / Freeform / PiP multi-window!
+    val overlayWatchdogEnabled: Boolean,        // #3 Self-healing Z-order & re-mount watchdog every 1.5s!
+    val strictAudioGuardEnabled: Boolean,       // #4 Block volume down/mute in locked pop-ups + 250ms audio lock!
+    val popupBlockShadeEnabled: Boolean,        // #5 Block Notification Shade / Quick Settings in locked pop-ups!
+    val popupRebootSurvivalEnabled: Boolean,    // #6 Immortal checkpoint survival for locked Pop-Up Storm!
+    val screenOffPenaltyEnabled: Boolean,       // #7 Turning screen off during session adds +20s & +10% opacity!
+    // Pillar 2: AI Gaze & Biometric Hardening (#8..#14)
+    val autoZeroCalibrationEnabled: Boolean,    // #8 3s automatic neutral posture zero-point calibration!
+    val antiCameraCoverEnabled: Boolean,        // #9 Camera black-frame / finger cover detector (double penalty!)
+    val faceDistanceGuardEnabled: Boolean,      // #10 Too-far face distance guard (<17% frame width)!
+    val antiDrowsyEnabled: Boolean,             // #11 Micro-sleep / heavy eyelids (>1.6s) alarm!
+    val escalatingStrictnessEnabled: Boolean,   // #12 Progressive angle/iris tightening every 2 min or 3 faults!
+    val soloFaceGuardEnabled: Boolean,          // #14 Face swap / multi-face instability guard!
+    // Pillar 3: Video & Sensory Saturation (#15..#21)
+    val ghostBreathingOpacityEnabled: Boolean,  // #15 Hypnotic sine breathing opacity wave (±8%)!
+    val faultGlitchEnabled: Boolean,            // #16 Video shake glitch + chromatic strobe on faults!
+    val dynamicPlaybackSpeedEnabled: Boolean,   // #17 0.85x deep-focus trance -> 1.35x pressure speed!
+    val scrollingMarqueeEnabled: Boolean,       // #18 Continuous scrolling neon mantra marquee banners!
+    val freezeFrameShockEnabled: Boolean,       // #19 Periodic 0.9s 92% snap-freeze photo-bomb shock!
+    val heartbeatHapticsEnabled: Boolean,       // #20 Rhythmic double-tap heartbeat haptics on high intensity!
+    val inductionTunnelEnabled: Boolean,        // #21 10s 95% spiral induction tunnel before Ghost touch unlocks!
+    // Pillar 4: Pop-Up Storm TITAN Upgrades (#22..#29)
+    val popupDriftPhysicsEnabled: Boolean,      // #22 60 FPS diagonal drift & wall bounce physics!
+    val popupPulseScaleEnabled: Boolean,        // #23 60 FPS hypnotic scale breathing pulse on sprites!
+    val popupEvasiveDodgeEnabled: Boolean,      // #24 35% of clickable pop-ups dodge your first tap!
+    val popupSurgeWavesEnabled: Boolean,        // #25 Every 25s -> 6s 3x speed SURGE WAVE!
+    val popupSpiralOverlayEnabled: Boolean,     // #26 60 FPS hypnotic spiral backdrop under pop-ups!
+    val popupBinauralEnabled: Boolean,          // #27 Synthesized binaural beat audio in Pop-Up mode!
+    val popupGazeBoostEnabled: Boolean,         // #28 Optional gaze-boosted surge intensity flag
+    // Pillar 5: Portal Hardening (#30..#35)
+    val portalCancelTaxEnabled: Boolean,        // #34a Canceling portal adds +30s & +10% opacity!
+    val portalRequireCodeEntryEnabled: Boolean, // #34b Must manually type the 6-digit unlocked code!
+    val portalHardcorePenaltiesEnabled: Boolean,// #34c Double mistake penalties (+10s) + extra trap pop-ups!
+    // Pillar 6: Time Bomb, Contracts, Config Lock & Report (#36..#40)
+    val timeBombArmedUntilMs: Long,             // #37 Random ambush timestamp (>0 when armed)
+    val timeBombDurationSec: Int,               // #37 Duration of Time Bomb session
+    val dailyContractGoalMin: Int,              // #38 Daily focus goal in minutes (15..180)
+    val dailyFocusedSecToday: Int,              // #38 Focused seconds achieved today
+    val dailyContractStreakDays: Int,           // #38 Consecutive days meeting contract
+    val configLockUntilMs: Long,                // #39 Hardcore settings lock expiry timestamp
+    val lastReport: SessionReport?,             // #40 Detailed post-session report card
+    // Telemetry, Presets & Auto-Ambush
     val showTelemetryBadge: Boolean,
     val preset: StrictnessPreset,
-    // Optional Auto-Ambush timer via Accessibility
     val autoTriggerEnabled: Boolean,
     val autoTriggerEveryMin: Int,
     val autoTriggerDurationSec: Int,
@@ -212,11 +273,21 @@ data class GazeConfigSnapshot(
             .filter { it.isNotEmpty() }
             .toSet()
 
-    /** #70 Returns today's imposed portal duration in seconds: 180s -> 240s -> 300s -> 360s (max 6 min). */
     fun currentPortalWaitSec(): Int {
         if (!dailyEscalatingPortalEnabled) return GazeConfig.ACCESS_CODE_WAIT_SEC
         val extraMin = portalUsesToday.coerceIn(0, 3)
         return (3 + extraMin) * 60
+    }
+
+    fun isConfigLockedNow(nowMs: Long = System.currentTimeMillis()): Boolean = configLockUntilMs > nowMs
+
+    fun rankTitle(): String = when {
+        totalFocusedSec >= 36_000L -> "☢️ OVERLORD"
+        totalFocusedSec >= 18_000L -> "👑 TITAN"
+        totalFocusedSec >= 7_200L -> "🔥 DÉVOUÉ"
+        totalFocusedSec >= 2_700L -> "👁️ CAPTIF"
+        totalFocusedSec >= 600L -> "⚡ INITIÉ"
+        else -> "🌱 NOVICE"
     }
 }
 
@@ -232,7 +303,11 @@ class GazeConfig(context: Context) {
         return if (savedDay == todayKey()) prefs.getInt(KEY_PORTAL_USES_TODAY, 0).coerceIn(0, 10) else 0
     }
 
-    /** #70 Increments today's completed portal unlock count (3m -> 4m -> 5m -> 6m!). */
+    private fun readDailyFocusedSecToday(): Int {
+        val savedDay = prefs.getString(KEY_CONTRACT_DAY, "").orEmpty()
+        return if (savedDay == todayKey()) prefs.getInt(KEY_CONTRACT_FOCUSED_SEC, 0).coerceAtLeast(0) else 0
+    }
+
     fun recordPortalUnlockCompletedToday(): Int {
         val today = todayKey()
         val cur = readPortalUsesToday()
@@ -242,6 +317,36 @@ class GazeConfig(context: Context) {
             putInt(KEY_PORTAL_USES_TODAY, next)
         }
         return next
+    }
+
+    private fun readLastReport(): SessionReport? {
+        val ts = prefs.getLong(KEY_REP_TS, 0L)
+        if (ts <= 0L) return null
+        return SessionReport(
+            grade = prefs.getString(KEY_REP_GRADE, "A").orEmpty(),
+            focusPct = prefs.getInt(KEY_REP_FOCUS_PCT, 100),
+            focusedSec = prefs.getInt(KEY_REP_FOCUSED_SEC, 0),
+            lookAways = prefs.getInt(KEY_REP_LOOK_AWAYS, 0),
+            bestStreakSec = prefs.getInt(KEY_REP_STREAK, 0),
+            escapesBlocked = prefs.getInt(KEY_REP_ESCAPES, 0),
+            timestampMs = ts
+        )
+    }
+
+    fun saveSessionReport(grade: String, focusPct: Int, focusedSec: Int, lookAways: Int, bestStreakSec: Int, escapesBlocked: Int) {
+        update {
+            putString(KEY_REP_GRADE, grade)
+            putInt(KEY_REP_FOCUS_PCT, focusPct.coerceIn(0, 100))
+            putInt(KEY_REP_FOCUSED_SEC, focusedSec.coerceAtLeast(0))
+            putInt(KEY_REP_LOOK_AWAYS, lookAways.coerceAtLeast(0))
+            putInt(KEY_REP_STREAK, bestStreakSec.coerceAtLeast(0))
+            putInt(KEY_REP_ESCAPES, escapesBlocked.coerceAtLeast(0))
+            putLong(KEY_REP_TS, System.currentTimeMillis())
+        }
+    }
+
+    fun clearSessionReport() {
+        update { remove(KEY_REP_TS) }
     }
 
     fun snapshot(): GazeConfigSnapshot = GazeConfigSnapshot(
@@ -334,6 +439,44 @@ class GazeConfig(context: Context) {
         popupSoundOnSpawn = prefs.getBoolean(KEY_POPUP_SOUND_SPAWN, false),
         popupSessionDurationSec = prefs.getInt(KEY_POPUP_SESSION_DUR, 0).coerceIn(0, 3600),
         popupLockExitWithPortal = prefs.getBoolean(KEY_POPUP_LOCK_EXIT, false),
+        // v7.0 TITAN
+        portalFlagSecureEnabled = prefs.getBoolean(KEY_V7_FLAG_SECURE, true),
+        antiSplitScreenEnabled = prefs.getBoolean(KEY_V7_ANTI_SPLIT, true),
+        overlayWatchdogEnabled = prefs.getBoolean(KEY_V7_WATCHDOG, true),
+        strictAudioGuardEnabled = prefs.getBoolean(KEY_V7_STRICT_AUDIO, true),
+        popupBlockShadeEnabled = prefs.getBoolean(KEY_V7_POPUP_BLOCK_SHADE, true),
+        popupRebootSurvivalEnabled = prefs.getBoolean(KEY_V7_POPUP_IMMORTAL, true),
+        screenOffPenaltyEnabled = prefs.getBoolean(KEY_V7_SCREEN_OFF_TAX, true),
+        autoZeroCalibrationEnabled = prefs.getBoolean(KEY_V7_AUTO_ZERO, true),
+        antiCameraCoverEnabled = prefs.getBoolean(KEY_V7_ANTI_CAM_COVER, true),
+        faceDistanceGuardEnabled = prefs.getBoolean(KEY_V7_FACE_DIST, true),
+        antiDrowsyEnabled = prefs.getBoolean(KEY_V7_ANTI_DROWSY, true),
+        escalatingStrictnessEnabled = prefs.getBoolean(KEY_V7_ESC_STRICT, true),
+        soloFaceGuardEnabled = prefs.getBoolean(KEY_V7_SOLO_FACE, true),
+        ghostBreathingOpacityEnabled = prefs.getBoolean(KEY_V7_GHOST_BREATHE, true),
+        faultGlitchEnabled = prefs.getBoolean(KEY_V7_FAULT_GLITCH, true),
+        dynamicPlaybackSpeedEnabled = prefs.getBoolean(KEY_V7_DYN_SPEED, true),
+        scrollingMarqueeEnabled = prefs.getBoolean(KEY_V7_MARQUEE, true),
+        freezeFrameShockEnabled = prefs.getBoolean(KEY_V7_FREEZE_SHOCK, true),
+        heartbeatHapticsEnabled = prefs.getBoolean(KEY_V7_HEARTBEAT_HAP, true),
+        inductionTunnelEnabled = prefs.getBoolean(KEY_V7_INDUCTION, true),
+        popupDriftPhysicsEnabled = prefs.getBoolean(KEY_V7_POPUP_DRIFT, true),
+        popupPulseScaleEnabled = prefs.getBoolean(KEY_V7_POPUP_PULSE, true),
+        popupEvasiveDodgeEnabled = prefs.getBoolean(KEY_V7_POPUP_DODGE, false),
+        popupSurgeWavesEnabled = prefs.getBoolean(KEY_V7_POPUP_SURGE, true),
+        popupSpiralOverlayEnabled = prefs.getBoolean(KEY_V7_POPUP_SPIRAL, false),
+        popupBinauralEnabled = prefs.getBoolean(KEY_V7_POPUP_BINAURAL, false),
+        popupGazeBoostEnabled = prefs.getBoolean(KEY_V7_POPUP_GAZE_BOOST, false),
+        portalCancelTaxEnabled = prefs.getBoolean(KEY_V7_PORTAL_CANCEL_TAX, true),
+        portalRequireCodeEntryEnabled = prefs.getBoolean(KEY_V7_PORTAL_CODE_ENTRY, true),
+        portalHardcorePenaltiesEnabled = prefs.getBoolean(KEY_V7_PORTAL_HARDCORE, false),
+        timeBombArmedUntilMs = prefs.getLong(KEY_V7_BOMB_UNTIL, 0L),
+        timeBombDurationSec = prefs.getInt(KEY_V7_BOMB_DUR, 300).coerceIn(60, 1800),
+        dailyContractGoalMin = prefs.getInt(KEY_CONTRACT_GOAL_MIN, 30).coerceIn(10, 180),
+        dailyFocusedSecToday = readDailyFocusedSecToday(),
+        dailyContractStreakDays = prefs.getInt(KEY_CONTRACT_STREAK, 0).coerceAtLeast(0),
+        configLockUntilMs = prefs.getLong(KEY_V7_CONFIG_LOCK_UNTIL, 0L),
+        lastReport = readLastReport(),
         showTelemetryBadge = prefs.getBoolean(KEY_TELEMETRY, true),
         preset = StrictnessPreset.fromId(prefs.getString(KEY_PRESET, StrictnessPreset.STRICT.id)),
         autoTriggerEnabled = prefs.getBoolean(KEY_AUTO_EN, false),
@@ -348,6 +491,119 @@ class GazeConfig(context: Context) {
 
     fun update(block: SharedPreferences.Editor.() -> Unit) {
         prefs.edit().apply(block).apply()
+    }
+
+    /** #29 1-Tap Image Pop-Up Storm Presets */
+    fun applyStormPreset(p: StormPreset) {
+        update {
+            when (p) {
+                StormPreset.GENTLE -> {
+                    putInt(KEY_POPUP_MIN_SIZE_PCT, 26); putInt(KEY_POPUP_SIZE_PCT, 48)
+                    putInt(KEY_POPUP_INTERVAL_MS, 2500); putInt(KEY_POPUP_DURATION_MS, 4000)
+                    putInt(KEY_POPUP_MAX_SIMUL_V6, 6); putInt(KEY_POPUP_BURST_CNT, 1)
+                    putInt(KEY_POPUP_OPACITY_PCT, 82); putBoolean(KEY_POPUP_RAMP_UP, false)
+                    putBoolean(KEY_V7_POPUP_SURGE, false); putBoolean(KEY_V7_POPUP_DRIFT, true)
+                    putBoolean(KEY_V7_POPUP_PULSE, true); putBoolean(KEY_V7_POPUP_DODGE, false)
+                    putBoolean(KEY_POPUP_MITOSIS, false); putBoolean(KEY_V7_POPUP_SPIRAL, false)
+                }
+                StormPreset.INTENSE -> {
+                    putInt(KEY_POPUP_MIN_SIZE_PCT, 24); putInt(KEY_POPUP_SIZE_PCT, 66)
+                    putInt(KEY_POPUP_INTERVAL_MS, 450); putInt(KEY_POPUP_DURATION_MS, 5000)
+                    putInt(KEY_POPUP_MAX_SIMUL_V6, 35); putInt(KEY_POPUP_BURST_CNT, 2)
+                    putInt(KEY_POPUP_OPACITY_PCT, 90); putBoolean(KEY_POPUP_RAMP_UP, true)
+                    putBoolean(KEY_V7_POPUP_SURGE, true); putBoolean(KEY_V7_POPUP_DRIFT, true)
+                    putBoolean(KEY_V7_POPUP_PULSE, true); putBoolean(KEY_V7_POPUP_DODGE, true)
+                    putBoolean(KEY_POPUP_MITOSIS, true); putBoolean(KEY_V7_POPUP_SPIRAL, true)
+                }
+                StormPreset.HURRICANE -> {
+                    putInt(KEY_POPUP_MIN_SIZE_PCT, 20); putInt(KEY_POPUP_SIZE_PCT, 80)
+                    putInt(KEY_POPUP_INTERVAL_MS, 50); putInt(KEY_POPUP_DURATION_MS, 7000)
+                    putInt(KEY_POPUP_MAX_SIMUL_V6, 0); putInt(KEY_POPUP_BURST_CNT, 3)
+                    putInt(KEY_POPUP_OPACITY_PCT, 92); putBoolean(KEY_POPUP_RAND_OPACITY, true)
+                    putBoolean(KEY_POPUP_RAMP_UP, true); putBoolean(KEY_V7_POPUP_SURGE, true)
+                    putBoolean(KEY_V7_POPUP_DRIFT, true); putBoolean(KEY_V7_POPUP_PULSE, true)
+                    putBoolean(KEY_V7_POPUP_SPIRAL, true); putBoolean(KEY_V7_POPUP_BINAURAL, true)
+                    putString(KEY_POPUP_TOUCH_MODE, PopupTouchMode.PASS_THROUGH.id)
+                }
+                StormPreset.APOCALYPSE -> {
+                    putInt(KEY_POPUP_MIN_SIZE_PCT, 16); putInt(KEY_POPUP_SIZE_PCT, 98)
+                    putInt(KEY_POPUP_INTERVAL_MS, 30); putInt(KEY_POPUP_DURATION_MS, 0)
+                    putInt(KEY_POPUP_MAX_SIMUL_V6, 0); putInt(KEY_POPUP_BURST_CNT, 8)
+                    putInt(KEY_POPUP_OPACITY_PCT, 95); putBoolean(KEY_POPUP_RAND_OPACITY, true)
+                    putBoolean(KEY_POPUP_RAMP_UP, true); putBoolean(KEY_V7_POPUP_SURGE, true)
+                    putBoolean(KEY_V7_POPUP_DRIFT, true); putBoolean(KEY_V7_POPUP_PULSE, true)
+                    putBoolean(KEY_V7_POPUP_SPIRAL, true); putBoolean(KEY_V7_POPUP_BINAURAL, true)
+                    putBoolean(KEY_POPUP_LOCK_EXIT, true); putBoolean(KEY_V7_POPUP_IMMORTAL, true)
+                    putBoolean(KEY_V7_POPUP_BLOCK_SHADE, true); putBoolean(KEY_POPUP_SOUND_SPAWN, true)
+                    putString(KEY_POPUP_TOUCH_MODE, PopupTouchMode.PASS_THROUGH.id)
+                }
+            }
+        }
+    }
+
+    /** #36 Red Button TITAN OVERLORD: arms EVERY hardcore feature in 1 tap! */
+    fun applyTitanOverlordPreset() {
+        applyPreset(StrictnessPreset.RUTHLESS)
+        update {
+            putInt(KEY_GHOST_OPACITY, 50)
+            putInt(KEY_HIJACK_INT_MIN, 1); putInt(KEY_HIJACK_FOCUS_SEC, 18)
+            putInt(KEY_SUBLIMINAL_INTERVAL, 2)
+            putInt(KEY_GHOST_POPUPS_INT, 20)
+            putInt(KEY_PORTAL_GAME_COUNT, 9)
+            putBoolean(KEY_V7_FLAG_SECURE, true)
+            putBoolean(KEY_V7_ANTI_SPLIT, true)
+            putBoolean(KEY_V7_WATCHDOG, true)
+            putBoolean(KEY_V7_STRICT_AUDIO, true)
+            putBoolean(KEY_V7_POPUP_BLOCK_SHADE, true)
+            putBoolean(KEY_V7_POPUP_IMMORTAL, true)
+            putBoolean(KEY_V7_SCREEN_OFF_TAX, true)
+            putBoolean(KEY_V7_AUTO_ZERO, true)
+            putBoolean(KEY_V7_ANTI_CAM_COVER, true)
+            putBoolean(KEY_V7_FACE_DIST, true)
+            putBoolean(KEY_V7_ANTI_DROWSY, true)
+            putBoolean(KEY_V7_ESC_STRICT, true)
+            putBoolean(KEY_V7_SOLO_FACE, true)
+            putBoolean(KEY_V7_GHOST_BREATHE, true)
+            putBoolean(KEY_V7_FAULT_GLITCH, true)
+            putBoolean(KEY_V7_DYN_SPEED, true)
+            putBoolean(KEY_V7_MARQUEE, true)
+            putBoolean(KEY_V7_FREEZE_SHOCK, true)
+            putBoolean(KEY_V7_HEARTBEAT_HAP, true)
+            putBoolean(KEY_V7_INDUCTION, true)
+            putBoolean(KEY_V7_PORTAL_CANCEL_TAX, true)
+            putBoolean(KEY_V7_PORTAL_CODE_ENTRY, true)
+            putBoolean(KEY_V7_PORTAL_HARDCORE, true)
+        }
+    }
+
+    /** #37 Arm a surprise Time Bomb that explodes at a random instant between minDelayMin..maxDelayMin! */
+    fun armTimeBomb(minDelayMin: Int, maxDelayMin: Int, durationSec: Int): Long {
+        val delayMin = if (maxDelayMin <= minDelayMin) minDelayMin else Random.nextInt(minDelayMin, maxDelayMin + 1)
+        val triggerAt = System.currentTimeMillis() + delayMin * 60_000L
+        update {
+            putLong(KEY_V7_BOMB_UNTIL, triggerAt)
+            putInt(KEY_V7_BOMB_DUR, durationSec.coerceIn(60, 1800))
+        }
+        return triggerAt
+    }
+
+    fun disarmTimeBomb() {
+        update { putLong(KEY_V7_BOMB_UNTIL, 0L) }
+    }
+
+    /** #39 Lock critical security settings for X hours so you cannot weaken them on impulse! */
+    fun lockCriticalSettingsForHours(hours: Int) {
+        val until = System.currentTimeMillis() + hours.coerceIn(1, 48) * 3_600_000L
+        update {
+            putLong(KEY_V7_CONFIG_LOCK_UNTIL, until)
+            putBoolean(KEY_ANTI_ESCAPE, true)
+            putBoolean(KEY_REBOOT_SURVIVAL, true)
+            putBoolean(KEY_V7_FLAG_SECURE, true)
+            putBoolean(KEY_V7_ANTI_SPLIT, true)
+            putBoolean(KEY_V7_WATCHDOG, true)
+            putBoolean(KEY_V7_SCREEN_OFF_TAX, true)
+            putBoolean(KEY_V7_PORTAL_CANCEL_TAX, true)
+        }
     }
 
     fun applyPreset(p: StrictnessPreset) {
@@ -366,6 +622,8 @@ class GazeConfig(context: Context) {
                     putBoolean(KEY_ANTI_FLAT, false); putBoolean(KEY_NO_BLINK_EN, false)
                     putBoolean(KEY_HELL_4X4, false); putBoolean(KEY_FINAL_BOSS, false)
                     putBoolean(KEY_BLOCK_SHADE_GHOST, false); putBoolean(KEY_APP_SWITCH_TAX, false)
+                    putBoolean(KEY_V7_ESC_STRICT, false); putBoolean(KEY_V7_INDUCTION, false)
+                    putBoolean(KEY_V7_PORTAL_HARDCORE, false)
                 }
                 StrictnessPreset.STRICT -> {
                     putInt(KEY_YAW_DEG, 22); putInt(KEY_PITCH_DEG, 24)
@@ -385,6 +643,10 @@ class GazeConfig(context: Context) {
                     putBoolean(KEY_PAVLOV_SOUND, true); putBoolean(KEY_HELL_4X4, true)
                     putBoolean(KEY_FLASH_HUNT_9FPS, true); putBoolean(KEY_DAILY_ESC_PORTAL, true)
                     putBoolean(KEY_FINAL_BOSS, true); putBoolean(KEY_SWIPE_NEXT, true)
+                    putBoolean(KEY_V7_FLAG_SECURE, true); putBoolean(KEY_V7_ANTI_SPLIT, true)
+                    putBoolean(KEY_V7_ANTI_CAM_COVER, true); putBoolean(KEY_V7_FACE_DIST, true)
+                    putBoolean(KEY_V7_ANTI_DROWSY, true); putBoolean(KEY_V7_ESC_STRICT, true)
+                    putBoolean(KEY_V7_FAULT_GLITCH, true); putBoolean(KEY_V7_SCREEN_OFF_TAX, true)
                 }
                 StrictnessPreset.RUTHLESS -> {
                     putInt(KEY_YAW_DEG, 16); putInt(KEY_PITCH_DEG, 18)
@@ -409,6 +671,16 @@ class GazeConfig(context: Context) {
                     putBoolean(KEY_HELL_4X4, true); putBoolean(KEY_FLASH_HUNT_9FPS, true)
                     putBoolean(KEY_DAILY_ESC_PORTAL, true); putBoolean(KEY_FINAL_BOSS, true)
                     putBoolean(KEY_SWIPE_NEXT, false)
+                    putBoolean(KEY_V7_FLAG_SECURE, true); putBoolean(KEY_V7_ANTI_SPLIT, true)
+                    putBoolean(KEY_V7_WATCHDOG, true); putBoolean(KEY_V7_STRICT_AUDIO, true)
+                    putBoolean(KEY_V7_SCREEN_OFF_TAX, true); putBoolean(KEY_V7_ANTI_CAM_COVER, true)
+                    putBoolean(KEY_V7_FACE_DIST, true); putBoolean(KEY_V7_ANTI_DROWSY, true)
+                    putBoolean(KEY_V7_ESC_STRICT, true); putBoolean(KEY_V7_SOLO_FACE, true)
+                    putBoolean(KEY_V7_FAULT_GLITCH, true); putBoolean(KEY_V7_DYN_SPEED, true)
+                    putBoolean(KEY_V7_MARQUEE, true); putBoolean(KEY_V7_FREEZE_SHOCK, true)
+                    putBoolean(KEY_V7_HEARTBEAT_HAP, true); putBoolean(KEY_V7_INDUCTION, true)
+                    putBoolean(KEY_V7_PORTAL_CANCEL_TAX, true); putBoolean(KEY_V7_PORTAL_CODE_ENTRY, true)
+                    putBoolean(KEY_V7_PORTAL_HARDCORE, true)
                 }
             }
         }
@@ -444,13 +716,19 @@ class GazeConfig(context: Context) {
             putBoolean(KEY_FLASH_HUNT_9FPS, true)
             putBoolean(KEY_DAILY_ESC_PORTAL, true)
             putBoolean(KEY_FINAL_BOSS, true)
+            putBoolean(KEY_V7_FAULT_GLITCH, true)
+            putBoolean(KEY_V7_FREEZE_SHOCK, true)
+            putBoolean(KEY_V7_INDUCTION, true)
+            putBoolean(KEY_V7_SCREEN_OFF_TAX, true)
+            putBoolean(KEY_V7_PORTAL_CANCEL_TAX, true)
             putBoolean(KEY_BLIND_TIMER, blind)
         }
-        val tag = if (blind) "🎲 ROULETTE CHAOS v5 : Durée SECRÈTE (??:??) · ${pm.label} · Boss Final 30s !"
-        else "🎲 ROULETTE CHAOS v5 : ${durMin} min · ${pm.label} · Opacité $ghostOp% · Boss Final !"
+        val tag = if (blind) "🎲 ROULETTE TITAN : Durée SECRÈTE (??:??) · ${pm.label} · Boss Final 30s !"
+        else "🎲 ROULETTE TITAN : ${durMin} min · ${pm.label} · Opacité $ghostOp% · Boss Final !"
         return (durMin * 60) to tag
     }
 
+    // ---- Video Session Immortal Checkpoints ----
     fun saveActiveSessionCheckpoint(remainingSec: Int, infinite: Boolean) {
         update {
             putBoolean(KEY_ACTIVE_CHECKPOINT, true)
@@ -480,14 +758,61 @@ class GazeConfig(context: Context) {
         return (rem + 45).coerceIn(60, 3600)
     }
 
+    // ---- #6 Locked Image Pop-Up Storm Immortal Checkpoints ----
+    fun saveActivePopupCheckpoint(remainingSec: Int, infinite: Boolean) {
+        update {
+            putBoolean(KEY_POPUP_CHK_ACTIVE, true)
+            putInt(KEY_POPUP_CHK_REM_SEC, if (infinite) 0 else remainingSec.coerceAtLeast(30))
+            putBoolean(KEY_POPUP_CHK_INF, infinite)
+            putLong(KEY_POPUP_CHK_TS, System.currentTimeMillis())
+        }
+    }
+
+    fun clearActivePopupCheckpoint() {
+        update {
+            putBoolean(KEY_POPUP_CHK_ACTIVE, false)
+            remove(KEY_POPUP_CHK_REM_SEC)
+            remove(KEY_POPUP_CHK_INF)
+            remove(KEY_POPUP_CHK_TS)
+        }
+    }
+
+    fun consumeUnfinishedPopupCheckpoint(): Pair<Int, Boolean>? {
+        if (!prefs.getBoolean(KEY_POPUP_CHK_ACTIVE, false)) return null
+        val ts = prefs.getLong(KEY_POPUP_CHK_TS, 0L)
+        if (System.currentTimeMillis() - ts > 12L * 3600L * 1000L) {
+            clearActivePopupCheckpoint()
+            return null
+        }
+        val inf = prefs.getBoolean(KEY_POPUP_CHK_INF, true)
+        val rem = prefs.getInt(KEY_POPUP_CHK_REM_SEC, 0)
+        return (if (inf) 0 else (rem + 60).coerceIn(60, 3600)) to inf
+    }
+
     fun recordCompletedSession(focusedSec: Int, lookAways: Int, longestStreakSec: Int) {
         val cur = snapshot()
+        val today = todayKey()
+        val prevTodaySec = readDailyFocusedSecToday()
+        val nextTodaySec = prevTodaySec + focusedSec.coerceAtLeast(0)
+        val goalSec = cur.dailyContractGoalMin * 60
+        val alreadyAwardedDay = prefs.getString(KEY_CONTRACT_AWARDED_DAY, "").orEmpty()
+        var streak = cur.dailyContractStreakDays
+        var awardDay = alreadyAwardedDay
+        if (nextTodaySec >= goalSec && alreadyAwardedDay != today) {
+            streak += 1
+            awardDay = today
+        }
+
         update {
             putInt(KEY_STAT_SESSIONS, cur.sessionsCompleted + 1)
             putLong(KEY_STAT_FOCUSED_SEC, cur.totalFocusedSec + focusedSec.coerceAtLeast(0))
             putInt(KEY_STAT_LOOK_AWAYS, cur.totalLookAways + lookAways.coerceAtLeast(0))
             if (longestStreakSec > cur.bestStreakSec) putInt(KEY_STAT_BEST_STREAK, longestStreakSec)
             putInt(KEY_PENDING_DEBT_SEC, 0)
+            putString(KEY_CONTRACT_DAY, today)
+            putInt(KEY_CONTRACT_FOCUSED_SEC, nextTodaySec)
+            putInt(KEY_CONTRACT_STREAK, streak)
+            if (awardDay.isNotBlank()) putString(KEY_CONTRACT_AWARDED_DAY, awardDay)
         }
         clearActiveSessionCheckpoint()
     }
@@ -611,6 +936,10 @@ class GazeConfig(context: Context) {
         private const val KEY_CHECKPOINT_REM_SEC = "chk_rem_sec_v4"
         private const val KEY_CHECKPOINT_INF = "chk_inf_v4"
         private const val KEY_CHECKPOINT_TS = "chk_ts_v4"
+        private const val KEY_POPUP_CHK_ACTIVE = "popup_chk_active_v7"
+        private const val KEY_POPUP_CHK_REM_SEC = "popup_chk_rem_v7"
+        private const val KEY_POPUP_CHK_INF = "popup_chk_inf_v7"
+        private const val KEY_POPUP_CHK_TS = "popup_chk_ts_v7"
         private const val KEY_NO_BLINK_EN = "no_blink_en_v5"
         private const val KEY_NO_BLINK_SEC = "no_blink_sec_v5"
         private const val KEY_APP_TRAP_EN = "app_trap_en_v5"
@@ -644,6 +973,52 @@ class GazeConfig(context: Context) {
         private const val KEY_POPUP_SOUND_SPAWN = "popup_sound_spawn_v6"
         private const val KEY_POPUP_SESSION_DUR = "popup_sess_dur_v51"
         private const val KEY_POPUP_LOCK_EXIT = "popup_lock_exit_v51"
+        // v7.0 TITAN Keys
+        private const val KEY_V7_FLAG_SECURE = "v7_flag_secure"
+        private const val KEY_V7_ANTI_SPLIT = "v7_anti_split"
+        private const val KEY_V7_WATCHDOG = "v7_watchdog"
+        private const val KEY_V7_STRICT_AUDIO = "v7_strict_audio"
+        private const val KEY_V7_POPUP_BLOCK_SHADE = "v7_popup_block_shade"
+        private const val KEY_V7_POPUP_IMMORTAL = "v7_popup_immortal"
+        private const val KEY_V7_SCREEN_OFF_TAX = "v7_screen_off_tax"
+        private const val KEY_V7_AUTO_ZERO = "v7_auto_zero"
+        private const val KEY_V7_ANTI_CAM_COVER = "v7_anti_cam_cover"
+        private const val KEY_V7_FACE_DIST = "v7_face_dist"
+        private const val KEY_V7_ANTI_DROWSY = "v7_anti_drowsy"
+        private const val KEY_V7_ESC_STRICT = "v7_esc_strict"
+        private const val KEY_V7_SOLO_FACE = "v7_solo_face"
+        private const val KEY_V7_GHOST_BREATHE = "v7_ghost_breathe"
+        private const val KEY_V7_FAULT_GLITCH = "v7_fault_glitch"
+        private const val KEY_V7_DYN_SPEED = "v7_dyn_speed"
+        private const val KEY_V7_MARQUEE = "v7_marquee"
+        private const val KEY_V7_FREEZE_SHOCK = "v7_freeze_shock"
+        private const val KEY_V7_HEARTBEAT_HAP = "v7_heartbeat_hap"
+        private const val KEY_V7_INDUCTION = "v7_induction"
+        private const val KEY_V7_POPUP_DRIFT = "v7_popup_drift"
+        private const val KEY_V7_POPUP_PULSE = "v7_popup_pulse"
+        private const val KEY_V7_POPUP_DODGE = "v7_popup_dodge"
+        private const val KEY_V7_POPUP_SURGE = "v7_popup_surge"
+        private const val KEY_V7_POPUP_SPIRAL = "v7_popup_spiral"
+        private const val KEY_V7_POPUP_BINAURAL = "v7_popup_binaural"
+        private const val KEY_V7_POPUP_GAZE_BOOST = "v7_popup_gaze_boost"
+        private const val KEY_V7_PORTAL_CANCEL_TAX = "v7_portal_cancel_tax"
+        private const val KEY_V7_PORTAL_CODE_ENTRY = "v7_portal_code_entry"
+        private const val KEY_V7_PORTAL_HARDCORE = "v7_portal_hardcore"
+        private const val KEY_V7_BOMB_UNTIL = "v7_bomb_until"
+        private const val KEY_V7_BOMB_DUR = "v7_bomb_dur"
+        private const val KEY_CONTRACT_GOAL_MIN = "v7_contract_goal_min"
+        private const val KEY_CONTRACT_DAY = "v7_contract_day"
+        private const val KEY_CONTRACT_FOCUSED_SEC = "v7_contract_focused_sec"
+        private const val KEY_CONTRACT_STREAK = "v7_contract_streak"
+        private const val KEY_CONTRACT_AWARDED_DAY = "v7_contract_awarded_day"
+        private const val KEY_V7_CONFIG_LOCK_UNTIL = "v7_config_lock_until"
+        private const val KEY_REP_GRADE = "v7_rep_grade"
+        private const val KEY_REP_FOCUS_PCT = "v7_rep_focus_pct"
+        private const val KEY_REP_FOCUSED_SEC = "v7_rep_focused_sec"
+        private const val KEY_REP_LOOK_AWAYS = "v7_rep_look_aways"
+        private const val KEY_REP_STREAK = "v7_rep_streak"
+        private const val KEY_REP_ESCAPES = "v7_rep_escapes"
+        private const val KEY_REP_TS = "v7_rep_ts"
         private const val KEY_TELEMETRY = "show_telemetry"
         private const val KEY_PRESET = "preset"
         private const val KEY_AUTO_EN = "auto_en"

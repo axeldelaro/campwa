@@ -24,13 +24,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
 /**
- * 100% On-Device Local AI Head-Pose + Real Iris/Pupil Gaze Tracker (v2.0):
- * - Runs front camera via CameraX completely offline (zero cloud, zero image storage).
- * - Uses Google ML Kit Face Detection (`CONTOUR_MODE_ALL` + `CLASSIFICATION_MODE_ALL`) for:
- *   1) Head Yaw (left/right) & Head Pitch (up/down)
- *   2) Left & Right Eye-Open probabilities
- *   3) #2 Real Sub-Pixel Iris/Pupil Deviation inside the 16-point LEFT_EYE & RIGHT_EYE contours
- *      directly from the raw CameraX Y-luminance plane — detects glancing sideways EVEN WITH HEAD STILL!
+ * 100% On-Device Local AI Head-Pose + Sub-Pixel Iris + TITAN Anti-Cheat Gaze Tracker (v7.0):
+ * - Head Yaw/Pitch + Eye-Open + Sub-Pixel Iris/Pupil deviation on raw CameraX Y-plane.
+ * - #8 Auto Zero-Point 3s Posture Calibration (learns natural sitting/lying angle automatically).
+ * - #9 Anti-Camera Cover / Black-Frame Detector (samples Y-plane luma + variance in <0.05ms!).
+ * - #10 Face Distance Guard (blocks leaving phone far away on a desk!).
+ * - #11 Micro-Sleep / Heavy Eyelids Detector (sustained drowsy eyes > 1.6s).
+ * - #12 Live Escalating Strictness (`setTightenLevel` progressively narrows tolerances!).
+ * - #14 Solo-Face Guard (alerts if multiple faces try to substitute in frame!).
  */
 class GazeTrackerEngine(
     private val context: Context,
@@ -43,12 +44,17 @@ class GazeTrackerEngine(
         val yawDeg: Float,
         val pitchDeg: Float,
         val eyeOpenAvg: Float,
-        val irisOffsetPct: Int,      // 0..100 (% pupil deviation from center of eye contour!)
+        val irisOffsetPct: Int,
         val irisMeasured: Boolean,
         val rawLooking: Boolean,
         val isLookingAtScreen: Boolean,
         val reason: String,
-        val cameraReady: Boolean = true
+        val cameraReady: Boolean = true,
+        val cameraCovered: Boolean = false,
+        val faceTooFar: Boolean = false,
+        val drowsyDetected: Boolean = false,
+        val multiFaceAlert: Boolean = false,
+        val zeroCalibrated: Boolean = false
     )
 
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -62,13 +68,33 @@ class GazeTrackerEngine(
     @Volatile
     private var started = false
 
+    @Volatile
+    private var tightenLevel = 0
+
+    private var startElapsedMs = 0L
     private var lastRawLookingMs = 0L
     private var lastRawAwayMs = 0L
     private var smoothedLooking = true
     private var smoothedIrisOffset = 0f
 
+    // #8 Zero-Point Auto-Calibration state
+    private var zeroCalibSumYaw = 0f
+    private var zeroCalibSumPitch = 0f
+    private var zeroCalibSamples = 0
+    private var zeroYawOffset = 0f
+    private var zeroPitchOffset = 0f
+    private var zeroCalibrated = false
+
+    // #11 Micro-Sleep tracking
+    private var drowsyStartMs = 0L
+
     fun updateConfig(cfg: GazeConfigSnapshot) {
         activeConfig = cfg
+    }
+
+    /** #12 Escalating Strictness: narrows head angle & iris tolerances dynamically! */
+    fun setTightenLevel(level: Int) {
+        tightenLevel = level.coerceIn(0, 10)
     }
 
     fun start(lifecycleOwner: LifecycleOwner, cfg: GazeConfigSnapshot) {
@@ -76,16 +102,21 @@ class GazeTrackerEngine(
         if (started) return
         started = true
         val now = SystemClock.elapsedRealtime()
+        startElapsedMs = now
         lastRawLookingMs = now
         lastRawAwayMs = 0L
         smoothedLooking = true
         smoothedIrisOffset = 0f
+        tightenLevel = 0
+        zeroCalibSumYaw = 0f; zeroCalibSumPitch = 0f; zeroCalibSamples = 0
+        zeroYawOffset = 0f; zeroPitchOffset = 0f; zeroCalibrated = false
+        drowsyStartMs = 0L
 
         val opts = FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
             .setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
             .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-            .setMinFaceSize(0.14f)
+            .setMinFaceSize(0.11f)
             .build()
         detector = FaceDetection.getClient(opts)
 
@@ -147,23 +178,40 @@ class GazeTrackerEngine(
         val rowStride = yPlane.rowStride
         val pixelStride = yPlane.pixelStride
 
+        // #9 Ultra-fast camera cover / black-frame check (<0.05ms) BEFORE ML Kit!
+        val isDarkCovered = isFrameCoveredDark(yBuffer, bufW, bufH, rowStride, pixelStride)
+
         val input = InputImage.fromMediaImage(mediaImg, rotation)
         det.process(input)
             .addOnSuccessListener { faces ->
                 val cfg = activeConfig
                 val now = SystemClock.elapsedRealtime()
                 val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+                val rotW = if (rotation == 90 || rotation == 270) bufH else bufW
 
                 val yaw: Float
                 val pitch: Float
                 val eyeAvg: Float
                 var irisPct = 0
                 var irisMeasured = false
+                var cameraCovered = false
+                var faceTooFar = false
+                var drowsyNow = false
+                var multiFace = false
                 val rawLooking: Boolean
                 val rawReason: String
 
-                if (face == null || cfg == null) {
+                if (cfg == null) {
                     yaw = 0f; pitch = 0f; eyeAvg = 0f
+                    rawLooking = true; rawReason = "Initialisation…"
+                } else if (cfg.antiCameraCoverEnabled && isDarkCovered && face == null) {
+                    yaw = 0f; pitch = 0f; eyeAvg = 0f
+                    cameraCovered = true
+                    rawLooking = false
+                    rawReason = "🚫 CAMÉRA OBSTRUÉE — Retire ton doigt de l'objectif !"
+                } else if (face == null) {
+                    yaw = 0f; pitch = 0f; eyeAvg = 0f
+                    drowsyStartMs = 0L
                     rawLooking = false
                     rawReason = "❓ Visage hors cadre — reviens face à l'écran !"
                 } else {
@@ -178,11 +226,50 @@ class GazeTrackerEngine(
                         else -> 0.85f
                     }
                     val maxEye = maxOf(lEye ?: 0.85f, rEye ?: 0.85f)
-                    val yawOk = abs(yaw) <= cfg.yawThresholdDeg
-                    val pitchOk = abs(pitch) <= cfg.pitchThresholdDeg
+
+                    // #8 Auto Zero-Point 3s Calibration
+                    if (cfg.autoZeroCalibrationEnabled && !zeroCalibrated && now - startElapsedMs <= 3_500L) {
+                        if (abs(yaw) <= 22f && abs(pitch) <= 22f && maxEye >= 0.45f) {
+                            zeroCalibSumYaw += yaw
+                            zeroCalibSumPitch += pitch
+                            zeroCalibSamples++
+                            if (zeroCalibSamples >= 10 || now - startElapsedMs >= 3_000L) {
+                                zeroYawOffset = (zeroCalibSumYaw / zeroCalibSamples).coerceIn(-14f, 14f)
+                                zeroPitchOffset = (zeroCalibSumPitch / zeroCalibSamples).coerceIn(-14f, 14f)
+                                zeroCalibrated = true
+                            }
+                        }
+                    }
+
+                    // #12 Escalating Strictness dynamically narrows limits!
+                    val tight = if (cfg.escalatingStrictnessEnabled) tightenLevel else 0
+                    val effYawLimit = (cfg.yawThresholdDeg - tight).coerceAtLeast(12)
+                    val effPitchLimit = (cfg.pitchThresholdDeg - tight).coerceAtLeast(14)
+                    val effIrisLimit = (cfg.irisThresholdPct - tight * 2).coerceAtLeast(18)
+
+                    val relYaw = if (cfg.autoZeroCalibrationEnabled && zeroCalibrated) yaw - zeroYawOffset else yaw
+                    val relPitch = if (cfg.autoZeroCalibrationEnabled && zeroCalibrated) pitch - zeroPitchOffset else pitch
+
+                    val yawOk = abs(relYaw) <= effYawLimit
+                    val pitchOk = abs(relPitch) <= effPitchLimit
                     val eyesOk = !cfg.requireEyesOpen || maxEye >= 0.34f
 
-                    // #2 Real Sub-Pixel Iris/Pupil Gaze Deviation inside ML Kit Eye Contours!
+                    // #10 Face Distance Guard (blocks leaving phone far on table!)
+                    val faceWidthRatio = face.boundingBox.width().toFloat() / rotW.coerceAtLeast(1).toFloat()
+                    faceTooFar = cfg.faceDistanceGuardEnabled && faceWidthRatio < 0.16f
+
+                    // #11 Micro-Sleep / Heavy Eyelids Detector (>1.6s with eyeAvg < 0.45f)
+                    if (cfg.antiDrowsyEnabled && eyeAvg < 0.45f) {
+                        if (drowsyStartMs == 0L) drowsyStartMs = now
+                        if (now - drowsyStartMs >= 1_600L) drowsyNow = true
+                    } else {
+                        drowsyStartMs = 0L
+                    }
+
+                    // #14 Solo-Face Guard (multiple people trying to trick camera)
+                    multiFace = cfg.soloFaceGuardEnabled && faces.size > 1
+
+                    // Sub-Pixel Iris/Pupil Gaze Deviation inside ML Kit Eye Contours
                     if (eyesOk) {
                         val leftPts = face.getContour(FaceContour.LEFT_EYE)?.points
                         val rightPts = face.getContour(FaceContour.RIGHT_EYE)?.points
@@ -201,18 +288,21 @@ class GazeTrackerEngine(
                         }
                     }
 
-                    val irisOk = !cfg.irisTrackingEnabled || !irisMeasured || irisPct <= cfg.irisThresholdPct
-                    rawLooking = yawOk && pitchOk && eyesOk && irisOk
+                    val irisOk = !cfg.irisTrackingEnabled || !irisMeasured || irisPct <= effIrisLimit
+                    rawLooking = yawOk && pitchOk && eyesOk && irisOk && !faceTooFar && !drowsyNow && !multiFace
                     rawReason = when {
-                        !yawOk -> "👀 Tête tournée (${yaw.toInt()}° > ±${cfg.yawThresholdDeg}°)"
-                        !pitchOk -> "👀 Regard détourné haut/bas (${pitch.toInt()}°)"
+                        multiFace -> "👥 Plusieurs visages — Reste seul devant la caméra !"
+                        faceTooFar -> "📏 Visage trop loin — Rapproche le téléphone !"
+                        drowsyNow -> "😴 SOMNOLENCE DÉTECTÉE — Ouvre grand les yeux !"
+                        !yawOk -> "👀 Tête tournée (${relYaw.toInt()}° > ±$effYawLimit°)"
+                        !pitchOk -> "👀 Regard détourné haut/bas (${relPitch.toInt()}°)"
                         !eyesOk -> "🙈 Yeux fermés (${(eyeAvg * 100).toInt()} %)"
-                        !irisOk -> "👁️ Pupilles détournées (Iris $irisPct % > ${cfg.irisThresholdPct} %)"
+                        !irisOk -> "👁️ Pupilles détournées (Iris $irisPct % > $effIrisLimit %)"
                         else -> "✅ REGARD & IRIS FIXÉS"
                     }
                 }
 
-                // Smart blink-safe smoothing: 520ms away before pausing, 140ms quick resume!
+                // Blink-safe smoothing (instant trigger on camera cover!)
                 if (rawLooking) {
                     if (lastRawLookingMs == 0L) lastRawLookingMs = now
                     lastRawAwayMs = 0L
@@ -220,7 +310,11 @@ class GazeTrackerEngine(
                 } else {
                     if (lastRawAwayMs == 0L) lastRawAwayMs = now
                     lastRawLookingMs = 0L
-                    val graceMs = if (rawReason.contains("Yeux fermés")) 680L else 500L
+                    val graceMs = when {
+                        cameraCovered -> 180L
+                        rawReason.contains("Yeux fermés") -> 680L
+                        else -> 480L
+                    }
                     if (smoothedLooking && now - lastRawAwayMs >= graceMs) smoothedLooking = false
                 }
 
@@ -235,7 +329,12 @@ class GazeTrackerEngine(
                         rawLooking = rawLooking,
                         isLookingAtScreen = smoothedLooking,
                         reason = if (smoothedLooking) "✅ REGARD & IRIS FIXÉS" else rawReason,
-                        cameraReady = true
+                        cameraReady = true,
+                        cameraCovered = cameraCovered,
+                        faceTooFar = faceTooFar,
+                        drowsyDetected = drowsyNow,
+                        multiFaceAlert = multiFace,
+                        zeroCalibrated = zeroCalibrated
                     )
                 )
             }
@@ -245,11 +344,38 @@ class GazeTrackerEngine(
             }
     }
 
-    /**
-     * Computes normalized horizontal pupil/iris offset (-1.0..+1.0) inside an ML Kit 16-point eye contour
-     * by locating the weighted dark-pixel centroid (iris/pupil surrounded by white sclera) directly on the
-     * CameraX Y-plane luminance buffer — zero bitmap allocation, <0.4 ms per eye!
-     */
+    /** #9 Samples a 10x10 grid on the raw Y-plane to detect a covered / taped front camera in <0.05ms! */
+    private fun isFrameCoveredDark(yBuf: ByteBuffer, bufW: Int, bufH: Int, rowStride: Int, pixelStride: Int): Boolean {
+        if (bufW < 32 || bufH < 32) return false
+        val cap = yBuf.capacity()
+        var sum = 0
+        var minL = 255
+        var maxL = 0
+        var count = 0
+        val stepX = (bufW / 10).coerceAtLeast(1)
+        val stepY = (bufH / 10).coerceAtLeast(1)
+        var y = stepY / 2
+        while (y < bufH) {
+            var x = stepX / 2
+            while (x < bufW) {
+                val idx = y * rowStride + x * pixelStride
+                if (idx in 0 until cap) {
+                    val lum = yBuf.get(idx).toInt() and 0xFF
+                    sum += lum
+                    if (lum < minL) minL = lum
+                    if (lum > maxL) maxL = lum
+                    count++
+                }
+                x += stepX
+            }
+            y += stepY
+        }
+        if (count < 20) return false
+        val avg = sum / count
+        val spread = maxL - minL
+        return avg < 15 && spread < 18
+    }
+
     private fun estimateIrisHorizontalOffset(
         points: List<PointF>?,
         yBuf: ByteBuffer,
@@ -272,7 +398,6 @@ class GazeTrackerEngine(
         val eyeH = maxY - minY
         if (eyeW < 10f || eyeH < 3.5f) return null
 
-        // Trim eyelashes (top/bottom 18%) and inner/outer corners (10%) to isolate pure sclera + iris
         val x0 = (minX + eyeW * 0.10f).toInt()
         val x1 = (maxX - eyeW * 0.10f).toInt()
         val y0 = (minY + eyeH * 0.18f).toInt()
@@ -298,7 +423,6 @@ class GazeTrackerEngine(
             return yBuf.get(idx).toInt() and 0xFF
         }
 
-        // Pass 1: find local luminance range inside eye box
         var y = y0
         while (y <= y1) {
             var x = x0
@@ -313,9 +437,8 @@ class GazeTrackerEngine(
             y += step
         }
         val contrast = maxLum - minLum
-        if (contrast < 18) return null // Too dark/flat for reliable iris separation
+        if (contrast < 18) return null
 
-        // Pass 2: weighted centroid of darkest 28% pixels (= iris/pupil!)
         val darkCutoff = minLum + (contrast * 0.28f).toInt()
         var sumWx = 0f
         var sumW = 0f

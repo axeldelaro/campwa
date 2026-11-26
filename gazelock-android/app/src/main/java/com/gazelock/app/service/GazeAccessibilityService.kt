@@ -19,14 +19,14 @@ import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.random.Random
 
 /**
- * AccessibilityService Multi-Window Host for GazeLock AI v5.0 APOCALYPSE:
- * - Hosts up to 5 layered `TYPE_ACCESSIBILITY_OVERLAY` windows cleanly.
- * - #8 Hardware Volume Down / Mute key interception via `onKeyEvent`.
- * - #13 Surgical Anti-Escape in Ghost mode & Total Anti-Escape in Full-Lock mode.
- * - #21 App-Trap Ambush: opening any user-selected trapped app immediately injects a GazeLock session!
- * - #26 Immortal Mode: resumes interrupted session (+45s) on reboot/unlock.
- * - #29 Block Quick Settings / Notification Shade EVEN in Ghost Pass-Through mode!
- * - #30 App-Switch Tax: switching apps > 3 times/min in Ghost mode adds +10s & +5% opacity!
+ * AccessibilityService Fortress Multi-Window Host for GazeLock AI v7.0 TITAN:
+ * - #1 FLAG_SECURE anti-screenshot flag on Portal, Boss Final & Attention Hijack windows.
+ * - #2 Anti-Split-Screen / Freeform / PiP multi-window blocker during sessions & locked pop-ups.
+ * - #3 Self-Healing Z-order watchdog helpers (`bringOverlaysToFront`, `bringStormOverlaysToFront`).
+ * - #4 Hardware Volume Down / Mute blocking in BOTH Video Sessions AND Locked Image Pop-Ups!
+ * - #5 Block Notification Shade / Quick Settings in Locked Image Pop-Ups as well as Ghost Video!
+ * - #6 Immortal Mode auto-resume on crash/reboot for BOTH Video Sessions AND Locked Image Pop-Ups!
+ * - #21 App-Trap Ambush + #30 App-Switch Tax + #37 Random Time Bomb detonation!
  */
 class GazeAccessibilityService : AccessibilityService() {
 
@@ -45,7 +45,9 @@ class GazeAccessibilityService : AccessibilityService() {
     private var portalView: View? = null
     private var portalParams: WindowManager.LayoutParams? = null
     private val stormPopupViews = CopyOnWriteArrayList<View>()
+    private var stormSpiralView: View? = null
     private var stormStageView: View? = null
+    private var stormStageParams: WindowManager.LayoutParams? = null
     private var stormPillView: View? = null
     private var stormPillParams: WindowManager.LayoutParams? = null
 
@@ -65,16 +67,41 @@ class GazeAccessibilityService : AccessibilityService() {
                 val interactive = try { powerManager?.isInteractive == true } catch (_: Throwable) { true }
                 val gCfg = GazeConfig(applicationContext)
                 val cfg = gCfg.snapshot()
+                val nowWall = System.currentTimeMillis()
 
+                // #26 Immortal Video Session Resume
                 if (interactive && cfg.rebootSurvivalEnabled && !GazeSessionService.isSessionRunning) {
                     val resumeSec = gCfg.consumeUnfinishedCheckpointSec()
                     if (resumeSec != null) {
                         GazeSessionService.startSession(applicationContext, overrideDurationSec = resumeSec, resumedFromCrash = true)
-                        mainHandler.postDelayed(this, 10_000L)
+                        mainHandler.postDelayed(this, 8_000L)
                         return
                     }
                 }
 
+                // #6 Immortal Locked Image Pop-Up Storm Resume
+                if (interactive && cfg.popupRebootSurvivalEnabled && !ImagePopupStormService.isRunning && !GazeSessionService.isSessionRunning) {
+                    val popResume = gCfg.consumeUnfinishedPopupCheckpoint()
+                    if (popResume != null) {
+                        ImagePopupStormService.start(applicationContext, resumedOverrideSec = popResume.first, resumedInfinite = popResume.second)
+                        mainHandler.postDelayed(this, 8_000L)
+                        return
+                    }
+                }
+
+                // #37 Armed Time Bomb Detonation!
+                if (interactive && cfg.timeBombArmedUntilMs > 0L && nowWall >= cfg.timeBombArmedUntilMs && !GazeSessionService.isSessionRunning) {
+                    gCfg.disarmTimeBomb()
+                    GazeSessionService.startSession(
+                        context = applicationContext,
+                        overrideDurationSec = cfg.timeBombDurationSec,
+                        fromTimeBomb = true
+                    )
+                    mainHandler.postDelayed(this, 10_000L)
+                    return
+                }
+
+                // Optional periodic screen-time ambush
                 if (interactive && cfg.autoTriggerEnabled && !GazeSessionService.isSessionRunning && !ImagePopupStormService.isRunning) {
                     activeScreenSec += 10
                     if (activeScreenSec >= cfg.autoTriggerEveryMin * 60) {
@@ -85,7 +112,7 @@ class GazeAccessibilityService : AccessibilityService() {
                     activeScreenSec = 0
                 }
             } catch (_: Throwable) {}
-            mainHandler.postDelayed(this, 10_000L)
+            mainHandler.postDelayed(this, 8_000L)
         }
     }
 
@@ -94,18 +121,26 @@ class GazeAccessibilityService : AccessibilityService() {
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         activeInstance = this
-        mainHandler.postDelayed(autoAmbushTick, 4_000L)
+        mainHandler.postDelayed(autoAmbushTick, 3_500L)
         notifyStateChanged()
     }
 
     override fun onKeyEvent(event: KeyEvent?): Boolean {
-        if (event != null && GazeSessionService.isSessionRunning && GazeSessionService.isVolumeLockCurrentlyActive()) {
+        if (event != null) {
             val code = event.keyCode
             if (code == KeyEvent.KEYCODE_VOLUME_DOWN || code == KeyEvent.KEYCODE_VOLUME_MUTE) {
-                if (event.action == KeyEvent.ACTION_DOWN) {
-                    GazeSessionService.enforceVolumeFloorNow()
+                if (GazeSessionService.isSessionRunning && GazeSessionService.isVolumeLockCurrentlyActive()) {
+                    if (event.action == KeyEvent.ACTION_DOWN) GazeSessionService.enforceVolumeFloorNow()
+                    return true
                 }
-                return true
+                // #4 Strict Audio Guard inside Locked Image Pop-Ups!
+                if (ImagePopupStormService.isRunning && ImagePopupStormService.isExitLocked) {
+                    val cfg = GazeConfig(applicationContext).snapshot()
+                    if (cfg.strictAudioGuardEnabled) {
+                        if (event.action == KeyEvent.ACTION_DOWN) ImagePopupStormService.enforceVolumeFloorNow()
+                        return true
+                    }
+                }
             }
         }
         return super.onKeyEvent(event)
@@ -119,17 +154,27 @@ class GazeAccessibilityService : AccessibilityService() {
         val cls = event.className?.toString()?.lowercase().orEmpty()
         val now = System.currentTimeMillis()
 
-        // ==================== STANDALONE IMAGE POP-UP MODE ANTI-ESCAPE (WHEN LOCKED!) ====================
+        // ==================== STANDALONE IMAGE POP-UP MODE HARDENING (WHEN LOCKED!) ====================
         if (!GazeSessionService.isSessionRunning && ImagePopupStormService.isRunning) {
-            if (ImagePopupStormService.isExitLocked && cfg.antiEscapeLockEnabled &&
-                isBlockedSettingsOrSystem(pkg) && now - lastEscapeEjectMs > 2_500L
-            ) {
-                lastEscapeEjectMs = now
-                try { performGlobalAction(GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
+            if (ImagePopupStormService.isExitLocked) {
+                // #5 Block Notification Shade / Quick Settings in Locked Pop-Ups!
+                if (cfg.popupBlockShadeEnabled && isNotificationOrQuickSettings(pkg, cls)) {
+                    if (now - lastShadeDismissMs > 1_000L) {
+                        lastShadeDismissMs = now
+                        collapseShadeNow()
+                    }
+                    return
                 }
-                ImagePopupStormService.onEscapeBlocked()
+                // #2 Anti-Split-Screen + Anti-Escape in Locked Pop-Ups!
+                val isSplitEscape = cfg.antiSplitScreenEnabled && isSplitOrFloatingWindow(cls, pkg)
+                if ((cfg.antiEscapeLockEnabled && isBlockedSettingsOrSystem(pkg)) || isSplitEscape) {
+                    if (now - lastEscapeEjectMs > 2_200L) {
+                        lastEscapeEjectMs = now
+                        ejectToHomeAndCollapse()
+                        bringStormOverlaysToFront()
+                        ImagePopupStormService.onEscapeBlocked()
+                    }
+                }
             }
             return
         }
@@ -152,40 +197,32 @@ class GazeAccessibilityService : AccessibilityService() {
             return
         }
 
-        // ==================== ACTIVE SESSION ENFORCEMENT ====================
+        // ==================== ACTIVE VIDEO SESSION ENFORCEMENT ====================
         val isGhost = GazeSessionService.isCurrentSessionGhostMode()
 
-        // 1) #29 Collapse Notification Shade / Quick Settings (in FULL_LOCK, Portal, OR Ghost when #29 enabled!)
+        // 1) #29 Collapse Notification Shade / Quick Settings (in FULL_LOCK, Portal, OR Ghost when enabled!)
         val blockShadeNow = !isGhost || portalView != null || cfg.blockShadeInGhostEnabled
-        if (blockShadeNow && pkg == "com.android.systemui" &&
-            (cls.contains("shade") || cls.contains("panel") || cls.contains("controlcenter") || cls.contains("quicksettings"))
-        ) {
-            if (now - lastShadeDismissMs > 1_100L) {
+        if (blockShadeNow && isNotificationOrQuickSettings(pkg, cls)) {
+            if (now - lastShadeDismissMs > 1_000L) {
                 lastShadeDismissMs = now
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
-                } else {
-                    try { performGlobalAction(GLOBAL_ACTION_BACK) } catch (_: Throwable) {}
-                }
+                collapseShadeNow()
             }
             return
         }
 
-        // 2) #13 Surgical vs Total Anti-Escape Watchdog
-        if (cfg.antiEscapeLockEnabled) {
-            val isSystemEscape = isBlockedSettingsOrSystem(pkg)
-            val isRecentsEscape = !isGhost && (
+        // 2) #13 Anti-Escape + #2 Anti-Split-Screen / Freeform / PiP Blocker!
+        if (cfg.antiEscapeLockEnabled || cfg.antiSplitScreenEnabled) {
+            val isSystemEscape = cfg.antiEscapeLockEnabled && isBlockedSettingsOrSystem(pkg)
+            val isRecentsEscape = cfg.antiEscapeLockEnabled && !isGhost && (
                 cls.contains("recents") || cls.contains("overview") || cls.contains("taskswitcher") ||
                     pkg.contains("recents") || pkg.contains("quickstep")
                 )
-            if ((isSystemEscape || isRecentsEscape) && now - lastEscapeEjectMs > 2_800L) {
+            val isSplitEscape = cfg.antiSplitScreenEnabled && isSplitOrFloatingWindow(cls, pkg)
+            if ((isSystemEscape || isRecentsEscape || isSplitEscape) && now - lastEscapeEjectMs > 2_400L) {
                 lastEscapeEjectMs = now
-                try { performGlobalAction(GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
-                }
+                ejectToHomeAndCollapse()
                 bringOverlaysToFront()
-                GazeSessionService.triggerEscapeAttemptPenalty()
+                GazeSessionService.triggerEscapeAttemptPenalty(isSplitEscape)
                 return
             }
         }
@@ -209,6 +246,35 @@ class GazeAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun collapseShadeNow() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
+        } else {
+            try { performGlobalAction(GLOBAL_ACTION_BACK) } catch (_: Throwable) {}
+        }
+    }
+
+    private fun ejectToHomeAndCollapse() {
+        try { performGlobalAction(GLOBAL_ACTION_HOME) } catch (_: Throwable) {}
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try { performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) } catch (_: Throwable) {}
+        }
+    }
+
+    private fun isNotificationOrQuickSettings(pkg: String, cls: String): Boolean {
+        return pkg == "com.android.systemui" && (
+            cls.contains("shade") || cls.contains("panel") || cls.contains("controlcenter") ||
+                cls.contains("quicksettings") || cls.contains("statusbar") || cls.contains("globalactions")
+            )
+    }
+
+    /** #2 Detects Android Split-Screen / Docked / Freeform / Floating Window / MIUI Mini-Window attempts! */
+    private fun isSplitOrFloatingWindow(cls: String, pkg: String): Boolean {
+        return cls.contains("splitscreen") || cls.contains("docked") || cls.contains("freeform") ||
+            cls.contains("multiwindow") || cls.contains("floatingwindow") || cls.contains("miniwindow") ||
+            cls.contains("pipmenu") || pkg.contains("freeform")
+    }
+
     private fun isTrackableUserApp(pkg: String): Boolean {
         if (pkg.isBlank() || pkg == packageName.lowercase()) return false
         if (pkg == "com.android.systemui" || pkg.contains("inputmethod") || pkg.contains("gboard") || pkg.contains("keyboard")) return false
@@ -225,7 +291,9 @@ class GazeAccessibilityService : AccessibilityService() {
             pkg.contains("safecenter") ||
             pkg.contains("systemmanager") ||
             pkg.contains("iqoo.secure") ||
-            pkg.contains("permissioncontroller")
+            pkg.contains("permissioncontroller") ||
+            pkg.contains("oplus.safecenter") ||
+            pkg.contains("coloros.safecenter")
     }
 
     override fun onInterrupt() {}
@@ -239,13 +307,13 @@ class GazeAccessibilityService : AccessibilityService() {
     }
 
     @Suppress("DEPRECATION")
-    fun mountVideoOverlay(view: View, passThroughTouches: Boolean, forceMaxBrightness: Boolean): Boolean {
+    fun mountVideoOverlay(view: View, passThroughTouches: Boolean, forceMaxBrightness: Boolean, flagSecure: Boolean = false): Boolean {
         val winMgr = wm ?: return false
         removeVideoOverlay()
         recentAppSwitches.clear()
         lastForegroundUserPkg = ""
         return try {
-            val flags = if (passThroughTouches) {
+            var flags = if (passThroughTouches) {
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -257,6 +325,7 @@ class GazeAccessibilityService : AccessibilityService() {
                     WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
                     WindowManager.LayoutParams.FLAG_FULLSCREEN
             }
+            if (flagSecure) flags = flags or WindowManager.LayoutParams.FLAG_SECURE
             val lp = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -276,6 +345,8 @@ class GazeAccessibilityService : AccessibilityService() {
         } catch (_: Throwable) { false }
     }
 
+    fun isVideoOverlayAttached(): Boolean = videoView?.isAttachedToWindow == true
+
     fun mountGhostPillOverlay(view: View): Boolean {
         val winMgr = wm ?: return false
         removeGhostPillOverlay()
@@ -289,7 +360,7 @@ class GazeAccessibilityService : AccessibilityService() {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = (dm.widthPixels - (195 * dm.density).toInt()).coerceAtLeast((8 * dm.density).toInt())
+                x = (dm.widthPixels - (205 * dm.density).toInt()).coerceAtLeast((8 * dm.density).toInt())
                 y = (44 * dm.density).toInt()
             }
             winMgr.addView(view, lp)
@@ -367,17 +438,19 @@ class GazeAccessibilityService : AccessibilityService() {
     }
 
     @Suppress("DEPRECATION")
-    fun mountPortalOverlay(view: View, forceMaxBrightness: Boolean): Boolean {
+    fun mountPortalOverlay(view: View, forceMaxBrightness: Boolean, flagSecure: Boolean = true): Boolean {
         val winMgr = wm ?: return false
         removePortalOverlay()
         return try {
+            var flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            if (flagSecure) flags = flags or WindowManager.LayoutParams.FLAG_SECURE
             val lp = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                flags,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
@@ -399,6 +472,15 @@ class GazeAccessibilityService : AccessibilityService() {
             try { ghostPillView?.let { v -> ghostPillParams?.let { lp -> winMgr.updateViewLayout(v, lp) } } } catch (_: Throwable) {}
             try { deadZoneView?.let { v -> deadZoneParams?.let { lp -> winMgr.updateViewLayout(v, lp) } } } catch (_: Throwable) {}
             try { microPopupView?.let { v -> microPopupParams?.let { lp -> winMgr.updateViewLayout(v, lp) } } } catch (_: Throwable) {}
+            try { portalView?.let { v -> portalParams?.let { lp -> winMgr.updateViewLayout(v, lp) } } } catch (_: Throwable) {}
+        }
+    }
+
+    fun bringStormOverlaysToFront() {
+        mainHandler.post {
+            val winMgr = wm ?: return@post
+            try { stormStageView?.let { v -> stormStageParams?.let { lp -> winMgr.updateViewLayout(v, lp) } } } catch (_: Throwable) {}
+            try { stormPillView?.let { v -> stormPillParams?.let { lp -> winMgr.updateViewLayout(v, lp) } } } catch (_: Throwable) {}
             try { portalView?.let { v -> portalParams?.let { lp -> winMgr.updateViewLayout(v, lp) } } } catch (_: Throwable) {}
         }
     }
@@ -454,6 +536,38 @@ class GazeAccessibilityService : AccessibilityService() {
         try { wm?.removeViewImmediate(view) } catch (_: Throwable) {}
     }
 
+    /** #26 Optional 60 FPS Hypnotic Spiral Backdrop underneath standalone image pop-ups (always touch-through!). */
+    fun mountStormSpiralOverlay(view: View): Boolean {
+        val winMgr = wm ?: return false
+        removeStormSpiralOverlay()
+        return try {
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+            winMgr.addView(view, lp)
+            stormSpiralView = view
+            true
+        } catch (_: Throwable) { false }
+    }
+
+    fun removeStormSpiralOverlay() {
+        val v = stormSpiralView ?: return
+        stormSpiralView = null
+        try { wm?.removeViewImmediate(v) } catch (_: Throwable) {}
+    }
+
     fun mountStormPillOverlay(view: View): Boolean {
         val winMgr = wm ?: return false
         removeStormPillOverlay()
@@ -467,7 +581,7 @@ class GazeAccessibilityService : AccessibilityService() {
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = (dm.widthPixels - (170 * dm.density).toInt()).coerceAtLeast((8 * dm.density).toInt())
+                x = (dm.widthPixels - (190 * dm.density).toInt()).coerceAtLeast((8 * dm.density).toInt())
                 y = (44 * dm.density).toInt()
             }
             winMgr.addView(view, lp)
@@ -519,14 +633,14 @@ class GazeAccessibilityService : AccessibilityService() {
                 }
             }
             winMgr.addView(view, lp)
-            stormStageView = view
+            stormStageView = view; stormStageParams = lp
             true
         } catch (_: Throwable) { false }
     }
 
     fun removeStormStageOverlay() {
         val v = stormStageView ?: return
-        stormStageView = null
+        stormStageView = null; stormStageParams = null
         try { wm?.removeViewImmediate(v) } catch (_: Throwable) {}
     }
 
@@ -536,6 +650,7 @@ class GazeAccessibilityService : AccessibilityService() {
         }
         stormPopupViews.clear()
         removeStormStageOverlay()
+        removeStormSpiralOverlay()
         removeStormPillOverlay()
     }
 

@@ -12,11 +12,13 @@ import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.text.InputType
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -27,26 +29,31 @@ import com.gazelock.app.config.GazeConfig
 import com.gazelock.app.config.GazeConfigSnapshot
 import com.gazelock.app.media.VideoFeedRepository
 import com.gazelock.app.overlay.minigames.ColorTintOddOneView
+import com.gazelock.app.overlay.minigames.DualCompareDiffView
 import com.gazelock.app.overlay.minigames.FlashTargetHuntView
 import com.gazelock.app.overlay.minigames.ImageReconstructionView
 import com.gazelock.app.overlay.minigames.JigsawEdgeSnapView
 import com.gazelock.app.overlay.minigames.MemoryFlashView
 import com.gazelock.app.overlay.minigames.MosaicPairChainView
 import com.gazelock.app.overlay.minigames.MovingSequenceView
+import com.gazelock.app.overlay.minigames.PhotoPinRecallView
 import com.gazelock.app.overlay.minigames.PrecisionGaugeStopView
 import com.gazelock.app.overlay.minigames.RapidMathImageGridView
 import com.gazelock.app.overlay.minigames.ScratchRevealMatchView
 import com.gazelock.app.overlay.minigames.SlidingPuzzleView
 import com.gazelock.app.overlay.minigames.SpotIntruderView
+import com.gazelock.app.overlay.minigames.TargetTapBlitzView
+import com.gazelock.app.overlay.minigames.ZoomDetailMatchView
 import kotlin.random.Random
 
 /**
- * Fullscreen Interactive Overlay Unlock Portal (v6.0 MEGA):
+ * Fullscreen Interactive Overlay Unlock Portal (v7.0 TITAN):
  * - #70 Daily Escalating Portal Duration (3 min -> 4 -> 5 -> 6 min).
  * - Continuous 0.1s (10 FPS) folder image spam -> accelerates to 0.05s (20 FPS!) in #17 Final 45s Overload Sprint!
  * - #22 Gaze-Gated Portal: looking away freezes countdown (+5s after 2.2s).
- * - 14 DISTINCT VISUAL MINI-GAMES (zero dictation!) with configurable 3..12 challenges per portal (default 6!)
- *   spaced cleanly across the countdown, plus Combo Streak tracking!
+ * - 18 DISTINCT VISUAL MINI-GAMES (zero dictation!) with configurable 3..12 challenges per portal.
+ * - v7.0 TITAN Hardening: Cancel Tax (+30s), Manual 6-Digit Code Typing Verification, Hardcore Double Mistakes
+ *   (+10s + extra trap pop-ups), and ON FIRE Combo Streak (+5s if broken)!
  */
 class AccessCodeWaitSpamView(
     context: Context,
@@ -61,7 +68,8 @@ class AccessCodeWaitSpamView(
 
     private enum class GameType {
         SLIDING_3X3, SLIDING_4X4_HELL, SWAP, ROTATE, MEMORY, SEQUENCE, INTRUDER, FLASH_HUNT_9FPS,
-        SCRATCH_REVEAL, MAHJONG_CHAIN, ALTERED_COPY, SYMBOL_MATH, PRECISION_GAUGE, STRIP_SNAP
+        SCRATCH_REVEAL, MAHJONG_CHAIN, ALTERED_COPY, SYMBOL_MATH, PRECISION_GAUGE, STRIP_SNAP,
+        TARGET_BLITZ, PHOTO_PIN, ZOOM_DETAIL, DUAL_COMPARE
     }
 
     private data class ScheduledChallenge(
@@ -90,6 +98,11 @@ class AccessCodeWaitSpamView(
     private val actionBtn: Button
     private val revealCard: LinearLayout
     private val revealedCodeTv: TextView
+    private var codeInputEt: EditText? = null
+    private var codeInputErrTv: TextView? = null
+    private var issuedRawCode: String = ""
+    private var totalMistakesInPortal = 0
+    private var pendingTrapPopupAfterGame = false
 
     private val bitmapPool = ArrayList<Bitmap>()
     private var running = false
@@ -194,7 +207,11 @@ class AccessCodeWaitSpamView(
                 flashCounter++
                 val rateStr = if (inOverloadSprint) "0,05 s" else "0,1 s"
                 val gameTag = if (totalMinigames > 0) " · 🧩 $minigamesSolvedCount/$totalMinigames" else ""
-                val comboTag = if (flawlessComboStreak >= 2) " · ⚡×$flawlessComboStreak" else ""
+                val comboTag = when {
+                    flawlessComboStreak >= 3 -> " · 🔥×$flawlessComboStreak"
+                    flawlessComboStreak == 2 -> " · ⚡×2"
+                    else -> ""
+                }
                 val popTag = if (cfg.unlockPopupsEnabled) " · 🔔 $popupsClearedCount" else ""
                 subTv.text = "🖼️ Spam $rateStr$gameTag$comboTag$popTag"
             } else {
@@ -299,8 +316,9 @@ class AccessCodeWaitSpamView(
         }
         addView(minigameLayer, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
+        val cancelTaxNote = if (cfg.portalCancelTaxEnabled && onCodeUnlockedAndExit != null) " (+30 s & +10 % !)" else " (remet à zéro)"
         actionBtn = Button(context).apply {
-            text = "↩ Annuler le portail (remet les $portalMinLabel à zéro)"
+            text = "↩ Annuler le portail$cancelTaxNote"
             isAllCaps = false; textSize = 11.4f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
                 cornerRadius = dp(12).toFloat(); setColor(Color.argb(215, 42, 34, 62))
@@ -329,8 +347,13 @@ class AccessCodeWaitSpamView(
             val nextMin = (3 + (cfg.portalUsesToday + 1).coerceAtMost(3))
             "\n📈 Portail progressif (#70) : ton prochain déblocage aujourd'hui durera $nextMin min !"
         } else ""
+        val needManualEntry = cfg.portalRequireCodeEntryEnabled && onCodeUnlockedAndExit != null
         revealCard.addView(TextView(context).apply {
-            text = "Tu as complété les $portalMinLabel, les pop-ups et les $totalMinigames mini-jeux ! Voici ton code d'accès unique (valable 2 min) :$nextEscNote"
+            text = if (needManualEntry) {
+                "Tu as survécu aux $portalMinLabel et aux $totalMinigames mini-jeux ! Retape exactement ce code à 6 chiffres ci-dessous pour déverrouiller :$nextEscNote"
+            } else {
+                "Tu as complété les $portalMinLabel, les pop-ups et les $totalMinigames mini-jeux ! Voici ton code d'accès unique (valable 2 min) :$nextEscNote"
+            }
             setTextColor(Color.rgb(215, 215, 235)); textSize = 12.6f; gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(14))
         })
         revealedCodeTv = TextView(context).apply {
@@ -343,14 +366,79 @@ class AccessCodeWaitSpamView(
             setPadding(dp(24), dp(14), dp(24), dp(14))
         }
         revealCard.addView(revealedCodeTv)
+
+        if (needManualEntry) {
+            val et = EditText(context).apply {
+                hint = "Tape les 6 chiffres…"
+                inputType = InputType.TYPE_NULL // Driven by built-in reliable neon keypad (no IME bugs in A11Y overlay!)
+                isFocusable = false
+                setTextColor(Color.WHITE); setHintTextColor(Color.rgb(150, 145, 175))
+                textSize = 22f; typeface = Typeface.MONOSPACE; gravity = Gravity.CENTER
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(12).toFloat(); setColor(Color.rgb(34, 26, 56))
+                    setStroke(dp(2), Color.rgb(168, 85, 247))
+                }
+                setPadding(dp(14), dp(8), dp(14), dp(8))
+            }
+            codeInputEt = et
+            revealCard.addView(et, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+
+            val errTv = TextView(context).apply {
+                text = ""; setTextColor(Color.rgb(252, 165, 165)); textSize = 11.6f; typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER; visibility = View.GONE
+            }
+            codeInputErrTv = errTv
+            revealCard.addView(errTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+
+            // Built-in 100% reliable 0-9 neon keypad (works identically inside Accessibility Overlay on Android 8-16!)
+            val padRows = listOf(listOf("1", "2", "3"), listOf("4", "5", "6"), listOf("7", "8", "9"), listOf("⌫", "0", "✕"))
+            val padBox = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(0, dp(8), 0, 0) }
+            for (rKeys in padRows) {
+                val rLin = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+                for (k in rKeys) {
+                    val kb = Button(context).apply {
+                        text = k; isAllCaps = false; textSize = 16f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(10).toFloat()
+                            setColor(if (k == "⌫" || k == "✕") Color.rgb(58, 24, 48) else Color.rgb(38, 30, 62))
+                            setStroke(dp(1), Color.argb(120, 216, 180, 254))
+                        }
+                        minHeight = 0; minimumHeight = 0; setPadding(dp(4), dp(10), dp(4), dp(10))
+                        setOnClickListener {
+                            val cur = et.text?.toString().orEmpty()
+                            when (k) {
+                                "⌫" -> if (cur.isNotEmpty()) et.setText(cur.dropLast(1))
+                                "✕" -> et.setText("")
+                                else -> if (cur.length < 6) et.setText(cur + k)
+                            }
+                            errTv.visibility = View.GONE
+                        }
+                    }
+                    rLin.addView(kb, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), dp(3), dp(4), dp(3)) })
+                }
+                padBox.addView(rLin, LinearLayout.LayoutParams(dp(240), ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+            revealCard.addView(padBox)
+        }
+
         revealCard.addView(Button(context).apply {
             text = if (onCodeUnlockedAndExit != null) "🔓 DÉVERROUILLER MAINTENANT" else "✅ FERMER"
             isAllCaps = false; textSize = 14.2f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
             background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(Color.rgb(16, 185, 129)) }
             setPadding(dp(20), dp(14), dp(20), dp(14))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(20) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) }
             setOnClickListener {
-                val c = revealedCodeTv.text?.toString()?.replace(" ", "").orEmpty()
+                if (needManualEntry) {
+                    val typed = codeInputEt?.text?.toString()?.replace(" ", "")?.trim().orEmpty()
+                    if (typed != issuedRawCode) {
+                        codeInputErrTv?.text = "❌ Code incorrect ! Retape exactement les 6 chiffres affichés !"
+                        codeInputErrTv?.visibility = View.VISIBLE
+                        vibrateMs(160L)
+                        if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playPunishmentTone()
+                        return@setOnClickListener
+                    }
+                }
+                val c = issuedRawCode.ifBlank { revealedCodeTv.text?.toString()?.replace(" ", "").orEmpty() }
                 stopAndRelease()
                 if (onCodeUnlockedAndExit != null) onCodeUnlockedAndExit.invoke(c) else onCancelWait()
             }
@@ -396,12 +484,16 @@ class AccessCodeWaitSpamView(
         mainHandler.post(spamTick)
     }
 
-    /** Schedules 3..12 distinct visual mini-games evenly across the 3-6 min countdown from our 14-game pool! */
+    /** Schedules 3..12 distinct visual mini-games evenly across the 3-6 min countdown from our 18-game pool! */
     private fun buildDynamicMinigameSchedule() {
         schedule.clear()
         if (totalMinigames <= 0) return
 
         val pool = mutableListOf(
+            GameType.TARGET_BLITZ,
+            GameType.PHOTO_PIN,
+            GameType.ZOOM_DETAIL,
+            GameType.DUAL_COMPARE,
             GameType.SCRATCH_REVEAL,
             GameType.MAHJONG_CHAIN,
             GameType.ALTERED_COPY,
@@ -417,7 +509,6 @@ class AccessCodeWaitSpamView(
         )
         if (cfg.flashHunt9FpsEnabled) pool.add(GameType.FLASH_HUNT_9FPS)
 
-        // Prioritize variety: include Flash Hunt 9 img/s + at least half of the 6 brand-new games!
         val chosen = ArrayList<GameType>(totalMinigames)
         if (cfg.flashHunt9FpsEnabled) {
             chosen.add(GameType.FLASH_HUNT_9FPS)
@@ -429,7 +520,6 @@ class AccessCodeWaitSpamView(
         }
         chosen.shuffle(Random)
 
-        // Space triggers cleanly between (totalWaitMs - 14s) down to 16s remaining!
         val startMs = (totalWaitMs - 14_000L).coerceAtLeast(30_000L)
         val endMs = 16_000L
         val span = (startMs - endMs).coerceAtLeast(10_000L)
@@ -459,14 +549,28 @@ class AccessCodeWaitSpamView(
             if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playRewardChime()
             clearMinigameViews()
             minigameActive = false
-            val comboNote = if (flawlessComboStreak >= 2) " ⚡ COMBO ×$flawlessComboStreak !" else ""
+            val comboNote = when {
+                flawlessComboStreak >= 3 -> " 🔥 ON FIRE ×$flawlessComboStreak !"
+                flawlessComboStreak == 2 -> " ⚡ COMBO ×2 !"
+                else -> ""
+            }
             showTransientAlert("✅ Défi #$stageNumber/$totalMinigames réussi !$comboNote", isError = false)
+            if (pendingTrapPopupAfterGame && cfg.unlockPopupsEnabled) {
+                pendingTrapPopupAfterGame = false
+                mainHandler.postDelayed({ if (running && !minigameActive && !popupActive) showInteractivePopup() }, 900L)
+            }
         }
-        val onGamePenalty: (Int) -> Unit = { sec ->
+        val onGamePenalty: (Int) -> Unit = { rawSec ->
             currentGameHadMistake = true
-            val extra = if (flawlessComboStreak >= 2) { flawlessComboStreak = 0; 3 } else 0
-            val totalPen = sec + extra
-            val tag = if (extra > 0) "⚠️ Erreur + Combo brisé : +$totalPen s !" else "⚠️ Erreur / Aide : +$sec s ajoutées !"
+            totalMistakesInPortal++
+            val baseSec = if (cfg.portalHardcorePenaltiesEnabled) rawSec * 2 else rawSec
+            if (cfg.portalHardcorePenaltiesEnabled && totalMistakesInPortal % 2 == 0) {
+                pendingTrapPopupAfterGame = true
+            }
+            val extra = if (flawlessComboStreak >= 2) { flawlessComboStreak = 0; 5 } else 0
+            val totalPen = baseSec + extra
+            val hcTag = if (cfg.portalHardcorePenaltiesEnabled) " [HARDCORE ×2]" else ""
+            val tag = if (extra > 0) "⚠️ Erreur + Combo brisé$hcTag : +$totalPen s !" else "⚠️ Erreur / Aide$hcTag : +$totalPen s !"
             addPenaltySeconds(totalPen, tag)
         }
         val onGameMistake: () -> Unit = {
@@ -539,6 +643,22 @@ class AccessCodeWaitSpamView(
             GameType.STRIP_SNAP -> {
                 showTransientAlert("🎞️ DÉFI #$stageNumber/$totalMinigames : Réalignement Bandes !", false)
                 JigsawEdgeSnapView(context, bitmapPool, onGamePenalty, onGameSolved).also { v -> activeMinigameRelease = { v.release() } }
+            }
+            GameType.TARGET_BLITZ -> {
+                showTransientAlert("🎯 DÉFI #$stageNumber/$totalMinigames : Cibles Mouvantes !", false)
+                TargetTapBlitzView(context, bitmapPool, onMistake = { onGamePenalty(5); onGameMistake() }, onSolved = onGameSolved).also { v -> activeMinigameRelease = { v.release() } }
+            }
+            GameType.PHOTO_PIN -> {
+                showTransientAlert("🔐 DÉFI #$stageNumber/$totalMinigames : Code Visuel de Photos !", false)
+                PhotoPinRecallView(context, bitmapPool, onMistake = { onGamePenalty(5); onGameMistake() }, onSolved = onGameSolved).also { v -> activeMinigameRelease = { v.release() } }
+            }
+            GameType.ZOOM_DETAIL -> {
+                showTransientAlert("🔍 DÉFI #$stageNumber/$totalMinigames : Loupe Micro-Détail 3× !", false)
+                ZoomDetailMatchView(context, bitmapPool, onMistake = { onGamePenalty(5); onGameMistake() }, onSolved = onGameSolved).also { v -> activeMinigameRelease = { v.release() } }
+            }
+            GameType.DUAL_COMPARE -> {
+                showTransientAlert("⚖️ DÉFI #$stageNumber/$totalMinigames : Photo Jumelle ou Piège !", false)
+                DualCompareDiffView(context, bitmapPool, onMistake = { onGamePenalty(4); onGameMistake() }, onSolved = onGameSolved).also { v -> activeMinigameRelease = { v.release() } }
             }
         }
 
@@ -695,8 +815,11 @@ class AccessCodeWaitSpamView(
         clearMinigameViews()
         onRecordDailyPortalCompletion?.invoke()
         val freshCode = onIssueCode()
+        issuedRawCode = freshCode
         val pretty = if (freshCode.length == 6) "${freshCode.substring(0, 3)} ${freshCode.substring(3)}" else freshCode
         revealedCodeTv.text = pretty
+        codeInputEt?.setText("")
+        codeInputErrTv?.visibility = View.GONE
         actionBtn.visibility = View.GONE
         revealCard.visibility = View.VISIBLE
         vibrateMs(150L)

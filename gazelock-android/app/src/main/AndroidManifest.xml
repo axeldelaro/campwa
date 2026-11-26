@@ -82,7 +82,7 @@
         <service
             android:name=".service.ImagePopupStormService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="camera|specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-configured customizable floating image pop-up overlay service" />

@@ -4,8 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.hardware.Sensor
@@ -86,6 +88,8 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
     private var totalDurationMs = 300_000L
     private var remainingMs = 300_000L
     private var focusedMs = 0L
+    private var totalAwayMs = 0L
+    private var sessionEscapesBlocked = 0
     private var currentStreakMs = 0L
     private var bestStreakMs = 0L
     private var lastPavlovMilestoneSec = 0
@@ -97,10 +101,31 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
     private var lastVibrateMs = 0L
     private var lastNotifUpdateMs = 0L
     private var lastCheckpointSaveMs = 0L
+    private var lastWatchdogMs = 0L
+    private var lastDrowsyAlarmMs = 0L
+    private var lastCamCoverAlarmMs = 0L
+    private var lastHeartbeatHapticMs = 0L
+    private var nextFreezeShockElapsedMs = 0L
+    private var screenOffPendingTax = false
+    private var screenReceiverRegistered = false
     private var lockedVolumeTarget = -1
     private var sessionCompleted = false
     private var lastPenaltyBanner: String = ""
     private var lastPenaltyBannerUntilMs = 0L
+
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val act = intent?.action ?: return
+            val cfg = activeCfg ?: return
+            if (!isSessionRunning || sessionCompleted || !cfg.screenOffPenaltyEnabled) return
+            if (act == Intent.ACTION_SCREEN_OFF) {
+                screenOffPendingTax = true
+            } else if ((act == Intent.ACTION_SCREEN_ON || act == Intent.ACTION_USER_PRESENT) && screenOffPendingTax) {
+                screenOffPendingTax = false
+                mainHandler.post { applyScreenOffTaxInternal() }
+            }
+        }
+    }
 
     // #1 Living Opacity
     private var dynamicOpacityPct = 48f
@@ -186,6 +211,27 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
 
             val now = SystemClock.elapsedRealtime()
             enforceVolumeFloorInternal()
+
+            // #3 Self-Healing Z-Order Overlay Watchdog every 1.5s
+            if (cfg.overlayWatchdogEnabled && now - lastWatchdogMs >= 1_500L) {
+                lastWatchdogMs = now
+                if (mountedViaA11y) {
+                    val a11y = GazeAccessibilityService.activeInstance
+                    if (a11y != null) {
+                        if (!a11y.isVideoOverlayAttached()) {
+                            a11y.mountVideoOverlay(ov.rootView, passThroughTouches = ov.isGhostMode, forceMaxBrightness = cfg.forceMaxBrightness, flagSecure = !ov.isGhostMode && cfg.portalFlagSecureEnabled)
+                        } else {
+                            a11y.bringOverlaysToFront()
+                        }
+                    }
+                }
+            }
+
+            // #12 Escalating Strictness: progressively tightens tolerances every 2 min or 3 faults!
+            if (cfg.escalatingStrictnessEnabled) {
+                val tight = ((focusedMs / 120_000L).toInt() + (lookAwayEpisodes / 3)).coerceIn(0, 8)
+                tracker?.setTightenLevel(tight)
+            }
 
             if (cfg.rebootSurvivalEnabled && now - lastCheckpointSaveMs >= 4_000L) {
                 lastCheckpointSaveMs = now
@@ -281,7 +327,10 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
                 hypnoticAudio?.setPaused(false)
                 ov.checkMaxClipSwitch()
 
-                // #1 Living Opacity creep & focus cooldown
+                // #1 Living Opacity creep & focus cooldown + #15 Breathing Wave
+                val breathDelta = if (ov.isGhostMode && cfg.ghostBreathingOpacityEnabled) {
+                    (kotlin.math.sin(now / 1590.0) * 7.0).toFloat()
+                } else 0f
                 if (ov.isGhostMode && cfg.livingOpacityEnabled) {
                     opacityCreepAccumMs += 100L
                     if (opacityCreepAccumMs >= 45_000L) {
@@ -293,11 +342,34 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
                         if (opacityCooldownAccumMs >= 15_000L) {
                             opacityCooldownAccumMs = 0L
                             dynamicOpacityPct = (dynamicOpacityPct - 2f).coerceAtLeast(cfg.ghostOpacityPct.toFloat())
-                            ov.setDynamicGhostOpacity(dynamicOpacityPct.toInt())
                         }
                     }
+                    ov.setDynamicGhostOpacity(dynamicOpacityPct.toInt(), breathingWaveDelta = breathDelta)
                 } else if (ov.isGhostMode) {
-                    ov.setDynamicGhostOpacity(cfg.ghostOpacityPct)
+                    ov.setDynamicGhostOpacity(cfg.ghostOpacityPct, breathingWaveDelta = breathDelta)
+                }
+
+                // #17 Dynamic Video Playback Speed (0.86x deep trance -> 1.30x high pressure!)
+                if (cfg.dynamicPlaybackSpeedEnabled) {
+                    val speedGoal = when {
+                        dynamicOpacityPct >= 80f -> 1.28f
+                        currentStreakMs >= 25_000L -> 0.86f
+                        else -> 1.0f
+                    }
+                    ov.setDynamicPlaybackSpeed(speedGoal)
+                }
+
+                // #19 Periodic Snap-Freeze Photo-Bombe Shock
+                if (cfg.freezeFrameShockEnabled && now >= nextFreezeShockElapsedMs && !hijackActive && !finalBossActive) {
+                    nextFreezeShockElapsedMs = now + Random.nextLong(38_000L, 62_000L)
+                    ov.triggerFreezeFrameShock()
+                    vibrateShort(75L)
+                }
+
+                // #20 Heartbeat Haptic Pulse when high intensity (opacity >= 75%)
+                if (cfg.heartbeatHapticsEnabled && dynamicOpacityPct >= 75f && now - lastHeartbeatHapticMs >= 2_200L) {
+                    lastHeartbeatHapticMs = now
+                    vibrateHeartbeat()
                 }
 
                 // #9 Shrink Dead-Zone
@@ -325,6 +397,29 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
                     penaltyAppliedForEpisode = false
                 }
                 currentAwayMs += 100L
+                totalAwayMs += 100L
+
+                // #9 Camera Cover / Finger Over Lens Double Penalty & Siren!
+                if (gaze.cameraCovered && now - lastCamCoverAlarmMs >= 4_500L) {
+                    lastCamCoverAlarmMs = now
+                    ov.triggerFaultGlitch()
+                    vibrateShort(220L)
+                    if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playSirenAlert()
+                    if (!cfg.infiniteUntilUnlock) {
+                        remainingMs += 10_000L; totalDurationMs = maxOf(totalDurationMs, remainingMs)
+                    }
+                    if (ov.isGhostMode && cfg.livingOpacityEnabled) bumpLivingOpacity(cfg, ov, +12f, now, null)
+                    showBanner("🚫 CAMÉRA OBSTRUÉE ! +10 s · Opacité +12 % !", now, 4_500L)
+                }
+
+                // #11 Micro-Sleep / Heavy Eyelids Wake-Up Alarm!
+                if (gaze.drowsyDetected && now - lastDrowsyAlarmMs >= 4_000L) {
+                    lastDrowsyAlarmMs = now
+                    ov.triggerFaultGlitch()
+                    vibrateHeartbeat()
+                    if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playSirenAlert()
+                    showBanner("😴 SOMNOLENCE DÉTECTÉE — OUVRE GRAND LES YEUX !", now, 3_600L)
+                }
 
                 if (ov.isGhostMode && phoneFlatPenalty) ov.setDynamicGhostOpacity(90, intenseSpiral = true)
 
@@ -347,6 +442,7 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
                 val nextPen = computeNextPenaltySec(cfg)
                 if (!penaltyAppliedForEpisode && currentAwayMs >= triggerMs) {
                     penaltyAppliedForEpisode = true
+                    ov.triggerFaultGlitch()
                     vibrateShort(150L)
                     if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playPunishmentTone()
 
@@ -446,6 +542,10 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
             val bannerToShow = if (noBlinkOverrideBanner.isNotBlank()) noBlinkOverrideBanner
             else if (now < lastPenaltyBannerUntilMs) lastPenaltyBanner else ""
 
+            val focusScorePct = if (focusedMs + totalAwayMs > 0L) {
+                ((focusedMs * 100L) / (focusedMs + totalAwayMs)).toInt().coerceIn(0, 100)
+            } else 100
+
             ov.updateHud(
                 remainingMs = remainingMs,
                 totalDurationMs = totalDurationMs,
@@ -455,7 +555,8 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
                 nextPenaltySec = computeNextPenaltySec(cfg),
                 penaltyMode = cfg.penaltyMode,
                 flashBanner = bannerToShow,
-                overrideReason = flatReason
+                overrideReason = flatReason,
+                focusScorePct = focusScorePct
             )
 
             if (now - lastNotifUpdateMs >= 2_000L) {
@@ -477,8 +578,9 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         finalBossActive = true
         bossAwayMs = 0L
         ov.setDynamicGhostOpacity(100, intenseSpiral = true)
+        ov.setDynamicPlaybackSpeed(1.32f)
         hypnoticAudio?.setOverloadSprint(true)
-        vibrateShort(200L)
+        vibrateHeartbeat()
         if (cfg.voiceAlertEnabled && ttsReady) {
             speakAlertFrench("Boss Final ! Trente secondes zéro faute !")
             lastVoiceAlertMs = SystemClock.elapsedRealtime()
@@ -488,7 +590,7 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
             ov.openUnlockPortal()
         }
         finalBossView = bv
-        if (!mountPortalWindow(bv, cfg.forceMaxBrightness)) {
+        if (!mountPortalWindow(bv, cfg.forceMaxBrightness, flagSecure = cfg.portalFlagSecureEnabled)) {
             finalBossActive = false; finalBossView = null
             hypnoticAudio?.setOverloadSprint(false)
         }
@@ -544,27 +646,30 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         }
     }
 
-    // ==================== #2 ATTENTION HIJACK ====================
-    private fun startAttentionHijack(cfg: GazeConfigSnapshot, ov: GazeVideoFeedOverlay) {
+    // ==================== #2 ATTENTION HIJACK & #21 INDUCTION TUNNEL ====================
+    private fun startAttentionHijack(cfg: GazeConfigSnapshot, ov: GazeVideoFeedOverlay, overrideFocusSec: Int = -1) {
         if (hijackActive || finalBossActive || ov.isAccessWaitActive || sessionCompleted) return
         dismissMicroPopup(); dismissDeadZone(); noBlinkActive = false
         hijackActive = true; hijackWarned = false
         hijackFocusedMs = 0L; hijackAwayGraceMs = 0L
-        hijackRequiredMs = cfg.attentionHijackFocusSec.coerceIn(8, 25) * 1000L
+        val reqSec = if (overrideFocusSec > 0) overrideFocusSec else cfg.attentionHijackFocusSec.coerceIn(8, 25)
+        hijackRequiredMs = reqSec * 1000L
 
         ov.setDynamicGhostOpacity(96, intenseSpiral = true)
         vibrateShort(180L)
         if (cfg.voiceAlertEnabled && ttsReady) {
-            speakAlertFrench("Coupure d'emprise ! Fixe l'écran pour récupérer le tactile !")
+            val spoken = if (overrideFocusSec > 0) "Tunnel d'induction ! Fixe l'écran dix secondes !"
+            else "Coupure d'emprise ! Fixe l'écran pour récupérer le tactile !"
+            speakAlertFrench(spoken)
             lastVoiceAlertMs = SystemClock.elapsedRealtime()
         }
 
-        val hv = AttentionHijackOverlayView(applicationContext, cfg.attentionHijackFocusSec) {
+        val hv = AttentionHijackOverlayView(applicationContext, reqSec) {
             cancelHijackForPortal(cfg, ov)
             ov.openUnlockPortal()
         }
         hijackView = hv
-        if (!mountPortalWindow(hv, cfg.forceMaxBrightness)) {
+        if (!mountPortalWindow(hv, cfg.forceMaxBrightness, flagSecure = cfg.portalFlagSecureEnabled)) {
             hijackActive = false; hijackView = null
             ov.setDynamicGhostOpacity(dynamicOpacityPct.toInt())
         }
@@ -675,6 +780,7 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         val cfg = gazeConfig.snapshot()
         val overrideDur = intent?.getIntExtra(EXTRA_DURATION_SEC, -1) ?: -1
         val resumedFromCrash = intent?.getBooleanExtra(EXTRA_RESUMED_CRASH, false) ?: false
+        val fromTimeBomb = intent?.getBooleanExtra(EXTRA_FROM_TIME_BOMB, false) ?: false
         val trapPkg = intent?.getStringExtra(EXTRA_TRAP_PKG).orEmpty()
         var durSec = if (overrideDur >= 15) overrideDur else cfg.durationSec
 
@@ -684,8 +790,8 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
 
         createChannel()
         val notif = buildNotification(
-            if (cfg.overlayMode == OverlayMode.GHOST_PASSTHROUGH) "👻 Overlay Ghost GazeLock AI v5.0 actif…"
-            else "👁️ Démarrage du fil vidéo GazeLock AI v5.0…"
+            if (cfg.overlayMode == OverlayMode.GHOST_PASSTHROUGH) "👻 Overlay Ghost GazeLock AI v7.0 TITAN…"
+            else "👁️ Démarrage GazeLock AI v7.0 TITAN…"
         )
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -705,14 +811,17 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         val now = SystemClock.elapsedRealtime()
         activeCfg = cfg
         initialDurationMs = durSec * 1000L; totalDurationMs = initialDurationMs; remainingMs = initialDurationMs
-        focusedMs = 0L; currentStreakMs = 0L; bestStreakMs = 0L; lastPavlovMilestoneSec = 0
+        focusedMs = 0L; totalAwayMs = 0L; sessionEscapesBlocked = 0
+        currentStreakMs = 0L; bestStreakMs = 0L; lastPavlovMilestoneSec = 0
         lookAwayEpisodes = 0; progressiveStep = 0; currentAwayMs = 0L; penaltyAppliedForEpisode = false
         dynamicOpacityPct = cfg.ghostOpacityPct.toFloat(); opacityCreepAccumMs = 0L; opacityCooldownAccumMs = 0L
         hijackActive = false; hijackView = null; hijackWarned = false
         finalBossActive = false; finalBossView = null; bossAwayMs = 0L
         noBlinkActive = false; noBlinkWarned = false
         activeMicroPopup = null; activeDeadZone = null; deadZoneRemainingMs = 0L
-        accelFlatNow = false; flatAccumMs = 0L
+        accelFlatNow = false; flatAccumMs = 0L; screenOffPendingTax = false
+        lastWatchdogMs = now; lastDrowsyAlarmMs = 0L; lastCamCoverAlarmMs = 0L; lastHeartbeatHapticMs = 0L
+        nextFreezeShockElapsedMs = now + Random.nextLong(35_000L, 55_000L)
         sessionCompleted = false
 
         scheduleNextHijack(cfg, now)
@@ -721,6 +830,10 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         nextWhisperElapsedMs = now + Random.nextLong(16_000L, 28_000L)
 
         when {
+            fromTimeBomb -> {
+                showBanner("💣 BOMBE À RETARDEMENT DÉCLENCHÉE ! Session surprise lancée !", now, 6_000L)
+                if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playSirenAlert()
+            }
             trapPkg.isNotBlank() -> {
                 showBanner("🪤 APPLI PIÉGÉE DÉTECTÉE ! Session forcée lancée !", now, 5_500L)
                 if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playPunishmentTone()
@@ -748,12 +861,13 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
             initialPlaylist = playlist,
             gazeLookingSupplier = { latestGaze.isLookingAtScreen && !(cfg.antiFlatSensorEnabled && flatAccumMs >= 6_000L) },
             onOverloadSprintChanged = { sprint -> hypnoticAudio?.setOverloadSprint(sprint) },
-            onMountPortalOverlay = { portalView -> mountPortalWindow(portalView, cfg.forceMaxBrightness) },
+            onMountPortalOverlay = { portalView -> mountPortalWindow(portalView, cfg.forceMaxBrightness, flagSecure = cfg.portalFlagSecureEnabled) },
             onRemovePortalOverlay = { removePortalWindow() },
             onDragGhostPill = { dx, dy -> dragGhostPillWindow(dx, dy) },
             onIssueAccessCodeAfterWait = { gazeConfig.issueUnlockedAccessCode() },
             onRecordDailyPortalCompletion = { gazeConfig.recordPortalUnlockCompletedToday() },
             onVerifyAccessCode = { code -> gazeConfig.verifyDynamicAccessCode(code) },
+            onPortalCancelled = { applyPortalCancelTaxInternal() },
             onEmergencyExit = { stopSessionCleanly(earlyEmergencyAbort = true) },
             onSessionCompleteDismiss = { stopSessionCleanly(earlyEmergencyAbort = false) }
         )
@@ -768,6 +882,21 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         overlay = ov; activeInstance = this; isSessionRunning = true; notifyListeners()
         if (cfg.rebootSurvivalEnabled) gazeConfig.saveActiveSessionCheckpoint(durSec, cfg.infiniteUntilUnlock)
         if (cfg.binauralBeatEnabled) hypnoticAudio = HypnoticAudioEngine().apply { start(cfg.binauralVolumePct, cfg.binauralFreqHz) }
+        if (cfg.screenOffPenaltyEnabled && !screenReceiverRegistered) {
+            try {
+                val filter = IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                    addAction(Intent.ACTION_SCREEN_ON)
+                    addAction(Intent.ACTION_USER_PRESENT)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    registerReceiver(screenStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    registerReceiver(screenStateReceiver, filter)
+                }
+                screenReceiverRegistered = true
+            } catch (_: Throwable) {}
+        }
         if (cfg.antiFlatSensorEnabled) {
             try {
                 sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
@@ -790,8 +919,49 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
             }, 350L)
         }
 
+        // #21 10-Second Induction Tunnel before unlocking Ghost touch!
+        if (ov.isGhostMode && cfg.inductionTunnelEnabled && (cfg.infiniteUntilUnlock || durSec >= 45)) {
+            mainHandler.postDelayed({
+                if (isSessionRunning && !sessionCompleted && !hijackActive && !finalBossActive) {
+                    startAttentionHijack(cfg, ov, overrideFocusSec = 10)
+                }
+            }, 900L)
+        }
+
         mainHandler.postDelayed(tickRunnable, 200L)
         return START_STICKY
+    }
+
+    /** #7 Screen-Off Evasion Tax (+20s & +10% opacity when user manually turns screen off during session!) */
+    private fun applyScreenOffTaxInternal() {
+        val cfg = activeCfg ?: return
+        val ov = overlay ?: return
+        if (!isSessionRunning || sessionCompleted) return
+        val now = SystemClock.elapsedRealtime()
+        if (!cfg.infiniteUntilUnlock) {
+            remainingMs += 20_000L; totalDurationMs = maxOf(totalDurationMs, remainingMs)
+        }
+        if (ov.isGhostMode && cfg.livingOpacityEnabled) bumpLivingOpacity(cfg, ov, +10f, now, null)
+        ov.triggerFaultGlitch()
+        vibrateShort(220L)
+        if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playSirenAlert()
+        showBanner("🛑 ÉCRAN ÉTEINT DÉTECTÉ ! +20 s · Opacité +10 % !", now, 5_500L)
+    }
+
+    /** #34a Portal Cancel Tax (+30s & +10% opacity so Cancel cannot be abused as a free pause!) */
+    private fun applyPortalCancelTaxInternal() {
+        val cfg = activeCfg ?: return
+        val ov = overlay ?: return
+        if (!isSessionRunning || sessionCompleted || !cfg.portalCancelTaxEnabled) return
+        val now = SystemClock.elapsedRealtime()
+        if (!cfg.infiniteUntilUnlock) {
+            remainingMs += 30_000L; totalDurationMs = maxOf(totalDurationMs, remainingMs)
+        }
+        if (ov.isGhostMode && cfg.livingOpacityEnabled) bumpLivingOpacity(cfg, ov, +10f, now, null)
+        ov.triggerFaultGlitch()
+        vibrateShort(180L)
+        if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playPunishmentTone()
+        showBanner("⚠️ PORTAIL ANNULÉ : +30 s · Opacité +10 % !", now, 5_000L)
     }
 
     /** #30 App-Switch Tax hook from AccessibilityService (>3 app switches/min in Ghost mode!) */
@@ -805,29 +975,36 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
                 remainingMs += 10_000L; totalDurationMs = maxOf(totalDurationMs, remainingMs)
             }
             if (ov.isGhostMode && cfg.livingOpacityEnabled) bumpLivingOpacity(cfg, ov, +5f, now, null)
+            ov.triggerFaultGlitch()
             vibrateShort(130L)
             if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playPunishmentTone()
             showBanner("🔀 TAXE CHANGEMENT D'APPLI (>3/min) : +10 s · Opacité +5 % !", now, 4_200L)
         }
     }
 
-    fun applyEscapeAttemptPenaltyInternal() {
+    fun applyEscapeAttemptPenaltyInternal(isSplitScreen: Boolean = false) {
         mainHandler.post {
             val cfg = activeCfg ?: return@post
             val ov = overlay ?: return@post
             if (!isSessionRunning || sessionCompleted) return@post
+            sessionEscapesBlocked++
             gazeConfig.recordEscapeBlock()
             val now = SystemClock.elapsedRealtime()
             if (!cfg.infiniteUntilUnlock) { remainingMs += 15_000L; totalDurationMs = maxOf(totalDurationMs, remainingMs) }
             if (ov.isGhostMode && cfg.livingOpacityEnabled) bumpLivingOpacity(cfg, ov, +10f, now, null)
             if (ov.isGhostMode && cfg.deadZonesEnabled && !hijackActive && !finalBossActive && !ov.isAccessWaitActive) spawnOrRefreshDeadZone()
-            val msg = if (ov.isGhostMode) "🚫 Paramètres verrouillés ! Portail requis (+15 s · Opacité +10 %)"
-            else "🚨 TENTATIVE D'ÉVASION BLOQUÉE ! +15 s de pénalité !"
+            ov.triggerFaultGlitch()
+            val msg = when {
+                isSplitScreen -> "🛡️ ÉCRAN SCINDÉ / FENÊTRE FLOTTANTE BLOQUÉ ! +15 s · +10 % !"
+                ov.isGhostMode -> "🚫 Paramètres verrouillés ! Portail requis (+15 s · Opacité +10 %)"
+                else -> "🚨 TENTATIVE D'ÉVASION BLOQUÉE ! +15 s de pénalité !"
+            }
             showBanner(msg, now, 5_500L)
             vibrateShort(180L)
             if (cfg.pavlovSoundEnabled) PavlovSoundEngine.playPunishmentTone()
             if (cfg.voiceAlertEnabled && ttsReady) {
-                speakAlertFrench("Paramètres verrouillés ! Passe par le portail imposé !"); lastVoiceAlertMs = now
+                speakAlertFrench(if (isSplitScreen) "Écran scindé interdit ! Plus quinze secondes !" else "Paramètres verrouillés ! Passe par le portail imposé !")
+                lastVoiceAlertMs = now
             }
         }
     }
@@ -849,7 +1026,7 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
     private fun mountPrimaryOverlays(ov: GazeVideoFeedOverlay, cfg: GazeConfigSnapshot): Boolean {
         val isGhost = ov.isGhostMode
         val a11y = GazeAccessibilityService.activeInstance
-        if (a11y != null && a11y.mountVideoOverlay(ov.rootView, passThroughTouches = isGhost, forceMaxBrightness = cfg.forceMaxBrightness)) {
+        if (a11y != null && a11y.mountVideoOverlay(ov.rootView, passThroughTouches = isGhost, forceMaxBrightness = cfg.forceMaxBrightness, flagSecure = !isGhost && cfg.portalFlagSecureEnabled)) {
             mountedViaA11y = true
             ov.ghostPillView?.let { pill -> a11y.mountGhostPillOverlay(pill) }
             return true
@@ -933,18 +1110,20 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
     }
 
     @Suppress("DEPRECATION")
-    private fun mountPortalWindow(view: View, forceMaxBrightness: Boolean): Boolean {
+    private fun mountPortalWindow(view: View, forceMaxBrightness: Boolean, flagSecure: Boolean = true): Boolean {
         if (mountedViaA11y) {
             val a11y = GazeAccessibilityService.activeInstance
-            if (a11y != null && a11y.mountPortalOverlay(view, forceMaxBrightness)) return true
+            if (a11y != null && a11y.mountPortalOverlay(view, forceMaxBrightness, flagSecure)) return true
         }
         return try {
             removePortalWindow()
             val winType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
+            var flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            if (flagSecure) flags = flags or WindowManager.LayoutParams.FLAG_SECURE
             val lp = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, winType,
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
-                PixelFormat.TRANSLUCENT
+                WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, winType, flags, PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
                 screenBrightness = if (forceMaxBrightness) 1.0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
@@ -958,24 +1137,46 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         fbPortalView?.let { v -> fbPortalView = null; try { fallbackWm?.removeViewImmediate(v) } catch (_: Throwable) {} }
     }
 
+    private fun computeDisciplineGrade(focusPct: Int, lookAways: Int, escapes: Int): String = when {
+        focusPct >= 98 && lookAways == 0 && escapes == 0 -> "S+"
+        focusPct >= 94 && escapes == 0 -> "S"
+        focusPct >= 86 -> "A"
+        focusPct >= 75 -> "B"
+        focusPct >= 62 -> "C"
+        focusPct >= 48 -> "D"
+        else -> "F"
+    }
+
     private fun onSessionFinishedNaturally() {
         sessionCompleted = true
         mainHandler.removeCallbacks(tickRunnable)
         dismissMicroPopup(); dismissDeadZone(); noBlinkActive = false
         tracker?.stop()
         hypnoticAudio?.stop(); hypnoticAudio = null
+        unregisterScreenReceiverSafe()
         try { sensorManager?.unregisterListener(this) } catch (_: Throwable) {}
         val fSec = (focusedMs / 1000L).toInt()
         val streakSec = (bestStreakMs / 1000L).toInt()
+        val focusPct = if (focusedMs + totalAwayMs > 0L) ((focusedMs * 100L) / (focusedMs + totalAwayMs)).toInt().coerceIn(0, 100) else 100
+        val grade = computeDisciplineGrade(focusPct, lookAwayEpisodes, sessionEscapesBlocked)
         gazeConfig.recordCompletedSession(fSec, lookAwayEpisodes, streakSec)
+        gazeConfig.saveSessionReport(grade, focusPct, fSec, lookAwayEpisodes, streakSec, sessionEscapesBlocked)
         vibrateShort(110L)
-        if (activeCfg?.voiceAlertEnabled == true && ttsReady) speakAlertFrench("Session terminée ! Bravo pour ton attention.")
-        overlay?.showCompleted(fSec, lookAwayEpisodes, streakSec)
-        updateForegroundNotification("✨ Session GazeLock AI terminée !")
+        if (activeCfg?.voiceAlertEnabled == true && ttsReady) speakAlertFrench("Session terminée ! Note $grade ! Bravo pour ton attention.")
+        overlay?.showCompleted(grade, focusPct, fSec, lookAwayEpisodes, streakSec, sessionEscapesBlocked)
+        updateForegroundNotification("🏆 Session terminée — Note $grade ($focusPct %) !")
+    }
+
+    private fun unregisterScreenReceiverSafe() {
+        if (screenReceiverRegistered) {
+            screenReceiverRegistered = false
+            try { unregisterReceiver(screenStateReceiver) } catch (_: Throwable) {}
+        }
     }
 
     private fun stopSessionCleanly(earlyEmergencyAbort: Boolean) {
         mainHandler.removeCallbacks(tickRunnable)
+        unregisterScreenReceiverSafe()
         val cfg = activeCfg
         if (earlyEmergencyAbort && cfg != null && !cfg.infiniteUntilUnlock && cfg.timeDebtEnabled && remainingMs > 10_000L) {
             val addDebtSec = ((remainingMs / 1000L) * cfg.timeDebtCarryPct / 100L).toInt()
@@ -1022,6 +1223,7 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(tickRunnable)
+        unregisterScreenReceiverSafe()
         isSessionRunning = false
         if (activeInstance === this) activeInstance = null
         dismissMicroPopup(); dismissDeadZone()
@@ -1059,6 +1261,17 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         } catch (_: Throwable) {}
     }
 
+    /** #20 Rhythmic double-beat heartbeat haptic pulse ("lub-dub")! */
+    @Suppress("DEPRECATION")
+    private fun vibrateHeartbeat() {
+        try {
+            val vib = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
+            val pattern = longArrayOf(0L, 40L, 95L, 55L)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) vib.vibrate(VibrationEffect.createWaveform(pattern, -1))
+            else vib.vibrate(pattern, -1)
+        } catch (_: Throwable) {}
+    }
+
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -1070,7 +1283,7 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         val openPi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_view)
-            .setContentTitle("👁️ GazeLock AI v5.0 APOCALYPSE")
+            .setContentTitle("👁️ GazeLock AI v7.0 TITAN")
             .setContentText(content)
             .setOngoing(true)
             .setContentIntent(openPi)
@@ -1102,6 +1315,7 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         const val EXTRA_DURATION_SEC = "extra_duration_sec"
         const val EXTRA_RESUMED_CRASH = "extra_resumed_crash"
         const val EXTRA_TRAP_PKG = "extra_trap_pkg"
+        const val EXTRA_FROM_TIME_BOMB = "extra_from_time_bomb"
 
         @Volatile
         var isSessionRunning: Boolean = false
@@ -1122,7 +1336,7 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
         fun isCurrentSessionGhostMode(): Boolean = activeInstance?.activeCfg?.overlayMode == OverlayMode.GHOST_PASSTHROUGH
         fun isVolumeLockCurrentlyActive(): Boolean = activeInstance?.activeCfg?.volumeLockEnabled == true
         fun enforceVolumeFloorNow() { activeInstance?.mainHandler?.post { activeInstance?.enforceVolumeFloorInternal() } }
-        fun triggerEscapeAttemptPenalty() { activeInstance?.applyEscapeAttemptPenaltyInternal() }
+        fun triggerEscapeAttemptPenalty(isSplitScreen: Boolean = false) { activeInstance?.applyEscapeAttemptPenaltyInternal(isSplitScreen) }
         fun triggerAppSwitchTax() { activeInstance?.applyAppSwitchTaxInternal() }
         fun openUnlockPortalOverlay() { activeInstance?.openUnlockPortalInternal() }
 
@@ -1130,12 +1344,14 @@ class GazeSessionService : LifecycleService(), SensorEventListener {
             context: Context,
             overrideDurationSec: Int = -1,
             resumedFromCrash: Boolean = false,
-            trapTriggerPkg: String = ""
+            trapTriggerPkg: String = "",
+            fromTimeBomb: Boolean = false
         ) {
             val i = Intent(context.applicationContext, GazeSessionService::class.java).apply {
                 if (overrideDurationSec > 0) putExtra(EXTRA_DURATION_SEC, overrideDurationSec)
                 if (resumedFromCrash) putExtra(EXTRA_RESUMED_CRASH, true)
                 if (trapTriggerPkg.isNotBlank()) putExtra(EXTRA_TRAP_PKG, trapTriggerPkg)
+                if (fromTimeBomb) putExtra(EXTRA_FROM_TIME_BOMB, true)
             }
             ContextCompat.startForegroundService(context.applicationContext, i)
         }
