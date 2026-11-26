@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Iconic Simple Gallery mountain/sun frame + AI spark heart -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,30 C24,26.7 26.7,24 30,24 L78,24 C81.3,24 84,26.7 84,30 L84,78 C84,81.3 81.3,84 78,84 L30,84 C26.7,84 24,81.3 24,78 Z M30,30 L30,72 L45,54 L57,67 L66,57 L78,72 L78,30 Z" />
+    <path
+        android:fillColor="#FFE082"
+        android:pathData="M67,38 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0" />
+    <!-- AI Star Sparkle -->
+    <path
+        android:fillColor="#FF4081"
+        android:pathData="M44,34 L46.2,39.8 L52,42 L46.2,44.2 L44,50 L41.8,44.2 L36,42 L41.8,39.8 Z" />
+</vector>

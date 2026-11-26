@@ -1,0 +1,125 @@
+name: Build & Release Simple Gallery AI Pro APK (Standalone)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'aigallery-android/**'
+      - '.github/workflows/build-aigallery-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-aigallery-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK (API 34)
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -z "$SDK_ROOT" ]; then
+            SDK_ROOT="$HOME/android-sdk"
+          fi
+          mkdir -p "$SDK_ROOT"
+          SDKMANAGER=$(find "$SDK_ROOT" -name sdkmanager -type f 2>/dev/null | head -n 1 || true)
+          if [ -z "$SDKMANAGER" ]; then
+            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdtools.zip
+            mkdir -p "$SDK_ROOT/cmdline-tools"
+            unzip -q /tmp/cmdtools.zip -d "$SDK_ROOT/cmdline-tools"
+            mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses > /dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Setup Gradle Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore or Persist Simple Gallery AI Keystore Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.aigallery-signing
+          key: aigallery-release-keystore-v1
+
+      - name: Prepare Release Keystore (V1 + V2 Signed APK)
+        run: |
+          mkdir -p ~/.aigallery-signing
+          KEYSTORE_FILE="$HOME/.aigallery-signing/aigallery-release.jks"
+          if [ ! -f "$KEYSTORE_FILE" ]; then
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_FILE" \
+              -storetype PKCS12 \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -alias aigallery \
+              -storepass aigallery2026 \
+              -keypass aigallery2026 \
+              -dname "CN=SimpleGalleryAIPro, OU=Gallery, O=SimpleGalleryAI, L=Paris, S=IDF, C=FR"
+          fi
+          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASSWORD=aigallery2026" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=aigallery" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=aigallery2026" >> "$GITHUB_ENV"
+
+      - name: Compile Signed SimpleGalleryAIPro Release APK
+        working-directory: ./aigallery-android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Package Ready-to-Install SimpleGalleryAIPro.apk
+        run: |
+          APK_OUT="aigallery-android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK_OUT" ]; then
+            echo "SimpleGalleryAIPro Release APK not found at $APK_OUT"
+            exit 1
+          fi
+          cp "$APK_OUT" ./SimpleGalleryAIPro.apk
+          ls -lh ./SimpleGalleryAIPro.apk
+
+      - name: Upload SimpleGalleryAIPro.apk to Workflow Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleGalleryAIPro-APK
+          path: ./SimpleGalleryAIPro.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish Signed SimpleGalleryAIPro.apk to GitHub Releases
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: aigallery-v1.0.${{ github.run_number }}
+          name: "Simple Gallery AI Pro v1.0.${{ github.run_number }} (Clone Simple Gallery Pro + Mode Tinder IA + Reconnaissance de Personnes 100 % Locale)"
+          body: |
+            ### 🖼️✨ Simple Gallery AI Pro (`aigallery-v1.0.${{ github.run_number }}`)
+            - **📂 Copie fidèle de Simple Gallery Pro (100 % hors ligne)** :
+              - Grilles Dossiers (`2–4` col.) & Médias (`2–5` col.) ultra-rapides (`Glide` + cache), **fichiers cachés `.*` & `.nomedia`**, épingler / masquer des dossiers, recherche instantanée, tri complet, multi-sélection (Favoris, Partager, Déplacer/Copier, Supprimer), **Corbeille intégrée**, **Éditeur Photo Pro** (rotation, miroir, recadrage `1:1 / 4:5 / 16:9`, filtres + luminosité/contraste/saturation), **Visionneuse plein écran** zoomable (`Pinch + Double-Tap`) + lecteur vidéo + diaporama + EXIF, thèmes Sombre/AMOLED, 6 couleurs d'accent et **Verrou Code PIN**.
+            - **🔥 Mode Tinder IA (Apprentissage 100 % Local sur Téléphone)** :
+              - Cartes fluides `60 FPS` (droite = ❤️ J'aime, gauche = ✕ Passer, haut = ⭐ Super-Like ×2,5, `↩ Undo`, lecture vidéo intégrée, `🗑️ Corbeille` rapide).
+              - **Modèle IA Hybride local (72-D)** : Régression Logistique en ligne + Similarité visuelle k-NN multi-modale + Affinité bayésienne par personne + Prior par dossier.
+              - **✨ Onglet « Pour Toi »** : classe automatiquement tes médias non vus de `99 % → 0 %` de probabilité favori avec explication claire !
+            - **👥 Reconnaissance & Regroupement Précis de Personnes (224-D · Hors Ligne)** :
+              - Détection faciale ML Kit (133 points) + alignement canonique sur la ligne des yeux + descripteur biométrique 224-D (ratios géométriques + LBP + HOG + chroma peau/cheveux) sur **photos ET vidéos**.
+              - **Nommer**, **Fusionner** deux clusters, marquer **⭐ VIP** ou **🚫 Ignorer**, et filtrer/swiper uniquement une personne précise !
+          files: ./SimpleGalleryAIPro.apk
+          draft: false
+          prerelease: false
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

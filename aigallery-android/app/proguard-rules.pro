@@ -1,0 +1,2 @@
+-dontwarn com.google.mlkit.**
+-dontwarn com.bumptech.glide.**
