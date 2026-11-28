@@ -527,10 +527,17 @@ class MqttSignalingEngine(
     }
 
     private fun sendMqttPingActive() {
+        val now = System.currentTimeMillis()
         val pingBytes = byteArrayOf(0xC0.toByte(), 0x00.toByte()).toByteString()
         for (node in listOf(primaryNode, failoverNode)) {
             if (node.mqttReady) {
-                try { node.ws?.send(pingBytes) } catch (_: Throwable) {}
+                // #22 Zombie-socket detection: if broker hasn't answered PINGRESP/traffic for > 3.5 min, recycle socket!
+                if (node.lastActivityMs > 0L && (now - node.lastActivityMs) > 210_000L) {
+                    closeNodeQuietly(node)
+                    emitHealth()
+                } else {
+                    try { node.ws?.send(pingBytes) } catch (_: Throwable) {}
+                }
             }
         }
     }

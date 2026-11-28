@@ -766,18 +766,26 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
                     </form>
                   ) : (
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/[0.05]">
-                          <Smartphone className="h-4 w-4 text-zinc-300" />
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div
+                          className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-xs font-extrabold text-white kl-solid-white shadow-sm ${
+                            live?.lostModeEnabled || (live?.screenPausedUntilMs ?? 0) > Date.now()
+                              ? 'bg-gradient-to-br from-rose-500 to-red-600'
+                              : live?.online
+                                ? 'bg-gradient-to-br from-sky-500 to-emerald-500'
+                                : 'bg-gradient-to-br from-slate-400 to-slate-500'
+                          }`}
+                        >
+                          {(child.childName || child.deviceName || 'E').trim().slice(0, 2).toUpperCase()}
                           <span
-                            className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-zinc-950 ${
-                              live?.online ? 'bg-emerald-400' : 'bg-zinc-600'
+                            className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-white dark:ring-zinc-950 ${
+                              live?.online ? 'bg-emerald-400' : 'bg-slate-400'
                             }`}
                           />
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
-                            <span className="truncate text-sm font-semibold text-white">
+                            <span className="truncate text-sm font-bold text-white">
                               {child.childName || child.deviceName}
                             </span>
                             <button
@@ -787,7 +795,7 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
                                 setEditingCode(child.pairingCode);
                                 setEditingName(child.childName || child.deviceName);
                               }}
-                              className="rounded p-0.5 text-zinc-600 hover:text-zinc-300"
+                              className="rounded p-0.5 text-zinc-500 hover:text-zinc-300"
                               title="Renommer"
                             >
                               <Edit2 className="h-3 w-3" />
@@ -795,10 +803,10 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
                             <span className="truncate">{child.deviceName}</span>
-                            {live?.online && live.batteryLevel !== undefined && (
+                            {live?.online && live.batteryLevel !== undefined ? (
                               <>
                                 <span>·</span>
-                                <span className="inline-flex items-center gap-0.5 font-mono text-emerald-400">
+                                <span className="inline-flex items-center gap-0.5 font-mono font-semibold text-emerald-400">
                                   {live.isCharging ? (
                                     <BatteryCharging className="h-3 w-3" />
                                   ) : (
@@ -807,6 +815,13 @@ export const ParentFamilyHub: React.FC<ParentFamilyHubProps> = ({
                                   {live.batteryLevel}%
                                 </span>
                               </>
+                            ) : (
+                              child.lastConnectedAt &&
+                              Date.now() - child.lastConnectedAt > 30 * 60_000 && (
+                                <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+                                  Silence radio
+                                </span>
+                              )
                             )}
                           </div>
                         </div>

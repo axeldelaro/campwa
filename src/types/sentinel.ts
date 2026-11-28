@@ -754,6 +754,20 @@ export interface DataScreenTimeMsg {
   securityEvents?: SecurityEventEntry[];
   systemStatus?: DataSystemStatusMsg;
   drivingReport?: DataDrivingReportMsg;
+  shieldScore?: number;
+  parentFreeModeUntilMs?: number;
+  readOnlyUntilMs?: number;
+  reelsSwipeLimit?: number;
+  reelsCooldownMin?: number;
+  reelsCooldownUntilMs?: number;
+  reelsSwipesToday?: number;
+  reelsSwipesSession?: number;
+  incognitoBlockEnabled?: boolean;
+  webKeywordGuardEnabled?: boolean;
+  surgicalSettingsPinEnabled?: boolean;
+  multiWindowGuardEnabled?: boolean;
+  quickSettingsGuardEnabled?: boolean;
+  backdoorGuardEnabled?: boolean;
   error?: string;
   ts: number;
 }
@@ -799,7 +813,8 @@ export interface DataControlResultMsg {
     | 'timeline_clear'
     | 'timeline_list'
     | 'timeline_get_image'
-    | 'set_wallpaper';
+    | 'set_wallpaper'
+    | 'advanced_controls';
   success: boolean;
   error?: string;
   ts: number;
@@ -1317,7 +1332,31 @@ export type MdmRestrictionTarget =
   | 'usb_debug'
   | 'screenshots'
   | 'camera'
-  | 'tethering';
+  | 'tethering'
+  | 'multi_user'
+  | 'apps_control'
+  | 'vpn_dns'
+  | 'usb_media'
+  | 'airplane_mode';
+
+export interface CmdSetAdvancedControlsMsg {
+  type: 'CMD_SET_ADVANCED_CONTROLS';
+  requestId: string;
+  deviceMode?: 'locked' | 'child' | 'parent';
+  lockMinutes?: number;
+  parentFreeMinutes?: number;
+  readOnlyMinutes?: number;
+  reelsSwipeLimit?: number;
+  reelsCooldownMin?: number;
+  resetReelsCooldown?: boolean;
+  incognitoBlockEnabled?: boolean;
+  webKeywordGuardEnabled?: boolean;
+  surgicalSettingsPinEnabled?: boolean;
+  multiWindowGuardEnabled?: boolean;
+  quickSettingsGuardEnabled?: boolean;
+  backdoorGuardEnabled?: boolean;
+  ts: number;
+}
 
 export interface CmdSystemControlMsg {
   type: 'CMD_SYSTEM_CONTROL';
@@ -1335,6 +1374,7 @@ export interface CmdSystemControlMsg {
     | 'mdm_set_screen_timeout'
     | 'mdm_lock_now'
     | 'mdm_reboot'
+    | 'mdm_harden_all'
     | 'set_driving_safety';
   stream?: 'music' | 'ring' | 'alarm';
   percent?: number;
@@ -1383,6 +1423,12 @@ export interface DataSystemStatusMsg {
   mdmBlockScreenshots?: boolean;
   mdmDisableCamera?: boolean;
   mdmBlockTethering?: boolean;
+  mdmBlockMultiUser?: boolean;
+  mdmBlockAppsControl?: boolean;
+  mdmBlockVpnDns?: boolean;
+  mdmBlockUsbMedia?: boolean;
+  mdmBlockAirplaneMode?: boolean;
+  shieldScore?: number;
   mdmSuspendMessage?: string;
   drivingSafety?: DrivingSafetyState;
   installedApps: InstalledAppInventoryItem[];
@@ -1657,6 +1703,7 @@ export type SignalMessage =
   | DataRecordingsMsg
   | DataRecordingFileMsg
   | CmdSystemControlMsg
+  | CmdSetAdvancedControlsMsg
   | DataSystemStatusMsg
   | CmdSocialActionMsg
   | DataSocialThreadsMsg

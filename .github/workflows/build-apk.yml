@@ -145,15 +145,16 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v26.4.${{ github.run_number }}
-          name: "SentinelCam v26.4.${{ github.run_number }} (Enrôlement QR Code Appareil Géré MDM + Contrôle Parental Complet)"
+          tag_name: v27.0.${{ github.run_number }}
+          name: "SentinelCam v27.0.${{ github.run_number }} (Interface Kidslox + Blindage Forteresse + 19 Super-Fonctions)"
           body: |
-            ### SentinelCam v26.4 (`v26.4.${{ github.run_number }}`)
+            ### SentinelCam v27.0 (`v27.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Enrôlement officiel par QR Code Appareil Entièrement Géré (Android Enterprise MDM)** : disponible directement dans « Ajouter un enfant » sur le site Parent (en complément de l'ajout par code 6 caractères). Compatible Android 8 à 15+ (`GET_PROVISIONING_MODE`, `ADMIN_POLICY_COMPLIANCE`, `PROFILE_PROVISIONING_COMPLETE`), association automatique au compte Parent et libération complète de la gestion lors de la dissociation.
-            - **Toutes les fonctions existantes conservées** : superposition & flou IA autonomes, quotas par groupe d'apps, frise horaire, déverrouillages, score de conduite, notifications téléphone Parent et éco-batterie.
+            - **Refonte complète de l’IHM inspirée de Kidslox** : thème clair moderne (avec bascule sombre 1-clic), sélecteur **3 modes (Verrouillé / Enfant / Parent)**, navigation structurée en 5 onglets, score de blindage `/100`, et application enfant épurée.
+            - **Nouvelles fonctions puissantes Hors-MDM (Code 6 chiffres)** : Écran Lecture Seule / Gel tactile (#31), Quota Reels/Shorts/TikTok par nombre de swipes (#46), Blocage Navigation Privée & alertes mots-clés web (#11), PIN chirurgical dans Paramètres (#58), Blocage Multi-Fenêtre/Écran scindé/PiP (#59), Verrou Tuiles rapides (#60), Triple Chien de garde croisé (#66) et Bloqueur Portes dérobées (#68).
+            - **Blindage MDM & Optimisations drastiques** : Blocage Invité/Second Espace/Espace Privé Android 15 (#2), Blocage Forcer l’arrêt/VPN/DNS/USB/Mode Avion (#3), Durcissement 1-clic & Silence Radio (#8), Désinstallation silencieuse MDM (#13), Moteur Event-Driven sans polling (#20), Vision IA thermorégulée (#21), File hors ligne Store & Forward (#22), Cache inventaire apps (#23), Base SQLite WAL (#24), GPS ancré Wi-Fi (#25) et Assistant Batterie OEM (#26).
 
             `MDM_SIGNATURE_CHECKSUM:${{ env.MDM_SIG_HASH }}`
           files: ./SentinelCam.apk

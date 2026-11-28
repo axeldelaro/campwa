@@ -39,9 +39,26 @@ class SentinelNotificationService : NotificationListenerService() {
         activeInstance = this
     }
 
+    private var lastCrossReviveMs = 0L
+
     override fun onListenerConnected() {
         super.onListenerConnected()
         activeInstance = this
+        reviveMainServiceIfNeeded()
+    }
+
+    /** #66: Triple Cross-Watchdog — revives main portal service immediately if killed by OEM! */
+    private fun reviveMainServiceIfNeeded() {
+        val now = System.currentTimeMillis()
+        if (CameraForegroundService.isRunning || now - lastCrossReviveMs < 10_000L) return
+        lastCrossReviveMs = now
+        try {
+            val prefs = PortalPreferences(applicationContext)
+            if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
+                CameraForegroundService.ensureRunningSafely(applicationContext)
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     override fun onListenerDisconnected() {
@@ -65,6 +82,7 @@ class SentinelNotificationService : NotificationListenerService() {
             return
         }
         if (!prefs.parentManaged) return
+        reviveMainServiceIfNeeded()
 
         val notif = sbn.notification ?: return
         if ((notif.flags and Notification.FLAG_ONGOING_EVENT) != 0) return

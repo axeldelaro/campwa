@@ -43,6 +43,7 @@ interface SystemCommandCardProps {
   onMdmSetScreenTimeout?: (timeoutSec: number) => Promise<void>;
   onMdmLockNow?: () => Promise<void>;
   onMdmReboot?: () => Promise<void>;
+  onMdmHardenAll?: () => Promise<void>;
   onSetDrivingSafety?: (opts: {
     enabled: boolean;
     thresholdKmh: number;
@@ -76,6 +77,7 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
   onMdmSetScreenTimeout,
   onMdmLockNow,
   onMdmReboot,
+  onMdmHardenAll,
   onSetDrivingSafety,
 }) => {
   const [open, setOpen] = useState(defaultOpen);
@@ -137,6 +139,11 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
     label: string;
     active: boolean;
   }> = [
+    { key: 'multi_user', label: 'Bloquer Invité / Espaces & Privé A15', active: Boolean(data?.mdmBlockMultiUser) },
+    { key: 'apps_control', label: 'Bloquer Forcer l’arrêt & Effacer', active: Boolean(data?.mdmBlockAppsControl) },
+    { key: 'vpn_dns', label: 'Verrouiller VPN & DNS privé', active: Boolean(data?.mdmBlockVpnDns) },
+    { key: 'usb_media', label: 'Bloquer USB OTG / SD & Partage BT', active: Boolean(data?.mdmBlockUsbMedia) },
+    { key: 'airplane_mode', label: 'Bloquer Mode Avion', active: Boolean(data?.mdmBlockAirplaneMode) },
     { key: 'wallpaper', label: 'Verrouiller fond d’écran', active: Boolean(data?.mdmLockWallpaper) },
     { key: 'location', label: 'Verrouiller localisation', active: Boolean(data?.mdmLockLocation) },
     { key: 'date_time', label: 'Verrouiller date & heure', active: Boolean(data?.mdmLockDateTime) },
@@ -216,7 +223,18 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                     <Lock className="h-3.5 w-3.5 text-emerald-400" />
                     <span>Verrouillages système MDM</span>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {isMdm && onMdmHardenAll && (
+                      <button
+                        type="button"
+                        onClick={() => void onMdmHardenAll()}
+                        className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1 text-[10px] font-bold text-white kl-solid-white shadow-sm hover:bg-emerald-600"
+                        title="Activer tous les verrous anti-désinstallation + auto-réparer les permissions"
+                      >
+                        <ShieldCheck className="h-3 w-3" />
+                        <span>Durcir 1-clic</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={!onMdmLockNow}
@@ -719,7 +737,7 @@ export const SystemCommandCard: React.FC<SystemCommandCardProps> = ({
                             type="button"
                             onClick={() => void onUninstallApp(app.packageName)}
                             className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-1.5 text-rose-300 hover:bg-rose-500/20"
-                            title="Désinstaller"
+                            title={isMdm ? 'Désinstallation silencieuse MDM (sans confirmation)' : 'Demander la désinstallation'}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>

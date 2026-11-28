@@ -62,6 +62,11 @@ import {
   getOrCreateControllerTokenId,
   savePairedDevice,
 } from './deviceVault';
+import {
+  enqueueOfflineCommand,
+  loadOfflineQueue,
+  removeOfflineCommand,
+} from './offlineCommandQueue';
 import { EncryptedSignalingChannel, type BrokerHealth } from './signalingService';
 
 export interface ControllerCallbacks {
@@ -109,6 +114,7 @@ export interface ControllerCallbacks {
   onStreamError?: (message: string) => void;
   onTalkieStateChange?: (active: boolean) => void;
   onTalkieLevel?: (level: number) => void;
+  onOfflineQueueChange?: (count: number) => void;
 }
 
 export class SentinelWebRtcController {
@@ -1101,6 +1107,7 @@ export class SentinelWebRtcController {
       | 'mdm_set_screen_timeout'
       | 'mdm_lock_now'
       | 'mdm_reboot'
+      | 'mdm_harden_all'
       | 'set_driving_safety';
     stream?: 'music' | 'ring' | 'alarm';
     percent?: number;
@@ -1121,23 +1128,87 @@ export class SentinelWebRtcController {
       | 'usb_debug'
       | 'screenshots'
       | 'camera'
-      | 'tethering';
+      | 'tethering'
+      | 'multi_user'
+      | 'apps_control'
+      | 'vpn_dns'
+      | 'usb_media'
+      | 'airplane_mode';
     enabled?: boolean;
     timeoutSec?: number;
     thresholdKmh?: number;
     suspendApps?: boolean;
     silentRinger?: boolean;
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
-      {
-        type: 'CMD_SYSTEM_CONTROL',
-        requestId: randomHex(8),
-        ...opts,
-        ts: Date.now(),
-      },
-      'sess'
-    );
+    const payload: SignalMessage = {
+      type: 'CMD_SYSTEM_CONTROL',
+      requestId: randomHex(8),
+      ...opts,
+      ts: Date.now(),
+    };
+    if (!this.signaling || !this.authenticated) {
+      if (opts.action !== 'get_status' && this.pairingCode) {
+        const next = enqueueOfflineCommand(this.pairingCode, `Système: ${opts.action}`, payload);
+        this.callbacks.onOfflineQueueChange?.(next.length);
+      }
+      return;
+    }
+    await this.signaling.send(payload, 'sess');
+  }
+
+  public async setAdvancedControls(opts: {
+    deviceMode?: 'locked' | 'child' | 'parent';
+    lockMinutes?: number;
+    parentFreeMinutes?: number;
+    readOnlyMinutes?: number;
+    reelsSwipeLimit?: number;
+    reelsCooldownMin?: number;
+    resetReelsCooldown?: boolean;
+    incognitoBlockEnabled?: boolean;
+    webKeywordGuardEnabled?: boolean;
+    surgicalSettingsPinEnabled?: boolean;
+    multiWindowGuardEnabled?: boolean;
+    quickSettingsGuardEnabled?: boolean;
+    backdoorGuardEnabled?: boolean;
+  }): Promise<{ queued: boolean }> {
+    const payload: SignalMessage = {
+      type: 'CMD_SET_ADVANCED_CONTROLS',
+      requestId: randomHex(8),
+      ...opts,
+      ts: Date.now(),
+    };
+    if (!this.signaling || !this.authenticated) {
+      if (this.pairingCode) {
+        const next = enqueueOfflineCommand(this.pairingCode, 'Règle parentale avancée', payload);
+        this.callbacks.onOfflineQueueChange?.(next.length);
+        return { queued: true };
+      }
+      return { queued: false };
+    }
+    await this.signaling.send(payload, 'sess');
+    return { queued: false };
+  }
+
+  public getOfflineQueueCount(): number {
+    return this.pairingCode ? loadOfflineQueue(this.pairingCode).length : 0;
+  }
+
+  private async flushOfflineCommandQueue(): Promise<void> {
+    if (!this.signaling || !this.authenticated || !this.pairingCode) return;
+    const queued = loadOfflineQueue(this.pairingCode);
+    if (queued.length === 0) {
+      this.callbacks.onOfflineQueueChange?.(0);
+      return;
+    }
+    for (const item of queued) {
+      try {
+        await this.signaling.send(item.payload, 'sess');
+        removeOfflineCommand(this.pairingCode, item.id);
+      } catch {
+        break;
+      }
+    }
+    this.callbacks.onOfflineQueueChange?.(loadOfflineQueue(this.pairingCode).length);
   }
 
   public async performSocialAction(opts: {
@@ -1605,6 +1676,9 @@ export class SentinelWebRtcController {
       sasSymbols: localSas.sasSymbols,
       accessGrant,
     });
+
+    // #22 Auto-flush any offline queued commands the instant the child phone reconnects!
+    void this.flushOfflineCommandQueue();
 
     if (!this.desiredStreaming && !this.pc) {
       this.callbacks.onStateChange('standby');

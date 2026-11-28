@@ -897,34 +897,78 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   };
 
   return (
-    <div className="mx-auto max-w-2xl space-y-3.5 px-3.5 pb-10 pt-4">
-      {/* Compact Read-Only Header (7-tap Shield icon opens Emergency Local MDM Exit) */}
-      <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.08] bg-zinc-900/80 px-4 py-3">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <button
-            type="button"
-            onClick={handleSecretShieldTap}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/15 ring-1 ring-emerald-500/30 active:scale-95"
-          >
-            <ShieldCheck className="h-4 w-4 text-emerald-400" />
-          </button>
-          <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold text-white">{portal.deviceName}</h1>
-            <p className="truncate text-[11px] text-zinc-400">
-              Mode lecture seule · toute modification envoie une demande au Parent
-            </p>
+    <div className="mx-auto max-w-2xl space-y-4 px-3.5 pb-12 pt-4">
+      {/* Kidslox-Style Clean Child Device Protection Hero (7-tap Shield icon -> Emergency Local Exit) */}
+      <div className="kl-card overflow-hidden">
+        <div className="flex items-center justify-between gap-3 px-4 py-3.5">
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              onClick={handleSecretShieldTap}
+              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white kl-solid-white shadow-sm active:scale-95 ${
+                (effectiveScreenTime.screenPausedUntilMs ?? 0) > nowMs || effectiveScreenTime.lostMode?.enabled
+                  ? 'bg-gradient-to-br from-rose-500 to-red-600'
+                  : (effectiveScreenTime.parentFreeModeUntilMs ?? 0) > nowMs
+                    ? 'bg-gradient-to-br from-blue-500 to-indigo-600'
+                    : 'bg-gradient-to-br from-emerald-500 to-teal-600'
+              }`}
+            >
+              <ShieldCheck className="h-5 w-5" />
+            </button>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <h1 className="truncate text-sm font-bold text-slate-900 dark:text-white">
+                  {portal.deviceName}
+                </h1>
+                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30">
+                  {(effectiveScreenTime.screenPausedUntilMs ?? 0) > nowMs
+                    ? 'Verrouillé'
+                    : (effectiveScreenTime.parentFreeModeUntilMs ?? 0) > nowMs
+                      ? 'Mode Parent'
+                      : 'Mode Enfant'}
+                </span>
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-zinc-400">
+                Protégé par le Parent · Blindage {effectiveScreenTime.shieldScore ?? 85}/100
+                {(effectiveScreenTime.reelsSwipeLimit ?? 0) > 0
+                  ? ` · Vidéos courtes ${effectiveScreenTime.reelsSwipesSession ?? 0}/${effectiveScreenTime.reelsSwipeLimit}`
+                  : ''}
+              </p>
+            </div>
           </div>
+          <span
+            className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 font-mono text-[10px] font-semibold ${
+              portal.mqttConnected
+                ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300'
+                : 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-300'
+            }`}
+          >
+            <Wifi className="h-3 w-3" />
+            {portal.mqttConnected ? 'En ligne' : 'Hors ligne'}
+          </span>
         </div>
-        <span
-          className={`inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[10px] ${
-            portal.mqttConnected
-              ? 'bg-emerald-500/15 text-emerald-300'
-              : 'bg-amber-500/15 text-amber-300'
-          }`}
-        >
-          <Wifi className="h-3 w-3" />
-          {portal.mqttConnected ? 'En ligne' : 'Hors ligne'}
-        </span>
+
+        {/* #26 OEM Battery Anti-Kill Assistant Banner when battery restriction is still active */}
+        {!p.batteryOptimizationIgnored && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-amber-200/80 bg-amber-50/80 px-4 py-2.5 text-xs dark:border-amber-500/25 dark:bg-amber-500/10">
+            <div className="min-w-0 flex-1">
+              <div className="font-bold text-amber-900 dark:text-amber-200">
+                Assistant Batterie {portal.deviceManufacturer || 'Android'} (#26)
+              </div>
+              <div className="text-[11px] text-amber-800/90 dark:text-amber-300/90">
+                {portal.manufacturerTip || 'Désactivez la restriction batterie pour éviter la coupure en arrière-plan.'}
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void runAction(() => SentinelNative.openManufacturerBatterySettings())}
+              className="shrink-0 rounded-xl bg-amber-500 px-3 py-1.5 text-[11px] font-bold text-white kl-solid-white shadow-sm hover:bg-amber-600"
+            >
+              Configurer {portal.deviceManufacturer || 'Batterie'}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Emergency Local MDM Exit Modal (Cheat Code or Parent Admin PIN) */}

@@ -98,6 +98,13 @@ object MdmProvisioningHelper {
                 dpm.setUninstallBlocked(admin, appCtx.packageName, true)
             } catch (_: Throwable) {
             }
+            // #2 + #3: Lock multi-user / guest / Android 15 private space + OS force-stop by default on MDM setup
+            try {
+                com.sentinelcam.app.control.SystemControlHelper.setMdmRestriction(appCtx, "multi_user", true)
+                com.sentinelcam.app.control.SystemControlHelper.setMdmRestriction(appCtx, "apps_control", true)
+                com.sentinelcam.app.control.SystemControlHelper.setMdmRestriction(appCtx, "vpn_dns", true)
+            } catch (_: Throwable) {
+            }
         }
 
         // 2. Bind the exact same Parent-Managed credentials as standard pairing

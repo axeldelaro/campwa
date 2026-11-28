@@ -212,6 +212,13 @@ class CameraForegroundService : Service() {
         }
         SentinelAccessibilityService.addConnectionListener(accessibilityConnectionListener)
         DeviceSecurityMonitor.checkSimState(applicationContext, prefs)
+        // #8: Silently self-heal MDM auto-grant permissions after OS updates
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                SystemControlHelper.reapplyMdmAutoPermissions(applicationContext)
+            } catch (_: Throwable) {
+            }
+        }
         createNotificationChannel()
     }
 
@@ -2956,8 +2963,13 @@ class CameraForegroundService : Service() {
 
                                 "uninstall_app" -> {
                                     val pkg = msg.optString("packageName", "")
-                                    val (ok, err) = SystemControlHelper.promptUninstallApp(applicationContext, prefs, pkg)
-                                    opOk = ok; opMsg = err ?: "Demande de désinstallation envoyée."
+                                    val (ok, err) = SystemControlHelper.uninstallAppSmart(applicationContext, prefs, pkg)
+                                    opOk = ok; opMsg = err ?: "Désinstallation lancée."
+                                }
+
+                                "mdm_harden_all" -> {
+                                    val (ok, err) = SystemControlHelper.hardenAllMdmRecommended(applicationContext)
+                                    opOk = ok; opMsg = err
                                 }
 
                                 "mdm_hide_app" -> {
@@ -3029,6 +3041,73 @@ class CameraForegroundService : Service() {
                                 sendControlResult(channelId, reqId, "system_control", opOk, opMsg)
                             }
                         }
+                    }
+                }
+
+                "CMD_SET_ADVANCED_CONTROLS" -> {
+                    val reqId = msg.optString("requestId", "")
+                    if (!grant.allowDeviceControl) {
+                        sendControlResult(channelId, reqId, "advanced_controls", false, "Contrôle non autorisé.")
+                    } else {
+                        val now = System.currentTimeMillis()
+                        // Kidslox 3-mode instant switch: "locked" | "child" | "parent"
+                        val deviceMode = msg.optString("deviceMode", "")
+                        when (deviceMode) {
+                            "locked" -> {
+                                prefs.parentFreeModeUntilMs = 0L
+                                val durMin = msg.optInt("lockMinutes", 120).coerceIn(5, 1440)
+                                prefs.screenPausedUntilMs = now + durMin * 60_000L
+                            }
+                            "child" -> {
+                                prefs.parentFreeModeUntilMs = 0L
+                                prefs.screenPausedUntilMs = 0L
+                            }
+                            "parent" -> {
+                                prefs.screenPausedUntilMs = 0L
+                                prefs.readOnlyUntilMs = 0L
+                                val freeMin = msg.optInt("parentFreeMinutes", 60).coerceIn(5, 1440)
+                                prefs.parentFreeModeUntilMs = now + freeMin * 60_000L
+                            }
+                        }
+                        // #31 Read-Only Screen Freeze (0 = off, >0 = freeze for N minutes)
+                        if (msg.has("readOnlyMinutes")) {
+                            val roMin = msg.optInt("readOnlyMinutes", 0).coerceIn(0, 240)
+                            prefs.readOnlyUntilMs = if (roMin > 0) now + roMin * 60_000L else 0L
+                            com.sentinelcam.app.control.ReadOnlyScreenOverlay.syncWithUntilMs(applicationContext, prefs.readOnlyUntilMs)
+                        }
+                        // #46 Reels / Shorts / TikTok vertical swipe session quota
+                        if (msg.has("reelsSwipeLimit")) {
+                            prefs.reelsSwipeLimit = msg.optInt("reelsSwipeLimit", 0)
+                        }
+                        if (msg.has("reelsCooldownMin")) {
+                            prefs.reelsCooldownMin = msg.optInt("reelsCooldownMin", 15)
+                        }
+                        if (msg.optBoolean("resetReelsCooldown", false)) {
+                            prefs.reelsCooldownUntilMs = 0L
+                            prefs.resetReelsSessionSwipes()
+                        }
+                        // #11 Browser Incognito & Web Keyword Guard
+                        if (msg.has("incognitoBlockEnabled")) {
+                            prefs.incognitoBlockEnabled = msg.optBoolean("incognitoBlockEnabled", true)
+                        }
+                        if (msg.has("webKeywordGuardEnabled")) {
+                            prefs.webKeywordGuardEnabled = msg.optBoolean("webKeywordGuardEnabled", true)
+                        }
+                        // #58, #59, #60, #68 Hors-MDM Hardening Guards
+                        if (msg.has("surgicalSettingsPinEnabled")) {
+                            prefs.surgicalSettingsPinEnabled = msg.optBoolean("surgicalSettingsPinEnabled", true)
+                        }
+                        if (msg.has("multiWindowGuardEnabled")) {
+                            prefs.multiWindowGuardEnabled = msg.optBoolean("multiWindowGuardEnabled", true)
+                        }
+                        if (msg.has("quickSettingsGuardEnabled")) {
+                            prefs.quickSettingsGuardEnabled = msg.optBoolean("quickSettingsGuardEnabled", true)
+                        }
+                        if (msg.has("backdoorGuardEnabled")) {
+                            prefs.backdoorGuardEnabled = msg.optBoolean("backdoorGuardEnabled", true)
+                        }
+                        appLockMonitor?.refreshSchedule()
+                        pushScreenTimeAndResult(channelId, reqId, "advanced_controls")
                     }
                 }
 

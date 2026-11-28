@@ -52,13 +52,18 @@ class AppBlockActivity : AppCompatActivity() {
             val now = System.currentTimeMillis()
             val stillBlocked = when (blockMode) {
                 MODE_LOST -> prefs.lostModeEnabled
-                MODE_BYPASS -> prefs.blockSettingsAndStore && prefs.settingsUnlockUntilMs <= now
+                MODE_BYPASS -> (prefs.blockSettingsAndStore || prefs.surgicalSettingsPinEnabled || prefs.backdoorGuardEnabled) &&
+                    prefs.settingsUnlockUntilMs <= now
+                MODE_REELS -> {
+                    blockedUntilMs = prefs.reelsCooldownUntilMs
+                    blockedUntilMs > now && prefs.parentFreeModeUntilMs <= now
+                }
                 MODE_PAUSE -> {
                     blockedUntilMs = prefs.screenPausedUntilMs
-                    blockedUntilMs > now
+                    blockedUntilMs > now && prefs.parentFreeModeUntilMs <= now
                 }
                 MODE_CURFEW -> {
-                    if (prefs.isCurfewActiveNow(now)) {
+                    if (prefs.parentFreeModeUntilMs <= now && prefs.isCurfewActiveNow(now)) {
                         blockedUntilMs = prefs.getCurfewEndTimestampMs(now)
                         true
                     } else {
@@ -67,7 +72,7 @@ class AppBlockActivity : AppCompatActivity() {
                 }
                 MODE_SCHOOL -> {
                     blockedUntilMs = prefs.schoolModeUntilMs
-                    blockedUntilMs > now
+                    blockedUntilMs > now && prefs.parentFreeModeUntilMs <= now
                 }
                 MODE_QUOTA -> {
                     if (blockedPackage.startsWith("group:")) {
@@ -224,6 +229,19 @@ class AppBlockActivity : AppCompatActivity() {
                 homeBtn.visibility = View.VISIBLE
             }
 
+            MODE_REELS -> {
+                badgeView.text = "PAUSE REELS / SHORTS"
+                badgeView.setTextColor(Color.parseColor("#D97706"))
+                titleView.text = "Pause vidéos courtes"
+                subtitleView.text = "Tu as atteint la limite de ${prefs.reelsSwipeLimit} vidéos d’affilée. Petite pause avant de reprendre."
+                subtitleView.visibility = View.VISIBLE
+                callOwnerBtn.visibility = View.GONE
+                requestMoreBtn.visibility = View.VISIBLE
+                requestMoreBtn.text = "Demander +15 min au parent"
+                requestMoreBtn.isEnabled = true
+                homeBtn.visibility = View.VISIBLE
+            }
+
             MODE_PAUSE -> {
                 badgeView.text = "EN PAUSE"
                 badgeView.setTextColor(Color.parseColor("#34D399"))
@@ -257,53 +275,54 @@ class AppBlockActivity : AppCompatActivity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#09090B"))
-            setPadding(dp(26), dp(36), dp(26), dp(36))
+            setBackgroundColor(Color.parseColor("#F4F7FB"))
+            setPadding(dp(24), dp(36), dp(24), dp(36))
         }
 
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#18181B"))
-                cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), Color.parseColor("#27272A"))
+                setColor(Color.WHITE)
+                cornerRadius = dp(24).toFloat()
+                setStroke(dp(1), Color.parseColor("#E2E8F0"))
             }
+            elevation = dp(6).toFloat()
             setPadding(dp(24), dp(28), dp(24), dp(28))
         }
 
         badgeView = TextView(this).apply {
             textSize = 11f
-            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-            setPadding(dp(12), dp(4), dp(12), dp(4))
+            setTypeface(Typeface.SANS_SERIF, Typeface.BOLD)
+            setPadding(dp(14), dp(5), dp(14), dp(5))
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#18FFFFFF"))
+                setColor(Color.parseColor("#F1F5F9"))
                 cornerRadius = dp(99).toFloat()
             }
         }
         card.addView(badgeView)
 
         titleView = TextView(this).apply {
-            textSize = 20f
+            textSize = 21f
             setTypeface(Typeface.SANS_SERIF, Typeface.BOLD)
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor("#0F172A"))
             gravity = Gravity.CENTER
             setPadding(0, dp(16), 0, dp(6))
         }
         card.addView(titleView)
 
         subtitleView = TextView(this).apply {
-            textSize = 13f
-            setTextColor(Color.parseColor("#A1A1AA"))
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#475569"))
             gravity = Gravity.CENTER
             setPadding(0, dp(2), 0, dp(14))
         }
         card.addView(subtitleView)
 
         countdownView = TextView(this).apply {
-            textSize = 26f
+            textSize = 28f
             setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextColor(Color.parseColor("#E4E4E7"))
+            setTextColor(Color.parseColor("#0F172A"))
             gravity = Gravity.CENTER
             setPadding(0, dp(4), 0, dp(20))
         }
@@ -468,6 +487,10 @@ class AppBlockActivity : AppCompatActivity() {
                             MODE_PAUSE -> prefs.screenPausedUntilMs = 0L
                             MODE_CURFEW -> prefs.curfewBypassUntilMs = now + 30 * 60_000L
                             MODE_SCHOOL -> prefs.schoolModeUntilMs = 0L
+                            MODE_REELS -> {
+                                prefs.reelsCooldownUntilMs = 0L
+                                prefs.resetReelsSessionSwipes()
+                            }
                             MODE_QUOTA -> if (blockedPackage.isNotEmpty()) prefs.addDailyBonusMinutes(blockedPackage, 30)
                             else -> if (blockedPackage.isNotEmpty()) prefs.removeAppLockRule(blockedPackage)
                         }
@@ -554,5 +577,6 @@ class AppBlockActivity : AppCompatActivity() {
         const val MODE_SCHOOL = "school"
         const val MODE_BYPASS = "bypass"
         const val MODE_LOST = "lost"
+        const val MODE_REELS = "reels"
     }
 }

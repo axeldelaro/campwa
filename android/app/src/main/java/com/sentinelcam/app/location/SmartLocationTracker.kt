@@ -85,6 +85,35 @@ class SmartLocationTracker(
 
     private var anchorLocation: Location? = null
     private var anchorSinceMs: Long = 0L
+    // #25 Wi-Fi BSSID Fingerprint Gating (zero GPS drain when anchored to the same Wi-Fi AP > 3 min!)
+    private var lastWifiBssid: String = ""
+    private var sameWifiSinceMs: Long = 0L
+
+    private fun readCurrentWifiBssid(): String {
+        return try {
+            val wm = appContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+            @Suppress("DEPRECATION")
+            val bssid = wm?.connectionInfo?.bssid?.trim().orEmpty()
+            if (bssid.isEmpty() || bssid == "02:00:00:00:00:00" || bssid == "00:00:00:00:00:00") "" else bssid
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    private fun isAnchoredOnStableWifi(now: Long): Boolean {
+        val cur = readCurrentWifiBssid()
+        if (cur.isEmpty()) {
+            lastWifiBssid = ""
+            sameWifiSinceMs = 0L
+            return false
+        }
+        if (cur != lastWifiBssid) {
+            lastWifiBssid = cur
+            sameWifiSinceMs = now
+            return false
+        }
+        return sameWifiSinceMs > 0L && (now - sameWifiSinceMs) >= 180_000L
+    }
 
     private val stationaryCheckRunnable = Runnable {
         evaluateStationaryTransition()
@@ -474,7 +503,8 @@ class SmartLocationTracker(
         val prof = currentProfile()
         val now = System.currentTimeMillis()
         val elapsedSinceAnchorMove = now - anchorSinceMs
-        if (elapsedSinceAnchorMove >= prof.stationaryWindowMs - 5_000L) {
+        val stableWifi = isAnchoredOnStableWifi(now)
+        if (stableWifi || elapsedSinceAnchorMove >= prof.stationaryWindowMs - 5_000L) {
             // Update dwell time of last saved point before sleeping GPS radio
             val rowId = lastSavedRowId
             if (rowId > 0L && lastSavedAtMs > 0L) {

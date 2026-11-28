@@ -14,8 +14,8 @@ android {
         applicationId "com.sentinelcam.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 29
-        versionName "26.3.0"
+        versionCode 30
+        versionName "27.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {

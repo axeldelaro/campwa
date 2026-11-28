@@ -58,14 +58,10 @@ class PortalWatchdogJobService : JobService() {
     private fun checkIncomingPushInvitation(context: Context, code: String) {
         try {
             val keys = CryptoProtocol.deriveBootstrapKeys(code)
-            val client = OkHttpClient.Builder()
-                .connectTimeout(5, TimeUnit.SECONDS)
-                .readTimeout(5, TimeUnit.SECONDS)
-                .build()
             val req = Request.Builder()
                 .url("https://ntfy.sh/${keys.wakePushTopic}/json?poll=1&since=15m")
                 .build()
-            client.newCall(req).execute().use { resp ->
+            SHARED_HTTP_CLIENT.newCall(req).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (body.contains("WAKE_INVITE")) {
                     postInviteNotification(context, code)
@@ -116,6 +112,13 @@ class PortalWatchdogJobService : JobService() {
 
     companion object {
         private const val JOB_ID = 9401
+        // #22 Shared singleton OkHttpClient (zero socket/thread pool churn on periodic wakeups!)
+        private val SHARED_HTTP_CLIENT: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
+                .build()
+        }
 
         fun scheduleWatchdog(context: Context) {
             try {

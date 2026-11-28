@@ -101,6 +101,8 @@ class PortalPreferences(context: Context) {
     private val prefs: SharedPreferences =
         safeContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    private val storeDb: SentinelStoreDb = SentinelStoreDb.get(safeContext)
+
     init {
         synchronized(LOCK) {
             if (prefs.getString(KEY_PAIRING_CODE, null).isNullOrEmpty()) {
@@ -110,8 +112,129 @@ class PortalPreferences(context: Context) {
                     .putString(KEY_DEVICE_SALT, KeystoreVault.encrypt(CryptoProtocol.randomHex(32)))
                     .commit()
             }
+            migrateLegacyEventsToSqliteIfNeeded()
         }
     }
+
+    private fun migrateLegacyEventsToSqliteIfNeeded() {
+        if (prefs.getBoolean(KEY_SQLITE_MIGRATED_V27, false)) return
+        try {
+            val rawEv = prefs.getString(KEY_SECURITY_EVENTS, null)
+            if (!rawEv.isNullOrEmpty()) {
+                val arr = JSONArray(rawEv)
+                for (i in (arr.length() - 1) downTo 0) {
+                    val o = arr.getJSONObject(i)
+                    storeDb.insertSecurityEvent(
+                        SecurityEventItem(
+                            id = o.optString("id", "ev-mig-$i"),
+                            timestamp = o.optLong("timestamp", System.currentTimeMillis()),
+                            kind = o.optString("kind", "admin"),
+                            title = o.optString("title", ""),
+                            detail = o.optString("detail", ""),
+                            photoBase64 = if (o.isNull("photoBase64")) null else o.optString("photoBase64", "").takeIf { it.isNotEmpty() }
+                        )
+                    )
+                }
+            }
+            prefs.edit()
+                .remove(KEY_SECURITY_EVENTS)
+                .remove(KEY_AUDIT_LOGS)
+                .putBoolean(KEY_SQLITE_MIGRATED_V27, true)
+                .apply()
+        } catch (_: Throwable) {
+        }
+    }
+
+    /* ==================== V27 KIDSLOX MODE & HORS-MDM SUPER CONTROLS ==================== */
+
+    /** Kidslox-style 3-Mode Parent Free Mode (temporarily pauses locks/curfew/quotas when > now). */
+    var parentFreeModeUntilMs: Long
+        get() = prefs.getLong(KEY_PARENT_FREE_UNTIL, 0L)
+        set(value) { prefs.edit().putLong(KEY_PARENT_FREE_UNTIL, value).commit() }
+
+    /** #31 Read-Only Screen Freeze (blocks 100% touches while keeping screen visible). */
+    var readOnlyUntilMs: Long
+        get() = prefs.getLong(KEY_READ_ONLY_UNTIL, 0L)
+        set(value) { prefs.edit().putLong(KEY_READ_ONLY_UNTIL, value).commit() }
+
+    /** #46 Reels / Shorts / TikTok vertical swipe session quota (0 = disabled). */
+    var reelsSwipeLimit: Int
+        get() = prefs.getInt(KEY_REELS_SWIPE_LIMIT, 0).coerceIn(0, 200)
+        set(value) { prefs.edit().putInt(KEY_REELS_SWIPE_LIMIT, value.coerceIn(0, 200)).commit() }
+
+    var reelsCooldownMin: Int
+        get() = prefs.getInt(KEY_REELS_COOLDOWN_MIN, 15).coerceIn(5, 120)
+        set(value) { prefs.edit().putInt(KEY_REELS_COOLDOWN_MIN, value.coerceIn(5, 120)).commit() }
+
+    var reelsCooldownUntilMs: Long
+        get() = prefs.getLong(KEY_REELS_COOLDOWN_UNTIL, 0L)
+        set(value) { prefs.edit().putLong(KEY_REELS_COOLDOWN_UNTIL, value).commit() }
+
+    fun getReelsSwipesToday(): Int {
+        synchronized(LOCK) {
+            val today = todayDateKey()
+            if (prefs.getString(KEY_REELS_SWIPES_DATE, "") != today) return 0
+            return prefs.getInt(KEY_REELS_SWIPES_TODAY, 0).coerceAtLeast(0)
+        }
+    }
+
+    fun getReelsSwipesSession(): Int {
+        synchronized(LOCK) {
+            val today = todayDateKey()
+            if (prefs.getString(KEY_REELS_SWIPES_DATE, "") != today) return 0
+            return prefs.getInt(KEY_REELS_SWIPES_SESSION, 0).coerceAtLeast(0)
+        }
+    }
+
+    fun incrementReelsSwipe(): Pair<Int, Int> {
+        synchronized(LOCK) {
+            val today = todayDateKey()
+            val sameDay = prefs.getString(KEY_REELS_SWIPES_DATE, "") == today
+            val nextToday = if (sameDay) prefs.getInt(KEY_REELS_SWIPES_TODAY, 0) + 1 else 1
+            val nextSession = if (sameDay) prefs.getInt(KEY_REELS_SWIPES_SESSION, 0) + 1 else 1
+            prefs.edit()
+                .putString(KEY_REELS_SWIPES_DATE, today)
+                .putInt(KEY_REELS_SWIPES_TODAY, nextToday)
+                .putInt(KEY_REELS_SWIPES_SESSION, nextSession)
+                .apply()
+            return Pair(nextSession, nextToday)
+        }
+    }
+
+    fun resetReelsSessionSwipes() {
+        synchronized(LOCK) {
+            prefs.edit().putInt(KEY_REELS_SWIPES_SESSION, 0).apply()
+        }
+    }
+
+    /** #11 Browser Incognito Block & Real-Time Web Keyword Guard. */
+    var incognitoBlockEnabled: Boolean
+        get() = prefs.getBoolean(KEY_INCOGNITO_BLOCK, true)
+        set(value) { prefs.edit().putBoolean(KEY_INCOGNITO_BLOCK, value).commit() }
+
+    var webKeywordGuardEnabled: Boolean
+        get() = prefs.getBoolean(KEY_WEB_KEYWORD_GUARD, true)
+        set(value) { prefs.edit().putBoolean(KEY_WEB_KEYWORD_GUARD, value).commit() }
+
+    /** #58 Surgical Settings PIN Shield (lets Wi-Fi/Sound work, blocks Admin/A11y/Reset/SentinelCam pages). */
+    var surgicalSettingsPinEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SURGICAL_SETTINGS_PIN, true)
+        set(value) { prefs.edit().putBoolean(KEY_SURGICAL_SETTINGS_PIN, value).commit() }
+
+    /** #59 Multi-window / Split-screen / Floating popup enforcement. */
+    var multiWindowGuardEnabled: Boolean
+        get() = prefs.getBoolean(KEY_MULTI_WINDOW_GUARD, true)
+        set(value) { prefs.edit().putBoolean(KEY_MULTI_WINDOW_GUARD, value).commit() }
+
+    /** #60 Auto-close Quick Settings shade when locked / curfew / school / lost. */
+    var quickSettingsGuardEnabled: Boolean
+        get() = prefs.getBoolean(KEY_QUICK_SETTINGS_GUARD, true)
+        set(value) { prefs.edit().putBoolean(KEY_QUICK_SETTINGS_GUARD, value).commit() }
+
+    /** #68 Block App-Info long-press & uninstall dialogs targeting SentinelCam. */
+    var backdoorGuardEnabled: Boolean
+        get() = prefs.getBoolean(KEY_BACKDOOR_GUARD, true)
+        set(value) { prefs.edit().putBoolean(KEY_BACKDOOR_GUARD, value).commit() }
 
     var onboardingCompleted: Boolean
         get() = prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
@@ -826,30 +949,7 @@ class PortalPreferences(context: Context) {
                 detail = detail.take(200),
                 photoBase64 = photoBase64?.take(45_000)
             )
-            val current = getSecurityEvents().toMutableList()
-            current.add(0, item)
-            // Keep max 35 events, and keep photo data only on the 4 most recent photo events to stay tiny
-            var photosKept = 0
-            val trimmed = current.take(35).map { ev ->
-                if (ev.photoBase64 != null) {
-                    photosKept++
-                    if (photosKept <= 4) ev else ev.copy(photoBase64 = null)
-                } else {
-                    ev
-                }
-            }
-            val arr = JSONArray()
-            for (ev in trimmed) {
-                arr.put(JSONObject().apply {
-                    put("id", ev.id)
-                    put("timestamp", ev.timestamp)
-                    put("kind", ev.kind)
-                    put("title", ev.title)
-                    put("detail", ev.detail)
-                    if (ev.photoBase64 != null) put("photoBase64", ev.photoBase64)
-                })
-            }
-            prefs.edit().putString(KEY_SECURITY_EVENTS, arr.toString()).apply()
+            storeDb.insertSecurityEvent(item)
             appendLog("security", "$title — $detail")
             ParentAlertPushHelper.dispatchAlertAsync(this, item.kind, item.title, item.detail)
             return item
@@ -885,32 +985,13 @@ class PortalPreferences(context: Context) {
 
     fun getSecurityEvents(): List<SecurityEventItem> {
         synchronized(LOCK) {
-            val raw = prefs.getString(KEY_SECURITY_EVENTS, null) ?: return emptyList()
-            return try {
-                val arr = JSONArray(raw)
-                val out = ArrayList<SecurityEventItem>(arr.length())
-                for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
-                    out.add(
-                        SecurityEventItem(
-                            id = o.optString("id", "ev-$i"),
-                            timestamp = o.optLong("timestamp", 0L),
-                            kind = o.optString("kind", "admin"),
-                            title = o.optString("title", ""),
-                            detail = o.optString("detail", ""),
-                            photoBase64 = if (o.has("photoBase64") && !o.isNull("photoBase64")) o.optString("photoBase64") else null
-                        )
-                    )
-                }
-                out
-            } catch (_: Throwable) {
-                emptyList()
-            }
+            return storeDb.querySecurityEvents(50)
         }
     }
 
     fun clearSecurityEvents() {
         synchronized(LOCK) {
+            storeDb.clearSecurityEvents()
             prefs.edit().remove(KEY_SECURITY_EVENTS).commit()
         }
     }
@@ -1261,6 +1342,18 @@ class PortalPreferences(context: Context) {
                 .remove(KEY_GEOFENCES)
                 .remove(KEY_TIME_REQUESTS)
                 .remove(KEY_SECURITY_EVENTS)
+                .putLong(KEY_PARENT_FREE_UNTIL, 0L)
+                .putLong(KEY_READ_ONLY_UNTIL, 0L)
+                .putInt(KEY_REELS_SWIPE_LIMIT, 0)
+                .putLong(KEY_REELS_COOLDOWN_UNTIL, 0L)
+                .putInt(KEY_REELS_SWIPES_TODAY, 0)
+                .putInt(KEY_REELS_SWIPES_SESSION, 0)
+                .putBoolean(KEY_INCOGNITO_BLOCK, false)
+                .putBoolean(KEY_WEB_KEYWORD_GUARD, false)
+                .putBoolean(KEY_SURGICAL_SETTINGS_PIN, false)
+                .putBoolean(KEY_MULTI_WINDOW_GUARD, false)
+                .putBoolean(KEY_QUICK_SETTINGS_GUARD, false)
+                .putBoolean(KEY_BACKDOOR_GUARD, false)
                 .remove(KEY_BLOCKED_NUMBERS)
                 .remove(KEY_ALLOWED_CALL_NUMBERS)
                 .putBoolean(KEY_BLOCK_UNKNOWN_CALLS, false)
@@ -1290,6 +1383,7 @@ class PortalPreferences(context: Context) {
                 .putInt(KEY_FAILED_ATTEMPTS, 0)
                 .putLong(KEY_LOCKOUT_UNTIL, 0L)
                 .commit()
+            storeDb.clearAllOnUnpair()
             return nextCode
         }
     }
@@ -1463,46 +1557,13 @@ class PortalPreferences(context: Context) {
 
     fun appendLog(level: String, message: String) {
         synchronized(LOCK) {
-            try {
-                val current = getLogs().toMutableList()
-                current.add(0, AuditLogItem(System.currentTimeMillis(), level, message))
-                val trimmed = current.take(40)
-                val arr = JSONArray()
-                for (item in trimmed) {
-                    arr.put(
-                        JSONObject().apply {
-                            put("timestamp", item.timestamp)
-                            put("level", item.level)
-                            put("message", item.message)
-                        }
-                    )
-                }
-                prefs.edit().putString(KEY_AUDIT_LOGS, arr.toString()).apply()
-            } catch (_: Throwable) {
-            }
+            storeDb.insertAuditLog(System.currentTimeMillis(), level, message)
         }
     }
 
     fun getLogs(): List<AuditLogItem> {
         synchronized(LOCK) {
-            val raw = prefs.getString(KEY_AUDIT_LOGS, null) ?: return emptyList()
-            return try {
-                val arr = JSONArray(raw)
-                val list = ArrayList<AuditLogItem>(arr.length())
-                for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    list.add(
-                        AuditLogItem(
-                            timestamp = obj.optLong("timestamp", 0L),
-                            level = obj.optString("level", "info"),
-                            message = obj.optString("message", "")
-                        )
-                    )
-                }
-                list
-            } catch (_: Throwable) {
-                emptyList()
-            }
+            return storeDb.queryAuditLogs(40)
         }
     }
 
@@ -1596,5 +1657,20 @@ class PortalPreferences(context: Context) {
         private const val KEY_LOCKOUT_UNTIL = "lockout_until"
         private const val KEY_AUDIT_LOGS = "audit_logs"
         private const val KEY_ACCESS_PROFILES = "access_profiles_v4"
+        private const val KEY_SQLITE_MIGRATED_V27 = "sqlite_migrated_v27"
+        private const val KEY_PARENT_FREE_UNTIL = "parent_free_until_v27"
+        private const val KEY_READ_ONLY_UNTIL = "read_only_until_v27"
+        private const val KEY_REELS_SWIPE_LIMIT = "reels_swipe_limit_v27"
+        private const val KEY_REELS_COOLDOWN_MIN = "reels_cooldown_min_v27"
+        private const val KEY_REELS_COOLDOWN_UNTIL = "reels_cooldown_until_v27"
+        private const val KEY_REELS_SWIPES_DATE = "reels_swipes_date_v27"
+        private const val KEY_REELS_SWIPES_TODAY = "reels_swipes_today_v27"
+        private const val KEY_REELS_SWIPES_SESSION = "reels_swipes_session_v27"
+        private const val KEY_INCOGNITO_BLOCK = "incognito_block_v27"
+        private const val KEY_WEB_KEYWORD_GUARD = "web_keyword_guard_v27"
+        private const val KEY_SURGICAL_SETTINGS_PIN = "surgical_settings_pin_v27"
+        private const val KEY_MULTI_WINDOW_GUARD = "multi_window_guard_v27"
+        private const val KEY_QUICK_SETTINGS_GUARD = "quick_settings_guard_v27"
+        private const val KEY_BACKDOOR_GUARD = "backdoor_guard_v27"
     }
 }

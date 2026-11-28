@@ -697,6 +697,20 @@ object ScreenTimeHelper {
             put("pendingRequests", reqsArr)
             put("geofences", geoArr)
             put("securityEvents", eventsArr)
+            put("shieldScore", SystemControlHelper.computeShieldScore(context, prefs))
+            put("parentFreeModeUntilMs", prefs.parentFreeModeUntilMs.takeIf { it > now } ?: 0L)
+            put("readOnlyUntilMs", prefs.readOnlyUntilMs.takeIf { it > now } ?: 0L)
+            put("reelsSwipeLimit", prefs.reelsSwipeLimit)
+            put("reelsCooldownMin", prefs.reelsCooldownMin)
+            put("reelsCooldownUntilMs", prefs.reelsCooldownUntilMs.takeIf { it > now } ?: 0L)
+            put("reelsSwipesToday", prefs.getReelsSwipesToday())
+            put("reelsSwipesSession", prefs.getReelsSwipesSession())
+            put("incognitoBlockEnabled", prefs.incognitoBlockEnabled)
+            put("webKeywordGuardEnabled", prefs.webKeywordGuardEnabled)
+            put("surgicalSettingsPinEnabled", prefs.surgicalSettingsPinEnabled)
+            put("multiWindowGuardEnabled", prefs.multiWindowGuardEnabled)
+            put("quickSettingsGuardEnabled", prefs.quickSettingsGuardEnabled)
+            put("backdoorGuardEnabled", prefs.backdoorGuardEnabled)
         }
     }
 

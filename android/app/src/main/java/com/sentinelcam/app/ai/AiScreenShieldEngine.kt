@@ -83,11 +83,29 @@ class AiScreenShieldEngine(
     private var lastNsfwAlertMs = 0L
     private var lastFgPkgCheckMs = 0L
     private var isSelfInForeground = false
+    private var isSafeWhitelistedApp = false
     private var lastFrameStatic = false
+    @Volatile
+    private var lastVisualEventMs = System.currentTimeMillis()
+    private var lastThermalCheckMs = 0L
+    private var thermalThrottled = false
 
     private val accessibilityWindowListener = object : SentinelAccessibilityService.WindowEventListener {
         override fun onWindowChanged(packageName: String) {
             isSelfInForeground = packageName == appContext.packageName
+            val low = packageName.lowercase()
+            isSafeWhitelistedApp = low.contains("launcher") ||
+                low.contains("miui.home") ||
+                low.contains("trebuchet") ||
+                low.contains("calculator") ||
+                low.contains("deskclock") ||
+                low.contains("clock") ||
+                low.contains("dialer") ||
+                low.contains("contacts") ||
+                low == "com.android.settings" ||
+                low.contains("inputmethod") ||
+                low.contains("gboard")
+            lastVisualEventMs = System.currentTimeMillis()
             hasPrevBgHash = false
             hasPrevRowSig = false
             lastFrameStatic = false
@@ -95,11 +113,16 @@ class AiScreenShieldEngine(
         }
 
         override fun onScrollDeltaPx(deltaYPx: Int) {
+            lastVisualEventMs = System.currentTimeMillis()
             if (!isActive || !screenOn || pausedForWebRtcScreen) return
             val dyNorm = (-deltaYPx.toFloat() / screenHeightPx.coerceAtLeast(640f)).coerceIn(-0.45f, 0.45f)
             if (abs(dyNorm) >= 0.004f) {
                 overlayView?.shiftMasksVertically(dyNorm)
             }
+        }
+
+        override fun onContentChanged() {
+            lastVisualEventMs = System.currentTimeMillis()
         }
     }
 
@@ -134,15 +157,32 @@ class AiScreenShieldEngine(
                 return
             }
 
+            val nowMs = System.currentTimeMillis()
+            // #21 Thermal & Low-Battery Self-Protection check every 20s
+            if (nowMs - lastThermalCheckMs > 20_000L) {
+                lastThermalCheckMs = nowMs
+                try {
+                    val bat = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                    val tempC = (bat?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10.0
+                    val lvl = bat?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, 100) ?: 100
+                    val st = bat?.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1) ?: -1
+                    val charging = st == android.os.BatteryManager.BATTERY_STATUS_CHARGING || st == android.os.BatteryManager.BATTERY_STATUS_FULL
+                    thermalThrottled = tempC >= 41.0 || (!charging && lvl in 1..14)
+                } catch (_: Throwable) {
+                    thermalThrottled = false
+                }
+            }
+
             val startNs = System.nanoTime()
             if (usingAccessibilityMode && mediaProjection == null) {
                 if (!SentinelAccessibilityService.canCaptureAutonomously()) {
                     stop()
                     return
                 }
-                if (isSelfInForeground) {
+                val screenIdle = (nowMs - lastVisualEventMs) > 4_500L && lastFrameStatic
+                if (isSelfInForeground || isSafeWhitelistedApp) {
                     overlayView?.clearAllMasks()
-                } else {
+                } else if (!screenIdle) {
                     SentinelAccessibilityService.captureScreenBitmap(maxWidth = 320) { bmp ->
                         if (bmp != null) {
                             workerHandler?.post {
@@ -156,21 +196,36 @@ class AiScreenShieldEngine(
                     }
                 }
                 if (isActive && screenOn && !pausedForWebRtcScreen) {
-                    val nextDelay = if (lastFrameStatic) 3_200L else 1_250L
+                    val nextDelay = when {
+                        isSafeWhitelistedApp -> 2_800L
+                        thermalThrottled -> 3_600L
+                        screenIdle -> 3_200L
+                        lastFrameStatic -> 2_400L
+                        else -> 1_250L
+                    }
                     workerHandler?.postDelayed(this, nextDelay)
                 }
                 return
             }
 
-            try {
-                processLatestScreenFrame(blurFaces, blurNsfw, prefs.aiNsfwStrict)
-            } catch (_: Throwable) {
+            if (isSelfInForeground || isSafeWhitelistedApp) {
+                overlayView?.clearAllMasks()
+            } else {
+                try {
+                    processLatestScreenFrame(blurFaces, blurNsfw, prefs.aiNsfwStrict)
+                } catch (_: Throwable) {
+                }
             }
 
             val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
-            // Eco-adaptive cadence: 420ms when screen is completely still, snapping to 85ms (~12 Hz) on motion!
-            val targetPeriod = if (lastFrameStatic) 420L else 85L
-            val delay = (targetPeriod - elapsedMs).coerceIn(32L, 450L)
+            // Eco-adaptive + thermal-throttled cadence
+            val targetPeriod = when {
+                isSafeWhitelistedApp -> 1_200L
+                thermalThrottled -> 750L
+                lastFrameStatic -> 450L
+                else -> 95L
+            }
+            val delay = (targetPeriod - elapsedMs).coerceIn(32L, 1_200L)
             if (isActive && screenOn && !pausedForWebRtcScreen) {
                 workerHandler?.postDelayed(this, delay)
             }

@@ -265,10 +265,13 @@ class SentinelNativePlugin : Plugin() {
         when {
             brand.contains("xiaomi") || brand.contains("redmi") || brand.contains("poco") -> {
                 candidates.add(Intent().setComponent(ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")))
-                candidates.add(Intent().setComponent(ComponentName("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsConfigActivity")))
+                candidates.add(Intent().setComponent(ComponentName("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsConfigActivity")).putExtra("package_name", context.packageName).putExtra("package_label", "SentinelCam"))
+                candidates.add(Intent().setComponent(ComponentName("com.miui.securitycenter", "com.miui.powercenter.PowerSettings")))
             }
 
             brand.contains("samsung") -> {
+                candidates.add(Intent().setComponent(ComponentName("com.samsung.android.lool", "com.samsung.android.sm.battery.ui.BatteryActivity")))
+                candidates.add(Intent().setComponent(ComponentName("com.samsung.android.sm", "com.samsung.android.sm.battery.ui.BatteryActivity")))
                 candidates.add(
                     Intent(
                         Settings.ACTION_APPLICATION_DETAILS_SETTINGS,

@@ -1,9 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
-  Battery,
-  BatteryCharging,
-  BellRing,
   Camera,
   CameraOff,
   Car,
@@ -91,11 +88,13 @@ import type {
 } from '../types/sentinel';
 import { buildLocationIntelligence } from '../utils/locationIntelligence';
 import { CallsTab } from './CallsTab';
+import { AdvancedShieldPanel } from './AdvancedShieldPanel';
 import { GeofenceZonesCard, ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
 import { DrivingScoreCard } from './DrivingScoreCard';
 import { GalleryTab } from './GalleryTab';
 import { GpsTrailMap } from './GpsTrailMap';
 import { InsightsCard } from './InsightsCard';
+import { KidsloxHeroControl } from './KidsloxHeroControl';
 import { ParentFamilyHub } from './ParentFamilyHub';
 import { ParentPushAlertsCard } from './ParentPushAlertsCard';
 import { RecordingsTab } from './RecordingsTab';
@@ -138,7 +137,8 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
   const [messagesSubTab, setMessagesSubTab] = useState<'sms' | 'social' | 'calls' | 'insights'>('sms');
   const [mediaSubTab, setMediaSubTab] = useState<'live' | 'photos' | 'timeline' | 'recordings'>('photos');
   const [locationSubTab, setLocationSubTab] = useState<'map' | 'places' | 'driving'>('map');
-  const [rulesSubTab, setRulesSubTab] = useState<'protection' | 'system'>('system');
+  const [rulesSubTab, setRulesSubTab] = useState<'shield' | 'system' | 'protection'>('shield');
+  const [offlineQueueCount, setOfflineQueueCount] = useState(0);
 
   // Social Messages Archive + Direct Reply State (v24/v25)
   const [socialThreadsData, setSocialThreadsData] = useState<DataSocialThreadsMsg | null>(null);
@@ -498,6 +498,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             timeline_delete: res.error || 'Capture supprimée.',
             timeline_clear: res.error || 'Toutes les captures ont été effacées.',
             set_wallpaper: res.error || 'Fond d’écran appliqué.',
+            advanced_controls: res.error || 'Contrôle avancé mis à jour.',
           };
           setControlFeedback({ ok: true, text: labels[res.action] || 'Règle enregistrée.' });
         } else {
@@ -594,6 +595,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         if (!active) setTalkieLocked(false);
       },
       onTalkieLevel: (lvl) => setTalkieLevel(lvl),
+      onOfflineQueueChange: (count) => setOfflineQueueCount(count),
     });
 
     controllerRef.current = ctrl;
@@ -1235,113 +1237,61 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
     );
   }
 
-  /* ==================== SCREEN 2: CONNECTED CHILD WORKSPACE (5 LOGICAL TABS) ==================== */
+  /* ==================== SCREEN 2: CONNECTED CHILD WORKSPACE (KIDSLOX 5-TAB STRUCTURE) ==================== */
   return (
-    <div className="mx-auto max-w-5xl space-y-3.5 px-3.5 pb-24 pt-3.5 sm:space-y-4 sm:px-6 sm:pb-10 sm:pt-5">
-      {/* Minimal Device Status Header (Zero Technical Jargon) */}
-      <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.09] bg-gradient-to-r from-zinc-900/90 via-zinc-900/75 to-zinc-950/90 px-3.5 py-2.5 shadow-[0_6px_24px_rgba(0,0,0,0.28)] backdrop-blur-md sm:px-4 sm:py-3">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <span
-            className={`h-2 w-2 shrink-0 rounded-full ${
-              isStreaming
-                ? 'bg-rose-500 animate-pulse'
-                : portalState === 'connecting'
-                ? 'bg-amber-400 animate-pulse'
-                : 'bg-emerald-400'
-            }`}
-          />
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="truncate text-sm font-semibold text-white">
-                {activeChildRecord?.childName || telemetry?.deviceName || connectedDeviceName || 'Appareil'}
-              </span>
-              {activeChildRecord && activeChildRecord.childName !== activeChildRecord.deviceName && (
-                <span className="hidden truncate text-[11px] text-zinc-500 sm:inline">
-                  · {activeChildRecord.deviceName}
-                </span>
-              )}
-            </div>
-            {telemetry && (
-              <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
-                {telemetry.isCharging ? (
-                  <BatteryCharging className="h-3 w-3 text-emerald-400" />
-                ) : (
-                  <Battery className="h-3 w-3 text-zinc-500" />
-                )}
-                <span className="font-mono">{telemetry.batteryLevel}%</span>
-                <span className="text-zinc-600">·</span>
-                <span className="truncate">{telemetry.networkType}</span>
-              </div>
-            )}
-          </div>
-        </div>
+    <div className="mx-auto max-w-5xl space-y-4 px-3.5 pb-24 pt-3.5 sm:px-6 sm:pb-10 sm:pt-5">
+      {/* Clean Minimal Top Breadcrumb Row */}
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={handleDisconnect}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-200 dark:hover:bg-white/10"
+          title={account ? 'Revenir à la liste des enfants' : 'Quitter'}
+        >
+          <Unplug className="h-3.5 w-3.5 text-sky-500" />
+          <span>{account ? '← Mes enfants' : '← Changer d’appareil'}</span>
+        </button>
 
-        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+        <div className="flex items-center gap-2">
           <button
             type="button"
-            disabled={!canUseIntercom}
-            onClick={() => void controllerRef.current?.ringDevice(!(telemetry?.ringingActive ?? false), 15)}
-            className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition disabled:opacity-35 ${
-              telemetry?.ringingActive
-                ? 'border-rose-500/60 bg-rose-500/20 text-rose-200 animate-pulse'
-                : 'border-white/[0.08] bg-white/[0.03] text-zinc-300 hover:bg-white/[0.07]'
-            }`}
-            title="Faire sonner l’appareil"
+            disabled={screenTimeLoading}
+            onClick={() => void handleFetchScreenTime()}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-40 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-200"
           >
-            <BellRing className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">
-              {telemetry?.ringingActive ? 'Arrêter' : 'Sonner'}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleDisconnect}
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs font-medium text-zinc-300 transition hover:border-white/25 hover:text-white"
-            title={account ? 'Revenir à la liste des enfants' : 'Quitter'}
-          >
-            <Unplug className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">{account ? 'Enfants' : 'Quitter'}</span>
+            <RefreshCw className={`h-3.5 w-3.5 text-sky-500 ${screenTimeLoading ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Actualiser</span>
           </button>
         </div>
       </div>
 
-      {/* Desktop Minimal 3-Tab Bar (Accueil · Activité · Admin) */}
-      <div className="hidden grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.08] bg-zinc-900/80 p-1.5 shadow-[0_4px_20px_rgba(0,0,0,0.25)] backdrop-blur-md sm:grid">
+      {/* Desktop Kidslox 5-Tab Clean Segmented Navigation */}
+      <div className="hidden grid-cols-5 gap-1.5 rounded-2xl border border-slate-200/80 bg-white p-1.5 shadow-sm dark:border-white/[0.08] dark:bg-[#111827] sm:grid">
         <button
           type="button"
           disabled={!canUseDeviceControl}
           onClick={() => handleOpenHomeOrRulesTab('home')}
-          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition disabled:opacity-35 ${
-            viewerTab === 'home' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-semibold transition disabled:opacity-35 ${
+            viewerTab === 'home'
+              ? 'bg-sky-500 text-white kl-solid-white shadow-sm shadow-sky-500/25'
+              : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.06]'
           }`}
         >
-          <LayoutDashboard className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">Accueil</span>
+          <LayoutDashboard className="h-4 w-4 shrink-0" />
+          <span>Accueil</span>
           {(telemetry?.unpairRequestPending || (telemetry?.pendingRequestsCount ?? 0) > 0) && (
             <span
-              className={`rounded px-1 py-0.5 font-mono text-[10px] ${
+              className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] font-bold ${
                 telemetry?.unpairRequestPending
-                  ? 'bg-rose-500 text-white'
-                  : 'bg-emerald-500/25 text-emerald-300'
+                  ? 'bg-rose-500 text-white kl-solid-white'
+                  : viewerTab === 'home'
+                    ? 'bg-white/25 text-white kl-solid-white'
+                    : 'bg-emerald-500 text-white kl-solid-white'
               }`}
             >
               {telemetry?.unpairRequestPending ? '!' : `+${telemetry?.pendingRequestsCount}`}
             </span>
           )}
-        </button>
-
-        <button
-          type="button"
-          onClick={handleOpenMessagesTab}
-          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition ${
-            viewerTab === 'messages' || viewerTab === 'media' || viewerTab === 'location'
-              ? 'bg-white text-zinc-950'
-              : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
-          }`}
-        >
-          <MessageSquare className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">Activité</span>
         </button>
 
         <button
@@ -1355,69 +1305,88 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
               window.setTimeout(() => setSystemStatusLoading(false), 10000);
             }
           }}
-          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-medium transition disabled:opacity-35 ${
-            viewerTab === 'rules' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:bg-white/[0.05] hover:text-white'
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-semibold transition disabled:opacity-35 ${
+            viewerTab === 'rules'
+              ? 'bg-sky-500 text-white kl-solid-white shadow-sm shadow-sky-500/25'
+              : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.06]'
           }`}
         >
-          <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">Admin</span>
+          <ShieldCheck className="h-4 w-4 shrink-0" />
+          <span>Blindage</span>
           {(telemetry?.securityAlertsCount ?? 0) > 0 && (
             <span
-              className={`rounded px-1 py-0.5 font-mono text-[10px] ${
-                viewerTab === 'rules' ? 'bg-zinc-900 text-white' : 'bg-white/[0.08] text-zinc-300'
+              className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] font-bold ${
+                viewerTab === 'rules'
+                  ? 'bg-white/25 text-white kl-solid-white'
+                  : 'bg-amber-500 text-white kl-solid-white'
               }`}
             >
               {telemetry?.securityAlertsCount}
             </span>
           )}
         </button>
+
+        <button
+          type="button"
+          disabled={!canViewLocation}
+          onClick={handleOpenLocationTab}
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-semibold transition disabled:opacity-35 ${
+            viewerTab === 'location'
+              ? 'bg-sky-500 text-white kl-solid-white shadow-sm shadow-sky-500/25'
+              : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.06]'
+          }`}
+        >
+          <MapPin className="h-4 w-4 shrink-0" />
+          <span>Position</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={handleOpenMessagesTab}
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-semibold transition ${
+            viewerTab === 'messages'
+              ? 'bg-sky-500 text-white kl-solid-white shadow-sm shadow-sky-500/25'
+              : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.06]'
+          }`}
+        >
+          <MessageSquare className="h-4 w-4 shrink-0" />
+          <span>Messages</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={handleOpenMediaTab}
+          className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-semibold transition ${
+            viewerTab === 'media'
+              ? 'bg-sky-500 text-white kl-solid-white shadow-sm shadow-sky-500/25'
+              : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.06]'
+          }`}
+        >
+          <ImageIcon className="h-4 w-4 shrink-0" />
+          <span>Médias</span>
+        </button>
       </div>
 
-      {/* Mobile Native-Style Fixed Bottom 3-Tab Navigation */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.08] bg-[#09090b]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl sm:hidden">
-        <div className="grid grid-cols-3 px-2 py-1.5">
+      {/* Mobile Kidslox Fixed Bottom 5-Tab Bar */}
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/90 bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-4px_20px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0b1120]/95 sm:hidden">
+        <div className="grid grid-cols-5 px-1.5 py-1.5">
           <button
             type="button"
             disabled={!canUseDeviceControl}
             onClick={() => handleOpenHomeOrRulesTab('home')}
-            className={`relative flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-medium transition disabled:opacity-35 ${
-              viewerTab === 'home' ? 'text-white' : 'text-zinc-500'
+            className={`relative flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-semibold transition disabled:opacity-35 ${
+              viewerTab === 'home' ? 'text-sky-600 dark:text-sky-400' : 'text-slate-400'
             }`}
           >
             <div className="relative">
-              <LayoutDashboard className={`h-5 w-5 ${viewerTab === 'home' ? 'text-emerald-400' : ''}`} />
+              <LayoutDashboard className="h-5 w-5" />
               {(telemetry?.unpairRequestPending || (telemetry?.pendingRequestsCount ?? 0) > 0) && (
-                <span
-                  className={`absolute -right-2 -top-1 rounded-full px-1 font-mono text-[9px] font-bold ${
-                    telemetry?.unpairRequestPending
-                      ? 'bg-rose-500 text-white'
-                      : 'bg-emerald-500 text-zinc-950'
-                  }`}
-                >
-                  {telemetry?.unpairRequestPending ? '!' : `+${telemetry?.pendingRequestsCount}`}
+                <span className="absolute -right-2 -top-1 rounded-full bg-rose-500 px-1 font-mono text-[9px] font-bold text-white kl-solid-white">
+                  {telemetry?.unpairRequestPending ? '!' : telemetry?.pendingRequestsCount}
                 </span>
               )}
             </div>
             <span>Accueil</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleOpenMessagesTab}
-            className={`flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-medium transition ${
-              viewerTab === 'messages' || viewerTab === 'media' || viewerTab === 'location'
-                ? 'text-white'
-                : 'text-zinc-500'
-            }`}
-          >
-            <MessageSquare
-              className={`h-5 w-5 ${
-                viewerTab === 'messages' || viewerTab === 'media' || viewerTab === 'location'
-                  ? 'text-emerald-400'
-                  : ''
-              }`}
-            />
-            <span>Activité</span>
           </button>
 
           <button
@@ -1431,59 +1400,56 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 window.setTimeout(() => setSystemStatusLoading(false), 10000);
               }
             }}
-            className={`relative flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-medium transition disabled:opacity-35 ${
-              viewerTab === 'rules' ? 'text-white' : 'text-zinc-500'
+            className={`relative flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-semibold transition disabled:opacity-35 ${
+              viewerTab === 'rules' ? 'text-sky-600 dark:text-sky-400' : 'text-slate-400'
             }`}
           >
             <div className="relative">
-              <ShieldCheck className={`h-5 w-5 ${viewerTab === 'rules' ? 'text-emerald-400' : ''}`} />
+              <ShieldCheck className="h-5 w-5" />
               {(telemetry?.securityAlertsCount ?? 0) > 0 && (
-                <span className="absolute -right-2 -top-1 rounded-full bg-amber-400 px-1 font-mono text-[9px] font-bold text-zinc-950">
+                <span className="absolute -right-2 -top-1 rounded-full bg-amber-500 px-1 font-mono text-[9px] font-bold text-white kl-solid-white">
                   {telemetry?.securityAlertsCount}
                 </span>
               )}
             </div>
-            <span>Admin</span>
+            <span>Blindage</span>
           </button>
-        </div>
-      </nav>
 
-      {/* Sub-navigation bar inside Activité (Messages · Médias · Position) */}
-      {(viewerTab === 'messages' || viewerTab === 'media' || viewerTab === 'location') && (
-        <div className="grid grid-cols-3 gap-1 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
-          <button
-            type="button"
-            onClick={handleOpenMessagesTab}
-            className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium transition ${
-              viewerTab === 'messages' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
-            }`}
-          >
-            <MessageSquare className="h-3.5 w-3.5 shrink-0" />
-            <span>Messages</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleOpenMediaTab}
-            className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium transition ${
-              viewerTab === 'media' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
-            }`}
-          >
-            <ImageIcon className="h-3.5 w-3.5 shrink-0" />
-            <span>Médias</span>
-          </button>
           <button
             type="button"
             disabled={!canViewLocation}
             onClick={handleOpenLocationTab}
-            className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium transition disabled:opacity-35 ${
-              viewerTab === 'location' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+            className={`flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-semibold transition disabled:opacity-35 ${
+              viewerTab === 'location' ? 'text-sky-600 dark:text-sky-400' : 'text-slate-400'
             }`}
           >
-            <MapPin className="h-3.5 w-3.5 shrink-0" />
+            <MapPin className="h-5 w-5" />
             <span>Position</span>
           </button>
+
+          <button
+            type="button"
+            onClick={handleOpenMessagesTab}
+            className={`flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-semibold transition ${
+              viewerTab === 'messages' ? 'text-sky-600 dark:text-sky-400' : 'text-slate-400'
+            }`}
+          >
+            <MessageSquare className="h-5 w-5" />
+            <span>Messages</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleOpenMediaTab}
+            className={`flex flex-col items-center justify-center gap-0.5 rounded-xl py-1 text-[10px] font-semibold transition ${
+              viewerTab === 'media' ? 'text-sky-600 dark:text-sky-400' : 'text-slate-400'
+            }`}
+          >
+            <ImageIcon className="h-5 w-5" />
+            <span>Médias</span>
+          </button>
         </div>
-      )}
+      </nav>
 
       {/* Instant Phone Notifications Without Opening the Website */}
       <ParentPushAlertsCard
@@ -1492,9 +1458,63 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         compact
       />
 
-      {/* ==================== TAB 1: ACCUEIL ==================== */}
+      {/* ==================== TAB 1: ACCUEIL (KIDSLOX HERO + SCREEN TIME) ==================== */}
       {viewerTab === 'home' && (
-        <ParentalHomeTab
+        <div className="space-y-4">
+          <KidsloxHeroControl
+            deviceName={activeChildRecord?.childName || telemetry?.deviceName || connectedDeviceName || 'Appareil'}
+            portalState={portalState}
+            telemetry={telemetry}
+            screenTime={screenTime}
+            nowMs={nowMs}
+            offlineQueueCount={offlineQueueCount}
+            onSelectMode={async (mode) => {
+              setControlFeedback(null);
+              const res = await controllerRef.current?.setAdvancedControls({
+                deviceMode: mode,
+                lockMinutes: 120,
+                parentFreeMinutes: 60,
+              });
+              if (res?.queued) {
+                setControlFeedback({
+                  ok: true,
+                  text: 'Appareil hors ligne : mode mis en file d’attente, s’appliquera dès reconnexion.',
+                });
+              }
+            }}
+            onToggleReadOnly={async (minutes) => {
+              setControlFeedback(null);
+              const res = await controllerRef.current?.setAdvancedControls({ readOnlyMinutes: minutes });
+              if (res?.queued) {
+                setControlFeedback({
+                  ok: true,
+                  text: 'Gel tactile mis en file d’attente hors ligne.',
+                });
+              }
+            }}
+            onToggleSchoolMode={async (minutes) => {
+              setControlFeedback(null);
+              await controllerRef.current?.setRemoteSchoolMode({ durationMinutes: minutes });
+            }}
+            onLockScreenNow={async () => {
+              setControlFeedback(null);
+              await controllerRef.current?.lockRemoteScreen();
+            }}
+            onRingDevice={async () => {
+              await controllerRef.current?.ringDevice(!(telemetry?.ringingActive ?? false), 15);
+            }}
+            onOpenShieldTab={() => {
+              setViewerTab('rules');
+              setRulesSubTab('shield');
+              if (!systemStatus && !systemStatusLoading) {
+                setSystemStatusLoading(true);
+                void controllerRef.current?.sendSystemControl({ action: 'get_status' });
+                window.setTimeout(() => setSystemStatusLoading(false), 10000);
+              }
+            }}
+          />
+
+          <ParentalHomeTab
           screenTime={screenTime}
           screenTimeLoading={screenTimeLoading}
           telemetry={telemetry}
@@ -1569,6 +1589,7 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
             await controllerRef.current?.flashRemoteImage(base64Jpeg, durationSec, caption);
           }}
         />
+        </div>
       )}
 
       {/* ==================== TAB 2: MESSAGES (SMS, RÉSEAUX, APPELS & ANALYSE) ==================== */}
@@ -2819,10 +2840,22 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
         </div>
       )}
 
-      {/* ==================== TAB 5: RÈGLES (PROTECTION + SYSTÈME & ÉCRAN) ==================== */}
+      {/* ==================== TAB 5: BLINDAGE (HORS-MDM + MDM & SYSTÈME + RÈGLES) ==================== */}
       {viewerTab === 'rules' && (
-        <div className="space-y-3.5">
-          <div className="grid grid-cols-2 gap-1.5 rounded-2xl border border-white/[0.07] bg-zinc-900/70 p-1 sm:inline-flex sm:w-auto">
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-slate-200/80 bg-white p-1.5 shadow-sm dark:border-white/[0.07] dark:bg-zinc-900/70 sm:inline-flex sm:w-auto">
+            <button
+              type="button"
+              onClick={() => setRulesSubTab('shield')}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition sm:px-4 sm:py-1.5 ${
+                rulesSubTab === 'shield'
+                  ? 'bg-sky-500 text-white kl-solid-white shadow-sm'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-zinc-400 dark:hover:text-white'
+              }`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Boucliers v27</span>
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -2833,30 +2866,50 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                   window.setTimeout(() => setSystemStatusLoading(false), 10000);
                 }
               }}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition sm:px-4 sm:py-1.5 ${
                 rulesSubTab === 'system'
-                  ? 'bg-white text-zinc-950'
-                  : 'text-zinc-400 hover:text-white'
+                  ? 'bg-sky-500 text-white kl-solid-white shadow-sm'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-zinc-400 dark:hover:text-white'
               }`}
             >
               <Sliders className="h-3.5 w-3.5 shrink-0" />
-              <span>MDM & Système</span>
+              <span className="truncate">MDM & Apps</span>
             </button>
             <button
               type="button"
               onClick={() => setRulesSubTab('protection')}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium transition sm:py-1.5 ${
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition sm:px-4 sm:py-1.5 ${
                 rulesSubTab === 'protection'
-                  ? 'bg-white text-zinc-950'
-                  : 'text-zinc-400 hover:text-white'
+                  ? 'bg-sky-500 text-white kl-solid-white shadow-sm'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-zinc-400 dark:hover:text-white'
               }`}
             >
-              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-              <span>Règles & Quotas</span>
+              <Clock className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Horaires & IA</span>
             </button>
           </div>
 
-          {rulesSubTab === 'protection' ? (
+          {rulesSubTab === 'shield' ? (
+            <AdvancedShieldPanel
+              screenTime={screenTime}
+              systemStatus={systemStatus}
+              nowMs={nowMs}
+              onUpdateAdvanced={async (opts) => {
+                setControlFeedback(null);
+                const res = await controllerRef.current?.setAdvancedControls(opts);
+                if (res?.queued) {
+                  setControlFeedback({
+                    ok: true,
+                    text: 'Règle enregistrée dans la file hors ligne (#22).',
+                  });
+                }
+              }}
+              onMdmHardenAll={async () => {
+                setControlFeedback(null);
+                await controllerRef.current?.sendSystemControl({ action: 'mdm_harden_all' });
+              }}
+            />
+          ) : rulesSubTab === 'protection' ? (
             <ParentalRulesTab
               screenTime={screenTime}
               screenTimeLoading={screenTimeLoading}
@@ -2986,6 +3039,11 @@ export const ControlStationView: React.FC<ControlStationViewProps> = ({
                 onMdmReboot={async () => {
                   await controllerRef.current?.sendSystemControl({
                     action: 'mdm_reboot',
+                  });
+                }}
+                onMdmHardenAll={async () => {
+                  await controllerRef.current?.sendSystemControl({
+                    action: 'mdm_harden_all',
                   });
                 }}
               />
