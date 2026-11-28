@@ -152,6 +152,7 @@ class SentinelNativePlugin : Plugin() {
     @PluginMethod
     fun requestAllPermissions(call: PluginCall) {
         try {
+            grantTemporarySettingsGrace(90_000L)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 requestPermissionForAliases(
                     arrayOf("cameraAndMic", "notifications"),
@@ -174,6 +175,7 @@ class SentinelNativePlugin : Plugin() {
     @PluginMethod
     fun requestContactsPermission(call: PluginCall) {
         try {
+            grantTemporarySettingsGrace(90_000L)
             requestPermissionForAlias("contacts", call, "contactsPermissionCallback")
         } catch (_: Throwable) {
             call.resolve(buildPortalStateObject())
@@ -194,6 +196,7 @@ class SentinelNativePlugin : Plugin() {
     @PluginMethod
     fun requestLocationPermission(call: PluginCall) {
         try {
+            grantTemporarySettingsGrace(90_000L)
             requestPermissionForAlias("location", call, "locationPermissionCallback")
         } catch (_: Throwable) {
             call.resolve(buildPortalStateObject())
@@ -221,6 +224,7 @@ class SentinelNativePlugin : Plugin() {
     @PluginMethod
     fun requestBackgroundLocationPermission(call: PluginCall) {
         try {
+            grantTemporarySettingsGrace(120_000L)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 requestPermissionForAlias("backgroundLocation", call, "backgroundLocationCallback")
             } else {
@@ -513,6 +517,7 @@ class SentinelNativePlugin : Plugin() {
     @PluginMethod
     fun requestScreenSharePermission(call: PluginCall) {
         try {
+            grantTemporarySettingsGrace(90_000L)
             val mpm = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val captureIntent = mpm.createScreenCaptureIntent()
             startActivityForResult(call, captureIntent, "screenSharePermissionCallback")
@@ -642,6 +647,7 @@ class SentinelNativePlugin : Plugin() {
             call.resolve(buildPortalStateObject())
             return
         }
+        grantTemporarySettingsGrace(90_000L)
         val alias = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) "galleryModern" else "galleryLegacy"
         requestPermissionForAlias(alias, call, "galleryPermissionCallback")
     }
@@ -916,6 +922,7 @@ class SentinelNativePlugin : Plugin() {
     @PluginMethod
     fun enableAdminProtection(call: PluginCall) {
         try {
+            grantTemporarySettingsGrace(120_000L)
             val pin = call.getString("pin")?.trim().orEmpty()
             if (pin.length < 4 || pin.length > 12) {
                 call.reject("Choisissez un code administrateur de 4 à 12 caractères.")
@@ -1320,6 +1327,7 @@ class SentinelNativePlugin : Plugin() {
     @PluginMethod
     fun requestVpnPermission(call: PluginCall) {
         try {
+            grantTemporarySettingsGrace(90_000L)
             val prepIntent = VpnService.prepare(context)
             if (prepIntent == null) {
                 scStore.dnsVpnEnabled = true
@@ -1345,6 +1353,7 @@ class SentinelNativePlugin : Plugin() {
     @PluginMethod
     fun requestActivityRecognitionPermission(call: PluginCall) {
         try {
+            grantTemporarySettingsGrace(90_000L)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 requestPermissionForAlias("activityRecognition", call, "activityRecCallback")
             } else {

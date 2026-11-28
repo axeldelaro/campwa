@@ -68,11 +68,22 @@ class AppBlockActivity : AppCompatActivity() {
                 }
                 MODE_QUARANTINE -> scStore.getQuarantinedPackages().contains(blockedPackage)
                 MODE_MORNING_STEPS -> scStore.isMorningChallengePending(now)
-                MODE_BED_NIGHT -> scStore.isBedtimeActiveNow(now) || scStore.bedDetectorLockUntilMs > now
+                MODE_BED_NIGHT -> {
+                    if (scStore.bedDetectorLockUntilMs > now) {
+                        blockedUntilMs = scStore.bedDetectorLockUntilMs
+                        true
+                    } else if (scStore.isBedtimeActiveNow(now)) {
+                        blockedUntilMs = scStore.getBedtimeEndTimestampMs(now)
+                        true
+                    } else {
+                        false
+                    }
+                }
                 MODE_SCHEDULE -> scStore.getActiveScheduleNow(now) != null || scStore.getActiveFocusGeofenceMode(now) != null
                 MODE_LOST -> prefs.lostModeEnabled
                 MODE_BYPASS -> (prefs.blockSettingsAndStore || prefs.surgicalSettingsPinEnabled || prefs.backdoorGuardEnabled) &&
-                    prefs.settingsUnlockUntilMs <= now
+                    prefs.settingsUnlockUntilMs <= now &&
+                    prefs.parentFreeModeUntilMs <= now
                 MODE_REELS -> {
                     blockedUntilMs = prefs.reelsCooldownUntilMs
                     blockedUntilMs > now && prefs.parentFreeModeUntilMs <= now
@@ -481,9 +492,9 @@ class AppBlockActivity : AppCompatActivity() {
             isAllCaps = false
             textSize = 14f
             setTypeface(Typeface.SANS_SERIF, Typeface.BOLD)
-            setTextColor(Color.parseColor("#09090B"))
+            setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
-                setColor(Color.WHITE)
+                setColor(Color.parseColor("#0EA5E9"))
                 cornerRadius = dp(12).toFloat()
             }
             setPadding(dp(20), dp(12), dp(20), dp(12))
@@ -502,11 +513,11 @@ class AppBlockActivity : AppCompatActivity() {
             isAllCaps = false
             textSize = 13f
             setTypeface(Typeface.SANS_SERIF, Typeface.BOLD)
-            setTextColor(Color.parseColor("#E4E4E7"))
+            setTextColor(Color.parseColor("#0F172A"))
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#27272A"))
+                setColor(Color.parseColor("#F1F5F9"))
                 cornerRadius = dp(12).toFloat()
-                setStroke(dp(1), Color.parseColor("#3F3F46"))
+                setStroke(dp(1), Color.parseColor("#CBD5E1"))
             }
             setPadding(dp(18), dp(11), dp(18), dp(11))
             setOnClickListener {
@@ -542,7 +553,7 @@ class AppBlockActivity : AppCompatActivity() {
             val unlockLink = TextView(this).apply {
                 text = "Déverrouiller avec le code administrateur"
                 textSize = 12f
-                setTextColor(Color.parseColor("#A1A1AA"))
+                setTextColor(Color.parseColor("#475569"))
                 gravity = Gravity.CENTER
                 setPadding(0, dp(18), 0, dp(4))
                 setOnClickListener {
@@ -559,15 +570,15 @@ class AppBlockActivity : AppCompatActivity() {
 
             pinInput = EditText(this).apply {
                 hint = "Code administrateur"
-                setHintTextColor(Color.parseColor("#71717A"))
-                setTextColor(Color.WHITE)
+                setHintTextColor(Color.parseColor("#94A3B8"))
+                setTextColor(Color.parseColor("#0F172A"))
                 textSize = 14f
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
                 setPadding(dp(14), dp(12), dp(14), dp(12))
                 background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#09090B"))
+                    setColor(Color.parseColor("#F8FAFC"))
                     cornerRadius = dp(10).toFloat()
-                    setStroke(dp(1), Color.parseColor("#3F3F46"))
+                    setStroke(dp(1), Color.parseColor("#CBD5E1"))
                 }
             }
             pinRow.addView(

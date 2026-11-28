@@ -145,21 +145,25 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v28.0.${{ github.run_number }}
-          name: "SentinelCam v28.0.${{ github.run_number }} (Auto-Contrôle Pacte Geo-Vault + Pare-feu DNS/VPN Local + Tueur Shorts/Reels)"
+          tag_name: v28.1.${{ github.run_number }}
+          name: "SentinelCam v28.1.${{ github.run_number }} (Audit & Fiabilisation Complète Contrôle Parental + DNS/VPN IPv4/IPv6 + UI Clair/Sombre)"
           body: |
-            ### SentinelCam v28.0 (`v28.0.${{ github.run_number }}`)
+            ### SentinelCam v28.1 (`v28.1.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Nouveau Mode Auto-Contrôle Anti-Addiction (« Pacte Geo-Vault »)** intégré directement dans SentinelCam :
-              - **Verrouillage scellé sur carte interactive** : choisissez un lieu exact + rayon (`30–500 m`) + temps de présence (`30s–5 min`) et scellez le Pacte. Règle à sens unique (vous pouvez toujours durcir vos règles, jamais les assouplir/désactiver/désinstaller hors de la zone GPS !).
-              - **Anti-Fake-GPS natif** : rejet `Location.isMock()` / `isFromMockProvider()`, exigence GPS satellite réel, détection anti-téléportation (`> 220 km/h`), blocage Options Développeur / Mock Location & VPN tiers, plus clés de secours optionnelles (délai de réflexion 24h/48h/72h, Clé Partenaire, Badge QR physique, alertes Partenaire `ntfy.sh`).
-            - **Pare-feu DNS / VPN Local intégré (100 % sur appareil, zéro serveur)** — disponible en **Auto-Contrôle** ET en **Contrôle Parental à distance** :
-              - 8 catégories en 1 clic (Adulte/Porno, Réseaux Web, Streaming, Jeux, Paris/Crypto, Actus, IA non filtrées, APK & VPN/Proxy), blocage anti-DoH, SafeSearch & YouTube Restreint forcés, **Couplage absolu App ↔ Web**, listes noires/blanches/mots-clés et journal DNS en direct.
-            - **Casse-Dopamine & Habitudes** :
-              - **Tueur de Flux Addictifs In-App** (YouTube Shorts, Instagram Reels, Snapchat Spotlight, Facebook Reels, X « Pour vous ») tout en laissant les vidéos longues et messages ouverts.
-              - **Pause Consciente (Respiration 4-7-8)** avant l’ouverture d’applis tentantes, **Mode Détox Nucléaire** (24h/3j/7j/30j), Quotas par session + pause, Max ouvertures/jour, **Quarantaine automatique des nouvelles applis**, **Voile Coucher ambre**, **Détecteur Sous la Couette (< 3 lux + allongé)**, **Défi Réveil Sans Lit (pas)**, **Gagner son temps en marchant**, **Zones Focus auto** & **Heatmap des heures faibles**.
+            - **Corrections Critiques du Contrôle Parental & Auto-Contrôle** :
+              - **Suppression de la boucle de blocage sur l’écran d’accueil** : le garde-fou anti-désinstallation sur le launcher ne se déclenche désormais que sur le menu « Infos appli / Désinstaller » ciblant SentinelCam, jamais sur la simple icône du bureau.
+              - **Popups de permissions Android débloquées** : `permissioncontroller` n’est plus bloqué et une fenêtre de grâce est accordée automatiquement lors de chaque demande de permission (Caméra, Micro, GPS, SMS, Contacts, Galerie, VPN, Admin).
+              - **PIN Paramètres véritablement chirurgical** : le menu principal des Paramètres Android (Wi-Fi, Bluetooth, Son, Luminosité) reste accessible, tandis que les sous-pages critiques (Accessibilité, Admin, Développeur, Réinitialisation, Date/Heure, Infos SentinelCam) sont bloquées avec précision. Le Play Store reste strictement verrouillé quand l’option anti-contournement est active.
+              - **Détection Shorts / Reels / Incognito sans faux positifs** : le Tueur de flux et le compteur de swipes ciblent uniquement les vrais lecteurs plein écran (les vidéos longues YouTube et fils normaux Instagram/Facebook ne sont plus fermés), et le bloqueur Incognito ne ferme plus les pages web ordinaires.
+              - **Réactivité `< 50 ms` sur les blocages d’applis** : `AppLockMonitor` priorise la détection instantanée Accessibilité, résout l’heure exacte de fin de couvre-feu sommeil, et évite tout conflit entre Mode Parent et Mode Auto-Contrôle lors de l’appairage.
+            - **Pare-feu DNS/VPN Local durci Android 14/15 & 4G/5G IPv6** :
+              - Déclaration `FOREGROUND_SERVICE_TYPE_SPECIAL_USE` sur Android 14/15 (`targetSdk 34`), bascule réseau fluide (`setUnderlyingNetworks(null)`), prise en charge complète des paquets DNS **IPv6 UDP/53** (zéro fuite sur opérateurs 4G/5G), et correction de SafeSearch sur requêtes `AAAA`/`HTTPS` (Google/YouTube).
+            - **Connexion & Commandes 100 % garanties** :
+              - Keepalive MQTT calibré (`90s`, ping `45s`), mode Haute Disponibilité automatique pendant l’appairage 6 caractères, et **file d’attente hors-ligne + réveil push automatique** étendus à 100 % des règles parentales.
+            - **Finition Visuelle Kidslox Clair & Sombre** :
+              - Contraste corrigé sur 100 % des cartes, dégradés, badges et boutons en thème Clair et Sombre (Web & Android), et refonte haute lisibilité de l’écran de verrouillage natif `AppBlockActivity`.
 
             `MDM_SIGNATURE_CHECKSUM:${{ env.MDM_SIG_HASH }}`
           files: ./SentinelCam.apk

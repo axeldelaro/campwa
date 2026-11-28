@@ -250,15 +250,17 @@ class SentinelAccessibilityService : AccessibilityService() {
         val limit = prefs.reelsSwipeLimit
         if (limit <= 0) return
 
-        // If YouTube or Instagram, verify user is actually inside Shorts / Reels feed (or count if TikTok directly)
+        // If YouTube or Instagram, verify user is actually inside full-screen Shorts / Reels player
         val isAlwaysShortFeed = lower.contains("musically") || lower.contains("trill")
         if (!isAlwaysShortFeed) {
-            val screenText = collectCompactScreenText(maxNodes = 26)
-            val inShortsOrReels = screenText.contains("shorts") ||
-                screenText.contains("reels") ||
-                screenText.contains("spotlight") ||
-                screenText.contains("remix") ||
-                screenText.contains("abonner")
+            val signals = collectScreenSignals(maxNodes = 36)
+            val inShortsOrReels = when (lower) {
+                "com.google.android.youtube" -> isYouTubeShortsPlayer(signals)
+                "com.instagram.android" -> isInstagramReelsPlayer(signals)
+                "com.snapchat.android" -> isSnapSpotlightPlayer(signals)
+                "com.facebook.katana" -> isFacebookReelsPlayer(signals)
+                else -> false
+            }
             if (!inShortsOrReels) return
         }
 
@@ -318,15 +320,15 @@ class SentinelAccessibilityService : AccessibilityService() {
             val screenText = collectCompactScreenText(maxNodes = 44)
             if (screenText.isNotEmpty()) {
                 val targetsSentinel = screenText.contains("sentinelcam") || screenText.contains("com.sentinelcam")
+                val hasLauncherDestructiveMenu = LAUNCHER_DESTRUCTIVE_TERMS.any { screenText.contains(it) }
+                val hasSettingsDestructiveAction = SETTINGS_DESTRUCTIVE_TERMS.any { screenText.contains(it) }
+
+                // #68 Backdoor Guard: NEVER fire on the home screen just because the SentinelCam icon is visible!
+                // Only fire on launchers when the user opens an App-Info / Uninstall popup menu targeting SentinelCam.
                 if ((prefs.backdoorGuardEnabled || selfControlLocked) && targetsSentinel && (
-                        isLauncher(lower) ||
+                        (isLauncher(lower) && hasLauncherDestructiveMenu) ||
                             lower.contains("packageinstaller") ||
-                            screenText.contains("désinstaller") ||
-                            screenText.contains("uninstall") ||
-                            screenText.contains("forcer l'arrêt") ||
-                            screenText.contains("force stop") ||
-                            screenText.contains("effacer les données") ||
-                            screenText.contains("clear storage")
+                            (isSettingsOrInstaller(lower) && hasSettingsDestructiveAction)
                         )
                 ) {
                     if (selfControlLocked && !parentActive) {
@@ -337,17 +339,33 @@ class SentinelAccessibilityService : AccessibilityService() {
                     return
                 }
 
+                // #58 Truly Surgical Settings PIN:
+                // Allows main Android Settings dashboard (Wi-Fi / Bluetooth / Volume / Display) cleanly!
+                // Only blocks when actually INSIDE a critical sub-page (by Activity class OR page header title)
+                // or when viewing SentinelCam inside Settings/Installer.
                 if ((prefs.surgicalSettingsPinEnabled || selfControlLocked) && isSettingsOrInstaller(lower)) {
-                    val hitsCriticalSetting = CRITICAL_SETTINGS_TERMS.any { screenText.contains(it) } ||
-                        (selfControlLocked && SELF_CONTROL_EXTRA_SETTINGS_TERMS.any { screenText.contains(it) })
-                    if (hitsCriticalSetting || targetsSentinel) {
-                        val label = if (targetsSentinel) "SentinelCam (Paramètres)" else "Réglage système protégé"
-                        if (selfControlLocked && !parentActive) {
-                            ejectGeoSealed(sc!!, pkg, label, now)
-                        } else {
-                            ejectAndRequirePin(prefs, pkg, label, now)
+                    val clsLower = event.className?.toString()?.lowercase(Locale.US).orEmpty()
+                    val isSettingsHomepage = isSettingsDashboardClass(clsLower)
+                    if (!isSettingsHomepage) {
+                        val headerText = collectHeaderText(maxNodes = 6)
+                        val hitsClass = CRITICAL_SETTINGS_CLASS_HINTS.any { clsLower.contains(it) } ||
+                            (selfControlLocked && SELF_CONTROL_CLASS_HINTS.any { clsLower.contains(it) })
+                        val hitsHeader = headerText.isNotEmpty() && (
+                            CRITICAL_SETTINGS_HEADER_TERMS.any { headerText.contains(it) } ||
+                                (selfControlLocked && SELF_CONTROL_HEADER_TERMS.any { headerText.contains(it) })
+                            )
+                        val hitsDangerousAction = CRITICAL_ACTION_BODY_TERMS.any { screenText.contains(it) }
+                        val shouldShieldGeneric = prefs.blockSettingsAndStore || selfControlLocked
+
+                        if (targetsSentinel || (shouldShieldGeneric && (hitsClass || hitsHeader || hitsDangerousAction))) {
+                            val label = if (targetsSentinel) "SentinelCam (Paramètres)" else "Réglage système protégé"
+                            if (selfControlLocked && !parentActive) {
+                                ejectGeoSealed(sc!!, pkg, label, now)
+                            } else {
+                                ejectAndRequirePin(prefs, pkg, label, now)
+                            }
+                            return
                         }
-                        return
                     }
                 }
             }
@@ -356,11 +374,11 @@ class SentinelAccessibilityService : AccessibilityService() {
         // 2) #11: Browser Incognito Blocker & Sensitive Web Keyword Inspector
         val incognitoActive = prefs.incognitoBlockEnabled || selfControlLocked
         if (isKnownBrowser(lower) && (incognitoActive || (parentActive && prefs.webKeywordGuardEnabled))) {
-            val browserText = collectCompactScreenText(maxNodes = 48)
-            if (browserText.isNotEmpty()) {
-                // Close Incognito / Private Browsing tabs immediately!
+            val browserSignals = collectScreenSignals(maxNodes = 44)
+            if (browserSignals.isNotEmpty()) {
+                // Close Incognito / Private Browsing tabs immediately (banner / viewId only — zero false positives on normal web pages!)
                 if (incognitoActive && now - lastIncognitoCloseMs > 3_000L) {
-                    val isPrivateTab = INCOGNITO_TERMS.any { browserText.contains(it) }
+                    val isPrivateTab = INCOGNITO_STRICT_SIGNALS.any { browserSignals.contains(it) }
                     if (isPrivateTab) {
                         lastIncognitoCloseMs = now
                         prefs.appendSecurityEvent(
@@ -381,7 +399,7 @@ class SentinelAccessibilityService : AccessibilityService() {
                 // Real-time Sensitive Web Keyword Alert!
                 if (parentActive && prefs.webKeywordGuardEnabled && now - lastWebKeywordAlertMs > 18_000L) {
                     val keywords = prefs.getSocialAlertKeywords()
-                    val normScreen = normalizeText(browserText)
+                    val normScreen = normalizeText(browserSignals)
                     val matched = keywords.firstOrNull { kw ->
                         val clean = normalizeText(kw)
                         clean.length >= 3 && normScreen.contains(clean)
@@ -401,37 +419,94 @@ class SentinelAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun isYouTubeShortsPlayer(signals: String): Boolean =
+        signals.contains("reel_player") ||
+            signals.contains("reel_watch") ||
+            signals.contains("reel_recycler") ||
+            signals.contains("shorts_video") ||
+            signals.contains("shorts_pivot") ||
+            signals.contains("reel_pivot") ||
+            signals.contains("remix ce short") ||
+            signals.contains("remix this short")
+
+    private fun isInstagramReelsPlayer(signals: String): Boolean =
+        signals.contains("clips_viewer") ||
+            signals.contains("clips_video") ||
+            signals.contains("clips_tab_root") ||
+            (signals.contains("audio d'origine") && signals.contains("reels")) ||
+            (signals.contains("original audio") && signals.contains("reels"))
+
+    private fun isSnapSpotlightPlayer(signals: String): Boolean =
+        signals.contains("spotlight_opera") ||
+            signals.contains("spotlight_feed") ||
+            (signals.contains("spotlight") && signals.contains("remix"))
+
+    private fun isFacebookReelsPlayer(signals: String): Boolean =
+        signals.contains("fb_shorts") ||
+            signals.contains("reels_viewer") ||
+            (signals.contains("reels") && (signals.contains("audio d'origine") || signals.contains("original audio")))
+
     private fun checkAndKillAddictiveFeed(pkgLower: String, targets: Set<String>): String? {
         val signals = collectScreenSignals(maxNodes = 42)
         if (signals.isEmpty()) return null
         return when {
-            pkgLower == "com.google.android.youtube" && "yt_shorts" in targets -> {
-                val isShortsPlayer = signals.contains("reel_player") ||
-                    signals.contains("reel_watch") ||
-                    signals.contains("shorts_pivot") ||
-                    (signals.contains("shorts") && (signals.contains("remix") || signals.contains("abonner") || signals.contains("subscribe")))
-                if (isShortsPlayer) "yt_shorts" else null
-            }
-            pkgLower == "com.instagram.android" && "ig_reels" in targets -> {
-                val isReelsPlayer = signals.contains("clips_viewer") ||
-                    signals.contains("clips_video") ||
-                    (signals.contains("reels") && (signals.contains("audio d'origine") || signals.contains("original audio") || signals.contains("suivre")))
-                if (isReelsPlayer) "ig_reels" else null
-            }
-            pkgLower == "com.snapchat.android" && "snap_spotlight" in targets -> {
-                val isSpotlight = signals.contains("spotlight") && (signals.contains("s'abonner") || signals.contains("subscribe") || signals.contains("remix"))
-                if (isSpotlight) "snap_spotlight" else null
-            }
-            pkgLower == "com.facebook.katana" && "fb_reels" in targets -> {
-                val isFbReels = signals.contains("reels") && (signals.contains("suivre") || signals.contains("follow") || signals.contains("audio"))
-                if (isFbReels) "fb_reels" else null
-            }
+            pkgLower == "com.google.android.youtube" && "yt_shorts" in targets ->
+                if (isYouTubeShortsPlayer(signals)) "yt_shorts" else null
+            pkgLower == "com.instagram.android" && "ig_reels" in targets ->
+                if (isInstagramReelsPlayer(signals)) "ig_reels" else null
+            pkgLower == "com.snapchat.android" && "snap_spotlight" in targets ->
+                if (isSnapSpotlightPlayer(signals)) "snap_spotlight" else null
+            pkgLower == "com.facebook.katana" && "fb_reels" in targets ->
+                if (isFacebookReelsPlayer(signals)) "fb_reels" else null
             pkgLower == "com.twitter.android" && "x_foryou" in targets -> {
                 val isForYou = signals.contains("pour vous") && signals.contains("abonnements")
                 if (isForYou) "x_foryou" else null
             }
             else -> null
         }
+    }
+
+    private fun isSettingsDashboardClass(clsLower: String): Boolean {
+        if (clsLower.isEmpty()) return false
+        return clsLower.endsWith(".settings") ||
+            clsLower.contains("settingshomepageactivity") ||
+            clsLower.contains("homepageactivity") ||
+            clsLower.contains("secsettingshomepage") ||
+            clsLower.contains("miuisettings") ||
+            clsLower.contains("settingsactivity")
+    }
+
+    private fun collectHeaderText(maxNodes: Int): String {
+        val root = try { rootInActiveWindow } catch (_: Throwable) { null } ?: return ""
+        val sb = StringBuilder(160)
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        var textsFound = 0
+        try {
+            while (queue.isNotEmpty() && visited < 28 && textsFound < maxNodes) {
+                val n = queue.removeFirst()
+                visited++
+                val t = n.text?.toString()?.trim()
+                if (!t.isNullOrEmpty() && t.length <= 72) {
+                    sb.append(t.lowercase(Locale.FRENCH)).append(' ')
+                    textsFound++
+                }
+                val childCount = n.childCount.coerceAtMost(8)
+                for (i in 0 until childCount) {
+                    n.getChild(i)?.let { queue.addLast(it) }
+                }
+                if (n !== root) try { n.recycle() } catch (_: Throwable) {}
+            }
+        } catch (_: Throwable) {
+        } finally {
+            while (queue.isNotEmpty()) {
+                val rem = queue.removeFirst()
+                if (rem !== root) try { rem.recycle() } catch (_: Throwable) {}
+            }
+            try { root.recycle() } catch (_: Throwable) {}
+        }
+        return sb.toString()
     }
 
     private fun ejectGeoSealed(sc: SelfControlStore, pkg: String, label: String, now: Long) {
@@ -580,8 +655,7 @@ class SentinelAccessibilityService : AccessibilityService() {
     private fun isSettingsOrInstaller(lower: String): Boolean =
         lower.contains("settings") ||
             lower.contains("packageinstaller") ||
-            lower.contains("securitycenter") ||
-            lower.contains("permissioncontroller")
+            lower.contains("securitycenter")
 
     private fun isLauncher(lower: String): Boolean =
         lower.contains("launcher") || lower.contains("miui.home") || lower.contains("trebuchet")
@@ -658,26 +732,64 @@ class SentinelAccessibilityService : AccessibilityService() {
             "com.duckduckgo.mobile.android"
         )
 
-        private val CRITICAL_SETTINGS_TERMS = listOf(
+        private val LAUNCHER_DESTRUCTIVE_TERMS = listOf(
+            "infos sur l'appli", "informations sur l'application", "info appli", "app info",
+            "désinstaller", "uninstall", "supprimer l'appli", "remove app",
+            "forcer l'arrêt", "force stop"
+        )
+
+        private val SETTINGS_DESTRUCTIVE_TERMS = listOf(
+            "désinstaller", "uninstall", "forcer l'arrêt", "force stop",
+            "effacer les données", "clear storage", "clear data",
+            "désactiver l'appli", "disable app", "désactiver cette appli"
+        )
+
+        private val CRITICAL_SETTINGS_CLASS_HINTS = listOf(
+            "accessibility", "deviceadmin", "developmentsettings", "masterclear",
+            "resetdashboard", "datetimesettings", "usersettings", "usageaccess",
+            "notificationaccess", "installedappdetails"
+        )
+
+        private val SELF_CONTROL_CLASS_HINTS = listOf(
+            "vpnsettings", "privatedns", "drawoverlay"
+        )
+
+        private val CRITICAL_SETTINGS_HEADER_TERMS = listOf(
             "accessibilité", "accessibility",
-            "administrateur", "device admin", "applications d'administration",
-            "options pour les développeurs", "developer options", "débogage usb", "usb debugging",
+            "administrateur de l'appareil", "device admin", "applications d'administration",
+            "options pour les développeurs", "developer options",
             "réinitialiser", "factory reset", "rétablir la configuration",
             "date et heure", "date & time", "régler la date",
             "second espace", "second space", "espace privé", "private space", "dossier sécurisé",
-            "utilisateurs multiples", "multiple users", "invité",
+            "utilisateurs multiples", "multiple users",
             "accès aux données d'utilisation", "usage access",
             "accès aux notifications", "notification access"
         )
 
-        private val SELF_CONTROL_EXTRA_SETTINGS_TERMS = listOf(
+        private val SELF_CONTROL_HEADER_TERMS = listOf(
             "vpn", "dns privé", "private dns", "position fictive", "mock location",
             "superposition", "draw over other apps"
         )
 
-        private val INCOGNITO_TERMS = listOf(
-            "navigation privée", "onglet de navigation privée", "vous êtes passé en mode navigation privée",
-            "incognito", "you've gone incognito", "inprivate", "mode secret", "secret mode"
+        private val CRITICAL_ACTION_BODY_TERMS = listOf(
+            "rétablir la configuration d'usine", "erase all data", "factory data reset",
+            "désactiver cette application d'administration", "deactivate this device admin",
+            "débogage usb", "usb debugging"
+        )
+
+        private val INCOGNITO_STRICT_SIGNALS = listOf(
+            "vous êtes passé en mode navigation privée",
+            "you've gone incognito",
+            "fermer les onglets de navigation privée",
+            "close incognito tabs",
+            "close all incognito tabs",
+            "onglet de navigation privée",
+            "incognito_tab",
+            "new_incognito_tab",
+            "vous naviguez en mode inprivate",
+            "navigation inprivate",
+            "mode secret activé",
+            "fermer les onglets secrets"
         )
 
         fun isActiveNow(): Boolean = activeInstance != null

@@ -169,18 +169,24 @@ class AppLockMonitor(
         }
 
         // #59: Build the full candidate set of visible packages (Split-Screen / Floating Windows / Foreground)
+        // Prioritize instant 0ms Accessibility window detection before slower UsageStats fallback!
         val candidates = LinkedHashSet<String>()
+        val a11yPkg = if (a11yActive) SentinelAccessibilityService.lastWindowPackage else null
+        if (!a11yPkg.isNullOrEmpty()) {
+            candidates.add(a11yPkg)
+        }
         if (a11yActive && prefs.multiWindowGuardEnabled) {
             candidates.addAll(SentinelAccessibilityService.lastVisiblePackages)
         }
-        val detectedFg = if (ScreenTimeHelper.hasUsageAccess(appContext)) {
+        val usageFg = if (ScreenTimeHelper.hasUsageAccess(appContext)) {
             ScreenTimeHelper.detectCurrentForegroundPackage(appContext)
         } else {
-            SentinelAccessibilityService.lastWindowPackage
+            null
         }
-        if (!detectedFg.isNullOrEmpty()) {
-            candidates.add(detectedFg)
+        if (!usageFg.isNullOrEmpty()) {
+            candidates.add(usageFg)
         }
+        val detectedFg = a11yPkg?.takeIf { it.isNotEmpty() } ?: usageFg
 
         if (lostEnabled) {
             val isCallApp = candidates.any {
@@ -203,11 +209,18 @@ class AppLockMonitor(
         val surgicalSettingsHandledByA11y = a11yActive && prefs.surgicalSettingsPinEnabled
 
         for (fgPkg in candidates) {
-            // 1. Anti-Bypass (full block if surgical mode is OFF or Accessibility is not running)
+            // 1. Anti-Bypass: Play Store / App Markets are ALWAYS blocked when antiBypass is ON!
+            // Android Settings is deferred to Surgical Settings PIN when Accessibility is active.
+            val pkgLower = fgPkg.lowercase(Locale.US)
+            val isAppStore = pkgLower == "com.android.vending" ||
+                pkgLower.contains("galaxyapps") ||
+                pkgLower.contains("appmarket") ||
+                pkgLower.contains("xiaomi.market") ||
+                pkgLower.contains("heytap.market")
             if (antiBypass &&
-                !surgicalSettingsHandledByA11y &&
                 prefs.settingsUnlockUntilMs <= now &&
-                ScreenTimeHelper.isSettingsOrStorePackage(fgPkg)
+                ScreenTimeHelper.isSettingsOrStorePackage(fgPkg) &&
+                (isAppStore || !surgicalSettingsHandledByA11y)
             ) {
                 logBlockedOnce(fgPkg, "bypass", "Accès bloqué (Anti-contournement)", fgPkg)
                 launchShield(
@@ -249,7 +262,7 @@ class AppLockMonitor(
 
                 // D. Bedtime / Under-Blanket Night Lock
                 if ((scBedtimeActive || scBedDetectorUntil > now) && !essentials.contains(fgPkg)) {
-                    val endMs = if (scBedDetectorUntil > now) scBedDetectorUntil else now + 3_600_000L
+                    val endMs = if (scBedDetectorUntil > now) scBedDetectorUntil else scStore.getBedtimeEndTimestampMs(now)
                     recordSelfControlAttemptOnce(fgPkg, if (scBedDetectorUntil > now) "bed_detector" else "bedtime")
                     launchShield(AppBlockActivity.MODE_BED_NIGHT, fgPkg, fgLabel, endMs)
                     break

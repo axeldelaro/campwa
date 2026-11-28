@@ -277,12 +277,12 @@ class MqttSignalingEngine(
                         val now = System.currentTimeMillis()
                         if (primaryNode.mqttReady || failoverNode.mqttReady) {
                             reconnectBackoffMs = 2_500L
-                            val pingEveryMs = if (highAvailabilityMode) 35_000L else 75_000L
+                            val pingEveryMs = if (highAvailabilityMode) 30_000L else 45_000L
                             if (now - lastPingMs >= pingEveryMs) {
                                 sendMqttPingActive()
                                 lastPingMs = now
                             }
-                            nextSleepMs = if (highAvailabilityMode) 15_000L else 40_000L
+                            nextSleepMs = if (highAvailabilityMode) 15_000L else 22_000L
                         } else {
                             nextSleepMs = reconnectBackoffMs
                             reconnectBackoffMs = (reconnectBackoffMs * 2L).coerceAtMost(25_000L)
@@ -362,7 +362,7 @@ class MqttSignalingEngine(
     private fun maintainEcoSockets() {
         if (destroyed) return
         val now = System.currentTimeMillis()
-        val staleTimeoutMs = if (highAvailabilityMode) 95_000L else 175_000L
+        val staleTimeoutMs = if (highAvailabilityMode) 95_000L else 150_000L
 
         // Always keep primary broker (EMQX) hot; only hold failover (HiveMQ) + ntfy simultaneously
         // when actively streaming/viewing OR whenever primary is disconnected -> ~55% lower idle battery drain
@@ -419,7 +419,7 @@ class MqttSignalingEngine(
                     }
                     node.lastActivityMs = System.currentTimeMillis()
                     val clientId = "sc_d_${CryptoProtocol.randomHex(5)}"
-                    val connectPacket = buildMqttConnectPacket(clientId, keepAliveSec = 120)
+                    val connectPacket = buildMqttConnectPacket(clientId, keepAliveSec = 90)
                     webSocket.send(connectPacket.toByteString())
                 }
 
@@ -528,11 +528,12 @@ class MqttSignalingEngine(
 
     private fun sendMqttPingActive() {
         val now = System.currentTimeMillis()
+        val maxIdleMs = if (highAvailabilityMode) 105_000L else 165_000L
         val pingBytes = byteArrayOf(0xC0.toByte(), 0x00.toByte()).toByteString()
         for (node in listOf(primaryNode, failoverNode)) {
             if (node.mqttReady) {
-                // #22 Zombie-socket detection: if broker hasn't answered PINGRESP/traffic for > 3.5 min, recycle socket!
-                if (node.lastActivityMs > 0L && (now - node.lastActivityMs) > 210_000L) {
+                // #22 Zombie-socket detection: if broker hasn't answered PINGRESP/traffic within keepalive window, recycle socket!
+                if (node.lastActivityMs > 0L && (now - node.lastActivityMs) > maxIdleMs) {
                     closeNodeQuietly(node)
                     emitHealth()
                 } else {

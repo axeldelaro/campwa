@@ -1293,6 +1293,11 @@ class CameraForegroundService : Service() {
                 val assignedCode = CryptoProtocol.normalizePairingCode(msg.optString("deviceCode", ""))
                 val initialPin = msg.optString("adminPin", "").trim()
                 if (famKey.length == 12 && assignedCode.length == 6) {
+                    // Ensure Self-Control mode never clashes with Parent-Managed mode
+                    try {
+                        com.sentinelcam.app.selfcontrol.SelfControlStore(applicationContext).selfControlEnabled = false
+                    } catch (_: Throwable) {
+                    }
                     prefs.parentFamilyKey = famKey
                     prefs.setPairingCodeDirect(assignedCode)
                     prefs.parentManaged = true
@@ -1344,6 +1349,7 @@ class CameraForegroundService : Service() {
 
                     serviceScope.launch {
                         delay(450L)
+                        if (!isStreaming) signalingEngine?.setHighAvailabilityMode(false)
                         updateNotificationAndNotifyListeners()
                         syncChannelsHot()
                     }
@@ -3069,10 +3075,13 @@ class CameraForegroundService : Service() {
                             "child" -> {
                                 prefs.parentFreeModeUntilMs = 0L
                                 prefs.screenPausedUntilMs = 0L
+                                prefs.readOnlyUntilMs = 0L
+                                com.sentinelcam.app.control.ReadOnlyScreenOverlay.syncWithUntilMs(applicationContext, 0L)
                             }
                             "parent" -> {
                                 prefs.screenPausedUntilMs = 0L
                                 prefs.readOnlyUntilMs = 0L
+                                com.sentinelcam.app.control.ReadOnlyScreenOverlay.syncWithUntilMs(applicationContext, 0L)
                                 val freeMin = msg.optInt("parentFreeMinutes", 60).coerceIn(5, 1440)
                                 prefs.parentFreeModeUntilMs = now + freeMin * 60_000L
                             }
@@ -3163,15 +3172,33 @@ class CameraForegroundService : Service() {
                             if (arr != null) for (i in 0 until arr.length()) arr.optString(i, "").trim().takeIf { it.isNotEmpty() }?.let { set.add(it) }
                             sc.setFeedKillerTargets(set)
                         }
+                        var customFeedback: String? = null
                         if (dnsTouched) {
                             if (sc.dnsVpnEnabled) {
-                                com.sentinelcam.app.vpn.SentinelDnsVpnService.reloadRules(applicationContext)
+                                if (com.sentinelcam.app.vpn.SentinelDnsVpnService.hasVpnConsent(applicationContext)) {
+                                    com.sentinelcam.app.vpn.SentinelDnsVpnService.reloadRules(applicationContext)
+                                } else {
+                                    customFeedback = "Pare-feu DNS enregistré — appuyez 1 fois sur « Autoriser VPN » sur le smartphone enfant pour le démarrer."
+                                }
                             } else {
                                 com.sentinelcam.app.vpn.SentinelDnsVpnService.stopService(applicationContext)
                             }
                         }
                         appLockMonitor?.refreshSchedule()
-                        pushScreenTimeAndResult(channelId, reqId, "advanced_controls")
+                        if (customFeedback != null) {
+                            sendControlResult(channelId, reqId, "advanced_controls", true, customFeedback)
+                            serviceScope.launch(Dispatchers.IO) {
+                                val report = ScreenTimeHelper.readScreenTimeReport(applicationContext, prefs)
+                                report.put("type", "DATA_SCREEN_TIME")
+                                report.put("requestId", reqId)
+                                report.put("ts", System.currentTimeMillis())
+                                signalingEngine?.send(channelId, report, mode = "sess")
+                                broadcastPresenceNow(channelId)
+                                notifyStateListeners()
+                            }
+                        } else {
+                            pushScreenTimeAndResult(channelId, reqId, "advanced_controls")
+                        }
                     }
                 }
 
@@ -4070,15 +4097,18 @@ class CameraForegroundService : Service() {
                 val specs = buildAllChannelSpecs()
                 val engine = signalingEngine
                 if (engine != null) {
+                    engine.setHighAvailabilityMode(true)
                     engine.syncChannels(specs)
+                    engine.nudgeReconnect()
                 } else {
                     ensureSignalingRunning(forceRebuild = false)
+                    signalingEngine?.setHighAvailabilityMode(true)
                 }
 
-                // Wait briefly for broker subscribe, then announce PAIR_HELLO every 1.2s for 40s
+                // Wait briefly for broker subscribe, then announce PAIR_HELLO every 1.2s for 42s
                 delay(700L)
                 var attempts = 0
-                while (isActive && pendingPairCode == code && attempts < 34) {
+                while (isActive && pendingPairCode == code && attempts < 35) {
                     signalingEngine?.send(
                         channelId = PAIRING_CHANNEL_ID,
                         payload = JSONObject().apply {
@@ -4095,12 +4125,14 @@ class CameraForegroundService : Service() {
                 if (pendingPairCode == code) {
                     pendingPairCode = null
                     pairStatus = "timeout"
+                    if (!isStreaming) signalingEngine?.setHighAvailabilityMode(false)
                     syncChannelsHot()
                 }
             } catch (_: Throwable) {
                 if (pendingPairCode == code) {
                     pendingPairCode = null
                     pairStatus = "error"
+                    if (!isStreaming) signalingEngine?.setHighAvailabilityMode(false)
                     notifyStateListeners()
                 }
             }
@@ -4360,10 +4392,10 @@ class CameraForegroundService : Service() {
         fun pairWithParentCode(context: Context, tempCode: String) {
             try {
                 val appCtx = context.applicationContext
+                val p = PortalPreferences(appCtx)
+                p.userManuallyStopped = false
+                p.onboardingCompleted = true
                 if (!isRunning) {
-                    val p = PortalPreferences(appCtx)
-                    p.userManuallyStopped = false
-                    p.onboardingCompleted = true
                     startFromUi(appCtx)
                 }
                 val running = instance

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -146,7 +147,15 @@ class SentinelDnsVpnService : VpnService() {
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setContentIntent(pi)
                 .build()
-            startForeground(VPN_NOTIF_ID, notif)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                try {
+                    startForeground(VPN_NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                } catch (_: Throwable) {
+                    startForeground(VPN_NOTIF_ID, notif)
+                }
+            } else {
+                startForeground(VPN_NOTIF_ID, notif)
+            }
         } catch (_: Throwable) {
         }
     }
@@ -163,11 +172,21 @@ class SentinelDnsVpnService : VpnService() {
                 .addDnsServer(TUN_DNS_IP)
                 .addRoute(TUN_DNS_IP, 32)
             try {
+                builder.addAddress(TUN_LOCAL_IPV6, 128)
+                builder.addDnsServer(TUN_DNS_IPV6)
+                builder.addRoute(TUN_DNS_IPV6, 128)
+            } catch (_: Throwable) {
+            }
+            try {
                 builder.addDisallowedApplication(packageName)
             } catch (_: Throwable) {
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 builder.setMetered(false)
+                try {
+                    builder.setUnderlyingNetworks(null)
+                } catch (_: Throwable) {
+                }
             }
             builder.establish()
         } catch (_: Throwable) {
@@ -203,7 +222,7 @@ class SentinelDnsVpnService : VpnService() {
                 val packet = buf.copyOf(len)
                 workerPool?.execute {
                     try {
-                        handleIpv4Packet(packet)
+                        handleIpPacket(packet)
                     } catch (_: Throwable) {
                     }
                 }
@@ -227,10 +246,51 @@ class SentinelDnsVpnService : VpnService() {
         workerPool = null
     }
 
+    private fun handleIpPacket(pkt: ByteArray) {
+        if (pkt.isEmpty()) return
+        val version = (pkt[0].toInt() ushr 4) and 0x0F
+        when (version) {
+            4 -> handleIpv4Packet(pkt)
+            6 -> handleIpv6Packet(pkt)
+        }
+    }
+
+    private fun processDnsQueryPayload(dnsPayload: ByteArray): ByteArray? {
+        if (dnsPayload.size < 12) return null
+        val domainRaw = parseDnsQueryDomain(dnsPayload)
+        val domain = DnsBlocklistCatalog.normalizeHost(domainRaw)
+        if (domain.isEmpty()) return null
+
+        val decision = evaluateDomain(domain)
+        return when {
+            decision.blocked -> {
+                logDnsDeduped(domain, decision.reason, blocked = true)
+                buildNxDomainDns(dnsPayload)
+            }
+            decision.safeSearchTarget != null -> {
+                val origQType = parseDnsQueryType(dnsPayload)
+                if (origQType != 1 && origQType != 28) {
+                    // For HTTPS/SVCB/etc. return clean NOERROR 0-answer so browser uses SafeSearch A/AAAA!
+                    buildNoErrorEmptyDns(dnsPayload)
+                } else {
+                    val rewrittenQuery = buildRewrittenDnsQuery(dnsPayload, decision.safeSearchTarget)
+                    val upstreamResp = forwardDnsUpstream(rewrittenQuery, useFamilyDns = true)
+                    if (upstreamResp != null) {
+                        patchSafeSearchResponse(dnsPayload, upstreamResp, origQType)
+                    } else {
+                        forwardDnsUpstream(dnsPayload, useFamilyDns = true)
+                    }
+                }
+            }
+            else -> {
+                val useFamily = scStore.getDnsCategories().contains("adult") || scStore.dnsForceSafeSearch
+                forwardDnsUpstream(dnsPayload, useFamilyDns = useFamily)
+            }
+        }
+    }
+
     private fun handleIpv4Packet(pkt: ByteArray) {
         if (pkt.size < 28) return
-        val version = (pkt[0].toInt() ushr 4) and 0x0F
-        if (version != 4) return
         val ihl = (pkt[0].toInt() and 0x0F) * 4
         if (ihl < 20 || pkt.size < ihl + 8) return
         val protocol = pkt[9].toInt() and 0xFF
@@ -245,31 +305,7 @@ class SentinelDnsVpnService : VpnService() {
         if (dnsLen < 12) return
 
         val dnsPayload = pkt.copyOfRange(udpOffset, pkt.size)
-        val domainRaw = parseDnsQueryDomain(dnsPayload)
-        val domain = DnsBlocklistCatalog.normalizeHost(domainRaw)
-        if (domain.isEmpty()) return
-
-        val decision = evaluateDomain(domain)
-        val responseDns: ByteArray? = when {
-            decision.blocked -> {
-                logDnsDeduped(domain, decision.reason, blocked = true)
-                buildNxDomainDns(dnsPayload)
-            }
-            decision.safeSearchTarget != null -> {
-                val rewrittenQuery = buildRewrittenDnsQuery(dnsPayload, decision.safeSearchTarget)
-                val upstreamResp = forwardDnsUpstream(rewrittenQuery, useFamilyDns = true)
-                if (upstreamResp != null) {
-                    // Patch transaction ID & question section back so client accepts the answer seamlessly
-                    patchSafeSearchResponse(dnsPayload, upstreamResp)
-                } else {
-                    forwardDnsUpstream(dnsPayload, useFamilyDns = true)
-                }
-            }
-            else -> {
-                val useFamily = scStore.getDnsCategories().contains("adult") || scStore.dnsForceSafeSearch
-                forwardDnsUpstream(dnsPayload, useFamilyDns = useFamily)
-            }
-        }
+        val responseDns = processDnsQueryPayload(dnsPayload)
 
         if (responseDns != null && responseDns.isNotEmpty()) {
             val replyIpv4 = buildIpv4UdpReply(
@@ -282,6 +318,38 @@ class SentinelDnsVpnService : VpnService() {
             synchronized(writeLock) {
                 try {
                     tunOut?.write(replyIpv4)
+                } catch (_: Throwable) {
+                }
+            }
+        }
+    }
+
+    private fun handleIpv6Packet(pkt: ByteArray) {
+        if (pkt.size < 48) return
+        val nextHeader = pkt[6].toInt() and 0xFF
+        if (nextHeader != 17) return // UDP only
+
+        val srcPort = readU16(pkt, 40)
+        val dstPort = readU16(pkt, 42)
+        if (dstPort != 53) return
+
+        val dnsLen = pkt.size - 48
+        if (dnsLen < 12) return
+
+        val dnsPayload = pkt.copyOfRange(48, pkt.size)
+        val responseDns = processDnsQueryPayload(dnsPayload)
+
+        if (responseDns != null && responseDns.isNotEmpty()) {
+            val replyIpv6 = buildIpv6UdpReply(
+                srcIp = pkt.copyOfRange(24, 40), // swap dst -> src
+                dstIp = pkt.copyOfRange(8, 24),  // swap src -> dst
+                srcPort = 53,
+                dstPort = srcPort,
+                payload = responseDns
+            )
+            synchronized(writeLock) {
+                try {
+                    tunOut?.write(replyIpv6)
                 } catch (_: Throwable) {
                 }
             }
@@ -519,12 +587,42 @@ class SentinelDnsVpnService : VpnService() {
         return out
     }
 
-    /** Re-maps SafeSearch A/AAAA answer records back to the original queried hostname. */
-    private fun patchSafeSearchResponse(origQuery: ByteArray, safeResp: ByteArray): ByteArray {
-        // Extract first IPv4 A record from safeResp if present, else fallback to safeResp
-        if (safeResp.size < 16) return safeResp
+    /** Reads QTYPE (1=A, 28=AAAA, 65=HTTPS, etc.) from a DNS query packet. */
+    private fun parseDnsQueryType(query: ByteArray): Int {
+        var pos = 12
+        while (pos < query.size) {
+            val len = query[pos].toInt() and 0xFF
+            pos++
+            if (len == 0) break
+            pos += len
+        }
+        return if (pos + 2 <= query.size) readU16(query, pos) else 1
+    }
+
+    /** Builds a clean RFC 1035 NOERROR (RCODE=0) 0-answer response matching the client's query. */
+    private fun buildNoErrorEmptyDns(query: ByteArray): ByteArray {
+        var pos = 12
+        while (pos < query.size) {
+            val len = query[pos].toInt() and 0xFF
+            pos++
+            if (len == 0) break
+            pos += len
+        }
+        val questionEnd = (pos + 4).coerceAtMost(query.size)
+        val resp = query.copyOf(questionEnd)
+        resp[2] = ((query[2].toInt() and 0x79) or 0x80).toByte()
+        resp[3] = 0x80.toByte() // RA=1, NOERROR
+        resp[6] = 0; resp[7] = 0
+        resp[8] = 0; resp[9] = 0
+        resp[10] = 0; resp[11] = 0
+        return resp
+    }
+
+    /** Re-maps SafeSearch A (IPv4) or AAAA (IPv6) answer records cleanly back to the original queried hostname. */
+    private fun patchSafeSearchResponse(origQuery: ByteArray, safeResp: ByteArray, origQType: Int): ByteArray {
+        if (safeResp.size < 16) return buildNoErrorEmptyDns(origQuery)
         val anCount = readU16(safeResp, 6)
-        if (anCount <= 0) return safeResp
+        if (anCount <= 0) return buildNoErrorEmptyDns(origQuery)
 
         // Skip question in safeResp
         var sp = 12
@@ -536,10 +634,10 @@ class SentinelDnsVpnService : VpnService() {
         }
         sp += 4 // QTYPE + QCLASS
 
-        var foundIpv4: ByteArray? = null
+        val expectedLen = if (origQType == 28) 16 else 4
+        var foundAddr: ByteArray? = null
         for (i in 0 until anCount) {
             if (sp + 12 > safeResp.size) break
-            // Skip NAME (either pointer or labels)
             if ((safeResp[sp].toInt() and 0xC0) == 0xC0) {
                 sp += 2
             } else {
@@ -554,15 +652,15 @@ class SentinelDnsVpnService : VpnService() {
             val rType = readU16(safeResp, sp)
             val rdLen = readU16(safeResp, sp + 8)
             sp += 10
-            if (rType == 1 && rdLen == 4 && sp + 4 <= safeResp.size) {
-                foundIpv4 = safeResp.copyOfRange(sp, sp + 4)
+            if (rType == origQType && rdLen == expectedLen && sp + expectedLen <= safeResp.size) {
+                foundAddr = safeResp.copyOfRange(sp, sp + expectedLen)
                 break
             }
             sp += rdLen
         }
-        val ip = foundIpv4 ?: return safeResp
+        val ip = foundAddr ?: return buildNoErrorEmptyDns(origQuery)
 
-        // Build clean response with origQuery's Question + 1 A-record pointing to SafeSearch IP!
+        // Build clean response with origQuery's Question + 1 A/AAAA record pointing to SafeSearch IP!
         var op = 12
         while (op < origQuery.size) {
             val l = origQuery[op].toInt() and 0xFF
@@ -571,22 +669,81 @@ class SentinelDnsVpnService : VpnService() {
             op += l
         }
         val qEnd = (op + 4).coerceAtMost(origQuery.size)
-        val out = ByteArray(qEnd + 16)
+        val out = ByteArray(qEnd + 12 + expectedLen)
         System.arraycopy(origQuery, 0, out, 0, qEnd)
         out[2] = ((origQuery[2].toInt() and 0x79) or 0x80).toByte()
         out[3] = 0x80.toByte() // RA=1, NOERROR
         out[6] = 0; out[7] = 1 // ANCOUNT=1
         out[8] = 0; out[9] = 0
         out[10] = 0; out[11] = 0
-        // Answer RR: pointer to 0x0C, TYPE=A(1), CLASS=IN(1), TTL=120s, RDLENGTH=4, RDATA=ip
         var p = qEnd
         out[p++] = 0xC0.toByte(); out[p++] = 0x0C.toByte()
-        out[p++] = 0; out[p++] = 1
-        out[p++] = 0; out[p++] = 1
-        out[p++] = 0; out[p++] = 0; out[p++] = 0; out[p++] = 120
-        out[p++] = 0; out[p++] = 4
-        System.arraycopy(ip, 0, out, p, 4)
+        writeU16(out, p, origQType); p += 2
+        out[p++] = 0; out[p++] = 1 // CLASS=IN
+        out[p++] = 0; out[p++] = 0; out[p++] = 0; out[p++] = 120 // TTL=120s
+        writeU16(out, p, expectedLen); p += 2
+        System.arraycopy(ip, 0, out, p, expectedLen)
         return out
+    }
+
+    private fun buildIpv6UdpReply(
+        srcIp: ByteArray,
+        dstIp: ByteArray,
+        srcPort: Int,
+        dstPort: Int,
+        payload: ByteArray
+    ): ByteArray {
+        val udpLen = 8 + payload.size
+        val out = ByteArray(40 + udpLen)
+        // IPv6 Header (40 bytes)
+        out[0] = 0x60.toByte() // Version 6
+        out[1] = 0x00; out[2] = 0x00; out[3] = 0x00
+        writeU16(out, 4, udpLen)
+        out[6] = 17 // Next Header = UDP
+        out[7] = 64 // Hop Limit
+        System.arraycopy(srcIp, 0, out, 8, 16)
+        System.arraycopy(dstIp, 0, out, 24, 16)
+        // UDP Header (8 bytes)
+        writeU16(out, 40, srcPort)
+        writeU16(out, 42, dstPort)
+        writeU16(out, 44, udpLen)
+        writeU16(out, 46, 0)
+        System.arraycopy(payload, 0, out, 48, payload.size)
+        // Mandatory RFC 2460 IPv6 UDP checksum (pseudo-header + UDP header + payload)
+        val csum = ipv6UdpChecksum(srcIp, dstIp, out, 40, udpLen)
+        writeU16(out, 46, if (csum == 0) 0xFFFF else csum)
+        return out
+    }
+
+    private fun ipv6UdpChecksum(
+        srcIp: ByteArray,
+        dstIp: ByteArray,
+        udpBuf: ByteArray,
+        udpOffset: Int,
+        udpLen: Int
+    ): Int {
+        var sum = 0L
+        fun addBytes(arr: ByteArray, start: Int, len: Int) {
+            var i = start
+            val end = start + len
+            while (i + 1 < end) {
+                sum += ((arr[i].toInt() and 0xFF) shl 8) or (arr[i + 1].toInt() and 0xFF)
+                i += 2
+            }
+            if (i < end) {
+                sum += (arr[i].toInt() and 0xFF) shl 8
+            }
+        }
+        addBytes(srcIp, 0, 16)
+        addBytes(dstIp, 0, 16)
+        sum += (udpLen ushr 16) and 0xFFFF
+        sum += udpLen and 0xFFFF
+        sum += 17L // Next Header UDP
+        addBytes(udpBuf, udpOffset, udpLen)
+        while ((sum ushr 16) != 0L) {
+            sum = (sum and 0xFFFF) + (sum ushr 16)
+        }
+        return (sum.inv() and 0xFFFF).toInt()
     }
 
     private fun buildIpv4UdpReply(
@@ -666,6 +823,8 @@ class SentinelDnsVpnService : VpnService() {
     companion object {
         private const val TUN_LOCAL_IP = "10.88.0.2"
         private const val TUN_DNS_IP = "10.88.0.1"
+        private const val TUN_LOCAL_IPV6 = "fd88::2"
+        private const val TUN_DNS_IPV6 = "fd88::1"
         private const val VPN_CHANNEL_ID = "sentinelcam_dns_vpn_v28"
         private const val VPN_NOTIF_ID = 2810
 

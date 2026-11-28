@@ -638,11 +638,36 @@ export class SentinelWebRtcController {
     await this.signaling.send({ type: 'CMD_SPEAK_TEXT', text: text.trim().slice(0, 240), ts: Date.now() }, 'sess');
   }
 
+  private async sendOrQueueControlCommand(
+    payload: SignalMessage,
+    label: string,
+    actionKey: DataControlResultMsg['action']
+  ): Promise<boolean> {
+    if (this.signaling && this.authenticated) {
+      await this.signaling.send(payload, 'sess');
+      return true;
+    }
+    if (this.pairingCode) {
+      const next = enqueueOfflineCommand(this.pairingCode, label, payload);
+      this.callbacks.onOfflineQueueChange?.(next.length);
+      this.callbacks.onControlResult?.({
+        type: 'DATA_CONTROL_RESULT',
+        requestId: String((payload as { requestId?: string }).requestId || ''),
+        action: actionKey,
+        success: true,
+        error: `Appareil en veille : « ${label} » mis en file d’attente (exécution auto au réveil).`,
+        ts: Date.now(),
+      });
+      void this.sendServerlessPushInvitation(this.pairingCode);
+    }
+    return false;
+  }
+
   public async lockRemoteScreen(): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       { type: 'CMD_LOCK_SCREEN', requestId: randomHex(8), ts: Date.now() },
-      'sess'
+      'Verrouillage écran',
+      'lock_screen'
     );
   }
 
@@ -660,8 +685,7 @@ export class SentinelWebRtcController {
     durationMinutes: number;
     untilMs?: number;
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SET_APP_LOCK',
         requestId: randomHex(8),
@@ -671,13 +695,15 @@ export class SentinelWebRtcController {
         untilMs: options.untilMs,
         ts: Date.now(),
       },
-      'sess'
+      options.durationMinutes > 0 || (options.untilMs ?? 0) > Date.now()
+        ? `Verrouiller ${options.appName}`
+        : `Débloquer ${options.appName}`,
+      'app_lock'
     );
   }
 
   public async setRemoteScreenPause(durationMinutes: number, lockImmediately = true): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SET_SCREEN_PAUSE',
         requestId: randomHex(8),
@@ -685,25 +711,25 @@ export class SentinelWebRtcController {
         lockImmediately,
         ts: Date.now(),
       },
-      'sess'
+      durationMinutes > 0 ? `Pause appareil (${durationMinutes} min)` : 'Lever la pause appareil',
+      'screen_pause'
     );
   }
 
   public async clearAllRemoteAppLocks(): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_CLEAR_ALL_APP_LOCKS',
         requestId: randomHex(8),
         ts: Date.now(),
       },
-      'sess'
+      'Tout débloquer',
+      'clear_locks'
     );
   }
 
   public async setRemoteAdminPin(newPin: string, enableProtection = true): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SET_ADMIN_PIN',
         requestId: randomHex(8),
@@ -711,7 +737,8 @@ export class SentinelWebRtcController {
         enableProtection,
         ts: Date.now(),
       },
-      'sess'
+      'Code administrateur',
+      'set_admin_pin'
     );
   }
 
@@ -721,15 +748,15 @@ export class SentinelWebRtcController {
     endMin: number;
     daysMask: number;
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SET_CURFEW',
         requestId: randomHex(8),
         ...opts,
         ts: Date.now(),
       },
-      'sess'
+      opts.enabled ? 'Activer couvre-feu' : 'Désactiver couvre-feu',
+      'curfew'
     );
   }
 
@@ -738,15 +765,15 @@ export class SentinelWebRtcController {
     appName: string;
     dailyLimitMinutes: number;
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SET_APP_QUOTA',
         requestId: randomHex(8),
         ...opts,
         ts: Date.now(),
       },
-      'sess'
+      `Quota ${opts.appName}`,
+      'app_quota'
     );
   }
 
@@ -757,15 +784,15 @@ export class SentinelWebRtcController {
     dailyLimitMinutes?: number;
     delete?: boolean;
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SAVE_APP_GROUP_QUOTA',
         requestId: randomHex(8),
         ...opts,
         ts: Date.now(),
       },
-      'sess'
+      opts.delete ? 'Supprimer quota de groupe' : `Quota groupe ${opts.name || ''}`.trim(),
+      'app_group_quota'
     );
   }
 
@@ -773,28 +800,28 @@ export class SentinelWebRtcController {
     durationMinutes?: number;
     allowedPackages?: string[];
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SET_SCHOOL_MODE',
         requestId: randomHex(8),
         ...opts,
         ts: Date.now(),
       },
-      'sess'
+      'Mode École',
+      'school_mode'
     );
   }
 
   public async setRemoteAntiBypass(enabled: boolean): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SET_ANTI_BYPASS',
         requestId: randomHex(8),
         enabled,
         ts: Date.now(),
       },
-      'sess'
+      enabled ? 'Verrouiller Paramètres/Play Store' : 'Libérer Paramètres/Play Store',
+      'anti_bypass'
     );
   }
 
@@ -804,15 +831,15 @@ export class SentinelWebRtcController {
     phoneNumber?: string;
     ringNow?: boolean;
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SET_LOST_MODE',
         requestId: randomHex(8),
         ...opts,
         ts: Date.now(),
       },
-      'sess'
+      opts.enabled ? 'Activer Mode Perdu' : 'Désactiver Mode Perdu',
+      'lost_mode'
     );
   }
 
@@ -821,15 +848,15 @@ export class SentinelWebRtcController {
     approve: boolean;
     grantMinutes?: number;
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_RESPOND_TIME_REQUEST',
         requestId: randomHex(8),
         ...opts,
         ts: Date.now(),
       },
-      'sess'
+      opts.approve ? 'Accepter demande de temps' : 'Refuser demande de temps',
+      'time_request'
     );
   }
 
@@ -841,27 +868,27 @@ export class SentinelWebRtcController {
     radiusMeters?: number;
     delete?: boolean;
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SAVE_GEOFENCE',
         requestId: randomHex(8),
         ...opts,
         ts: Date.now(),
       },
-      'sess'
+      opts.delete ? 'Supprimer zone GPS' : `Zone GPS ${opts.name || ''}`.trim(),
+      'geofence'
     );
   }
 
   public async clearRemoteSecurityEvents(): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_CLEAR_SECURITY_EVENTS',
         requestId: randomHex(8),
         ts: Date.now(),
       },
-      'sess'
+      'Effacer journal alertes',
+      'clear_events'
     );
   }
 
@@ -898,15 +925,15 @@ export class SentinelWebRtcController {
     blurNsfw?: boolean;
     nsfwStrict?: boolean;
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SET_AI_SHIELD',
         requestId: randomHex(8),
         ...opts,
         ts: Date.now(),
       },
-      'sess'
+      'Filtre visuel IA',
+      'ai_shield'
     );
   }
 
@@ -920,15 +947,15 @@ export class SentinelWebRtcController {
     allowIntercom?: boolean;
     allowDeviceInfo?: boolean;
   }): Promise<void> {
-    if (!this.signaling || !this.authenticated) return;
-    await this.signaling.send(
+    await this.sendOrQueueControlCommand(
       {
         type: 'CMD_SET_REMOTE_POLICY',
         requestId: randomHex(8),
         ...opts,
         ts: Date.now(),
       },
-      'sess'
+      'Autorisations à distance',
+      'remote_policy'
     );
   }
 
@@ -1150,6 +1177,7 @@ export class SentinelWebRtcController {
       if (opts.action !== 'get_status' && this.pairingCode) {
         const next = enqueueOfflineCommand(this.pairingCode, `Système: ${opts.action}`, payload);
         this.callbacks.onOfflineQueueChange?.(next.length);
+        void this.sendServerlessPushInvitation(this.pairingCode);
       }
       return;
     }
@@ -1189,6 +1217,7 @@ export class SentinelWebRtcController {
       if (this.pairingCode) {
         const next = enqueueOfflineCommand(this.pairingCode, 'Règle parentale avancée', payload);
         this.callbacks.onOfflineQueueChange?.(next.length);
+        void this.sendServerlessPushInvitation(this.pairingCode);
         return { queued: true };
       }
       return { queued: false };

@@ -574,6 +574,22 @@ class SelfControlStore(context: Context) {
         return isMinInRange(currentMinuteOfDay(nowMs), bedtimeStartMin, bedtimeEndMin)
     }
 
+    fun getBedtimeEndTimestampMs(nowMs: Long = System.currentTimeMillis()): Long {
+        val cal = Calendar.getInstance().apply { timeInMillis = nowMs }
+        val nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        val endCal = Calendar.getInstance().apply {
+            timeInMillis = nowMs
+            set(Calendar.HOUR_OF_DAY, bedtimeEndMin / 60)
+            set(Calendar.MINUTE, bedtimeEndMin % 60)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        if (nowMin >= bedtimeEndMin) {
+            endCal.add(Calendar.DAY_OF_YEAR, 1)
+        }
+        return endCal.timeInMillis
+    }
+
     fun isWindDownWindowNow(nowMs: Long = System.currentTimeMillis()): Boolean {
         if (!windDownEnabled || !bedtimeEnabled) return false
         if (isBedtimeActiveNow(nowMs)) return true
@@ -840,7 +856,7 @@ class SelfControlStore(context: Context) {
                     dnsCoupleAppWeb = true
                     killers.addAll(listOf("yt_shorts", "ig_reels", "snap_spotlight", "fb_reels", "x_foryou"))
                     blocked.addAll(listOf("com.zhiliaoapp.musically", "com.ss.android.ugc.trill"))
-                    friction.addAll(listOf("com.instagram.android", "com.google.android.youtube", "com.twitter.android", "com.reddit.android"))
+                    friction.addAll(listOf("com.instagram.android", "com.google.android.youtube", "com.twitter.android", "com.reddit.frontpage"))
                     if (frictionDelaySec < 20) frictionDelaySec = 20
                 }
 
@@ -878,7 +894,7 @@ class SelfControlStore(context: Context) {
                     cats.addAll(ALL_DNS_CATEGORIES)
                     killers.addAll(ALL_FEED_KILLERS)
                     blocked.addAll(DEFAULT_SOCIAL_PACKAGES)
-                    friction.addAll(listOf("com.google.android.youtube", "com.reddit.android"))
+                    friction.addAll(listOf("com.google.android.youtube", "com.reddit.frontpage"))
                     if (frictionDelaySec < 30) frictionDelaySec = 30
                     bedtimeEnabled = true
                     bedtimeStartMin = 22 * 60
