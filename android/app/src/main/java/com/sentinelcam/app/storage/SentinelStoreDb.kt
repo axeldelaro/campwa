@@ -56,10 +56,144 @@ class SentinelStoreDb private constructor(context: Context) : SQLiteOpenHelper(
             """.trimIndent()
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_audit_logs_ts ON audit_logs(ts DESC)")
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS dns_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                domain TEXT NOT NULL,
+                category TEXT NOT NULL,
+                blocked INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_dns_logs_ts ON dns_logs(ts DESC)")
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS block_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                hour INTEGER NOT NULL,
+                pkg TEXT NOT NULL,
+                reason TEXT NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_block_attempts_ts ON block_attempts(ts DESC)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         onCreate(db)
+    }
+
+    data class DnsLogItem(
+        val timestamp: Long,
+        val domain: String,
+        val category: String,
+        val blocked: Boolean
+    )
+
+    fun insertDnsLog(domain: String, category: String, blocked: Boolean, timestamp: Long = System.currentTimeMillis()) {
+        try {
+            val db = writableDatabase
+            val cv = ContentValues().apply {
+                put("ts", timestamp)
+                put("domain", domain.take(180))
+                put("category", category.take(40))
+                put("blocked", if (blocked) 1 else 0)
+            }
+            db.insert("dns_logs", null, cv)
+            // Keep latest 400 DNS rows (~14 days rolling)
+            val cutoff = timestamp - 14L * 24L * 3600L * 1000L
+            db.delete("dns_logs", "ts < ?", arrayOf(cutoff.toString()))
+            db.execSQL(
+                """
+                DELETE FROM dns_logs WHERE id NOT IN (
+                    SELECT id FROM dns_logs ORDER BY ts DESC LIMIT 400
+                )
+                """.trimIndent()
+            )
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun queryRecentDnsLogs(limit: Int = 50, blockedOnly: Boolean = false): List<DnsLogItem> {
+        val out = ArrayList<DnsLogItem>()
+        try {
+            val sql = if (blockedOnly) {
+                "SELECT ts, domain, category, blocked FROM dns_logs WHERE blocked = 1 ORDER BY ts DESC LIMIT ?"
+            } else {
+                "SELECT ts, domain, category, blocked FROM dns_logs ORDER BY ts DESC LIMIT ?"
+            }
+            readableDatabase.rawQuery(sql, arrayOf(limit.coerceIn(1, 200).toString())).use { c ->
+                while (c.moveToNext()) {
+                    out.add(DnsLogItem(c.getLong(0), c.getString(1), c.getString(2), c.getInt(3) == 1))
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return out
+    }
+
+    fun getBlockedDnsCountSince(sinceMs: Long): Int {
+        return try {
+            readableDatabase.rawQuery(
+                "SELECT COUNT(*) FROM dns_logs WHERE blocked = 1 AND ts >= ?",
+                arrayOf(sinceMs.toString())
+            ).use { c ->
+                if (c.moveToFirst()) c.getInt(0) else 0
+            }
+        } catch (_: Throwable) {
+            0
+        }
+    }
+
+    fun insertBlockAttempt(pkg: String, reason: String, timestamp: Long = System.currentTimeMillis()) {
+        try {
+            val cal = java.util.Calendar.getInstance().apply { timeInMillis = timestamp }
+            val hour = cal.get(java.util.Calendar.HOUR_OF_DAY).coerceIn(0, 23)
+            val db = writableDatabase
+            val cv = ContentValues().apply {
+                put("ts", timestamp)
+                put("hour", hour)
+                put("pkg", pkg.take(140))
+                put("reason", reason.take(48))
+            }
+            db.insert("block_attempts", null, cv)
+            val cutoff = timestamp - 30L * 24L * 3600L * 1000L
+            db.delete("block_attempts", "ts < ?", arrayOf(cutoff.toString()))
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun queryHourlyWeaknessHeatmap(days: Int = 7): IntArray {
+        val counts = IntArray(24)
+        try {
+            val cutoff = System.currentTimeMillis() - days.coerceIn(1, 30) * 24L * 3600L * 1000L
+            readableDatabase.rawQuery(
+                "SELECT hour, COUNT(*) FROM block_attempts WHERE ts >= ? GROUP BY hour",
+                arrayOf(cutoff.toString())
+            ).use { c ->
+                while (c.moveToNext()) {
+                    val h = c.getInt(0)
+                    if (h in 0..23) counts[h] = c.getInt(1)
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return counts
+    }
+
+    fun getTotalBlockAttempts(): Int {
+        return try {
+            readableDatabase.rawQuery("SELECT COUNT(*) FROM block_attempts", null).use { c ->
+                if (c.moveToFirst()) c.getInt(0) else 0
+            }
+        } catch (_: Throwable) {
+            0
+        }
     }
 
     fun insertSecurityEvent(item: SecurityEventItem) {
@@ -177,7 +311,7 @@ class SentinelStoreDb private constructor(context: Context) : SQLiteOpenHelper(
 
     companion object {
         private const val DB_NAME = "sentinel_wal_store_v27.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
         private const val RETENTION_MS = 30L * 24L * 3600L * 1000L
 
         @Volatile

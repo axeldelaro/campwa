@@ -142,6 +142,34 @@ object ParentAlertPushHelper {
         }
     }
 
+    fun sendCustomTopicAlertAsync(topic: String, title: String, message: String, priority: Int = 4) {
+        val clean = topic.trim()
+        if (clean.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val dedupKey = "partner:$clean:$title"
+        val prev = lastSentByKey[dedupKey] ?: 0L
+        if (now - prev < 15_000L) return
+        lastSentByKey[dedupKey] = now
+        pushExecutor.execute {
+            try {
+                val mediaType = "application/json; charset=utf-8".toMediaType()
+                val bodyJson = JSONObject().apply {
+                    put("topic", clean)
+                    put("title", title.take(120))
+                    put("message", message.take(320))
+                    put("priority", priority.coerceIn(1, 5))
+                    put("tags", JSONArray().put("shield"))
+                }
+                val req = Request.Builder()
+                    .url("https://ntfy.sh")
+                    .post(bodyJson.toString().toRequestBody(mediaType))
+                    .build()
+                httpClient.newCall(req).execute().use { _ -> }
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     fun sendTestAlertAsync(topic: String, deviceLabel: String = "SentinelCam") {
         val clean = topic.trim()
         if (clean.isEmpty()) return

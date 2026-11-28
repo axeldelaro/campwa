@@ -1170,6 +1170,14 @@ export class SentinelWebRtcController {
     multiWindowGuardEnabled?: boolean;
     quickSettingsGuardEnabled?: boolean;
     backdoorGuardEnabled?: boolean;
+    dnsVpnEnabled?: boolean;
+    dnsCategories?: string[];
+    dnsForceSafeSearch?: boolean;
+    dnsCoupleAppWeb?: boolean;
+    dnsBlacklist?: string[];
+    dnsWhitelist?: string[];
+    dnsBlockedKeywords?: string[];
+    feedKillerTargets?: string[];
   }): Promise<{ queued: boolean }> {
     const payload: SignalMessage = {
       type: 'CMD_SET_ADVANCED_CONTROLS',

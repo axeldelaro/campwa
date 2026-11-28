@@ -145,16 +145,21 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v27.0.${{ github.run_number }}
-          name: "SentinelCam v27.0.${{ github.run_number }} (Interface Kidslox + Blindage Forteresse + 19 Super-Fonctions)"
+          tag_name: v28.0.${{ github.run_number }}
+          name: "SentinelCam v28.0.${{ github.run_number }} (Auto-Contrôle Pacte Geo-Vault + Pare-feu DNS/VPN Local + Tueur Shorts/Reels)"
           body: |
-            ### SentinelCam v27.0 (`v27.0.${{ github.run_number }}`)
+            ### SentinelCam v28.0 (`v28.0.${{ github.run_number }}`)
 
             Téléchargez et installez **`SentinelCam.apk`** (Android 8.0 à Android 15+).
 
-            - **Refonte complète de l’IHM inspirée de Kidslox** : thème clair moderne (avec bascule sombre 1-clic), sélecteur **3 modes (Verrouillé / Enfant / Parent)**, navigation structurée en 5 onglets, score de blindage `/100`, et application enfant épurée.
-            - **Nouvelles fonctions puissantes Hors-MDM (Code 6 chiffres)** : Écran Lecture Seule / Gel tactile (#31), Quota Reels/Shorts/TikTok par nombre de swipes (#46), Blocage Navigation Privée & alertes mots-clés web (#11), PIN chirurgical dans Paramètres (#58), Blocage Multi-Fenêtre/Écran scindé/PiP (#59), Verrou Tuiles rapides (#60), Triple Chien de garde croisé (#66) et Bloqueur Portes dérobées (#68).
-            - **Blindage MDM & Optimisations drastiques** : Blocage Invité/Second Espace/Espace Privé Android 15 (#2), Blocage Forcer l’arrêt/VPN/DNS/USB/Mode Avion (#3), Durcissement 1-clic & Silence Radio (#8), Désinstallation silencieuse MDM (#13), Moteur Event-Driven sans polling (#20), Vision IA thermorégulée (#21), File hors ligne Store & Forward (#22), Cache inventaire apps (#23), Base SQLite WAL (#24), GPS ancré Wi-Fi (#25) et Assistant Batterie OEM (#26).
+            - **Nouveau Mode Auto-Contrôle Anti-Addiction (« Pacte Geo-Vault »)** intégré directement dans SentinelCam :
+              - **Verrouillage scellé sur carte interactive** : choisissez un lieu exact + rayon (`30–500 m`) + temps de présence (`30s–5 min`) et scellez le Pacte. Règle à sens unique (vous pouvez toujours durcir vos règles, jamais les assouplir/désactiver/désinstaller hors de la zone GPS !).
+              - **Anti-Fake-GPS natif** : rejet `Location.isMock()` / `isFromMockProvider()`, exigence GPS satellite réel, détection anti-téléportation (`> 220 km/h`), blocage Options Développeur / Mock Location & VPN tiers, plus clés de secours optionnelles (délai de réflexion 24h/48h/72h, Clé Partenaire, Badge QR physique, alertes Partenaire `ntfy.sh`).
+            - **Pare-feu DNS / VPN Local intégré (100 % sur appareil, zéro serveur)** — disponible en **Auto-Contrôle** ET en **Contrôle Parental à distance** :
+              - 8 catégories en 1 clic (Adulte/Porno, Réseaux Web, Streaming, Jeux, Paris/Crypto, Actus, IA non filtrées, APK & VPN/Proxy), blocage anti-DoH, SafeSearch & YouTube Restreint forcés, **Couplage absolu App ↔ Web**, listes noires/blanches/mots-clés et journal DNS en direct.
+            - **Casse-Dopamine & Habitudes** :
+              - **Tueur de Flux Addictifs In-App** (YouTube Shorts, Instagram Reels, Snapchat Spotlight, Facebook Reels, X « Pour vous ») tout en laissant les vidéos longues et messages ouverts.
+              - **Pause Consciente (Respiration 4-7-8)** avant l’ouverture d’applis tentantes, **Mode Détox Nucléaire** (24h/3j/7j/30j), Quotas par session + pause, Max ouvertures/jour, **Quarantaine automatique des nouvelles applis**, **Voile Coucher ambre**, **Détecteur Sous la Couette (< 3 lux + allongé)**, **Défi Réveil Sans Lit (pas)**, **Gagner son temps en marchant**, **Zones Focus auto** & **Heatmap des heures faibles**.
 
             `MDM_SIGNATURE_CHECKSUM:${{ env.MDM_SIG_HASH }}`
           files: ./SentinelCam.apk

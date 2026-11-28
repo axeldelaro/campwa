@@ -12,8 +12,11 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.sentinelcam.app.receiver.KeepAliveReceiver
+import com.sentinelcam.app.selfcontrol.SelfControlStore
+import com.sentinelcam.app.selfcontrol.WindDownVeilOverlay
 import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.storage.PortalPreferences
+import com.sentinelcam.app.vpn.SentinelDnsVpnService
 import java.text.Normalizer
 import java.util.Locale
 import java.util.concurrent.CopyOnWriteArraySet
@@ -42,6 +45,8 @@ class SentinelAccessibilityService : AccessibilityService() {
     private var lastBypassShieldMs = 0L
     private var lastIncognitoCloseMs = 0L
     private var lastWebKeywordAlertMs = 0L
+    private var lastFeedKillMs = 0L
+    private var lastVpnReviveMs = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -53,6 +58,11 @@ class SentinelAccessibilityService : AccessibilityService() {
             if (prefs.parentManaged) {
                 ReadOnlyScreenOverlay.syncWithUntilMs(applicationContext, prefs.readOnlyUntilMs)
             }
+            val sc = SelfControlStore(applicationContext)
+            if (sc.dnsVpnEnabled) {
+                SentinelDnsVpnService.ensureRunningIfEnabled(applicationContext)
+            }
+            WindDownVeilOverlay.sync(applicationContext, sc.isWindDownWindowNow())
         } catch (_: Throwable) {
         }
     }
@@ -62,10 +72,20 @@ class SentinelAccessibilityService : AccessibilityService() {
         val now = System.currentTimeMillis()
         val pkg = event.packageName?.toString()?.trim().orEmpty()
 
-        // #66 Cross-Watchdog: silently revive main service if OEM killed it
+        // #66 Cross-Watchdog: silently revive main service & DNS VPN if OEM killed them
         if (!CameraForegroundService.isRunning && now - lastWatchdogReviveMs > 8_000L) {
             lastWatchdogReviveMs = now
             reviveMainServiceIfNeeded()
+        }
+        if (!SentinelDnsVpnService.isVpnActive && now - lastVpnReviveMs > 12_000L) {
+            lastVpnReviveMs = now
+            try {
+                val sc = SelfControlStore(applicationContext)
+                if (sc.dnsVpnEnabled) {
+                    SentinelDnsVpnService.ensureRunningIfEnabled(applicationContext)
+                }
+            } catch (_: Throwable) {
+            }
         }
 
         when (event.eventType) {
@@ -107,7 +127,7 @@ class SentinelAccessibilityService : AccessibilityService() {
                         val lower = pkg.lowercase(Locale.US)
                         if (lower == "com.android.systemui") {
                             checkQuickSettingsGuard(event, now)
-                        } else if (isSettingsOrInstaller(lower) || isKnownBrowser(lower) || isLauncher(lower)) {
+                        } else if (isSettingsOrInstaller(lower) || isKnownBrowser(lower) || isLauncher(lower) || isFeedKillerCandidate(lower)) {
                             inspectActiveWindowForGuards(pkg, event, now)
                         }
                     }
@@ -137,7 +157,8 @@ class SentinelAccessibilityService : AccessibilityService() {
     private fun reviveMainServiceIfNeeded() {
         try {
             val prefs = PortalPreferences(applicationContext)
-            if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
+            val sc = SelfControlStore(applicationContext)
+            if ((prefs.onboardingCompleted || sc.selfControlEnabled) && !prefs.userManuallyStopped) {
                 CameraForegroundService.ensureRunningSafely(applicationContext)
                 KeepAliveReceiver.scheduleImmediateRevive(applicationContext, 2_000L)
             }
@@ -223,7 +244,9 @@ class SentinelAccessibilityService : AccessibilityService() {
         if (!isShortVideoApp) return
 
         val prefs = try { PortalPreferences(applicationContext) } catch (_: Throwable) { return }
-        if (!prefs.parentManaged || prefs.parentFreeModeUntilMs > now) return
+        val sc = try { SelfControlStore(applicationContext) } catch (_: Throwable) { null }
+        val managedOrSelf = prefs.parentManaged || (sc?.selfControlEnabled == true)
+        if (!managedOrSelf || prefs.parentFreeModeUntilMs > now) return
         val limit = prefs.reelsSwipeLimit
         if (limit <= 0) return
 
@@ -261,21 +284,41 @@ class SentinelAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** #58 Surgical Settings PIN + #68 Backdoor Guard + #11 Browser Incognito & Keyword Inspector! */
+    /** #58 Surgical Settings PIN + #68 Backdoor Guard + #11 Browser Incognito & Keyword + v28 In-App Feed Killer & Geo-Vault Guard! */
     private fun inspectActiveWindowForGuards(pkg: String, event: AccessibilityEvent, now: Long) {
         val prefs = try { PortalPreferences(applicationContext) } catch (_: Throwable) { return }
-        if (!prefs.parentManaged || prefs.parentFreeModeUntilMs > now) return
-
+        val sc = try { SelfControlStore(applicationContext) } catch (_: Throwable) { null }
         val lower = pkg.lowercase(Locale.US)
-        val settingsUnlocked = prefs.settingsUnlockUntilMs > now
 
-        // 1) #58 & #68: Surgical Settings PIN Shield & Backdoor Guard (App-Info / PackageInstaller / Uninstall)
+        // 0) v28 In-App Addictive Feed Killer (YouTube Shorts, IG Reels, Snap Spotlight, FB Reels, X "For You")
+        if (sc != null && isFeedKillerCandidate(lower) && now - lastFeedKillMs > 1_100L) {
+            val targets = sc.getFeedKillerTargets()
+            if (targets.isNotEmpty() && prefs.parentFreeModeUntilMs <= now) {
+                val killedFeed = checkAndKillAddictiveFeed(lower, targets)
+                if (killedFeed != null) {
+                    lastFeedKillMs = now
+                    sc.recordReclaimedAction(pkg, "feed_killer:$killedFeed", estimatedSavedMin = 6)
+                    try {
+                        performGlobalAction(GLOBAL_ACTION_BACK)
+                    } catch (_: Throwable) {
+                    }
+                    return
+                }
+            }
+        }
+
+        val selfControlLocked = sc != null && sc.isSettingsProtectedNow(now)
+        val parentActive = prefs.parentManaged && prefs.parentFreeModeUntilMs <= now
+        if (!parentActive && !selfControlLocked) return
+
+        val settingsUnlocked = !selfControlLocked && prefs.settingsUnlockUntilMs > now
+
+        // 1) #58 & #68 + v28 Sealed Geo-Vault Anti-Tamper (App-Info / VPN / Private DNS / A11y / Admin / Dev / Date-Time / Uninstall)
         if (!settingsUnlocked && (isSettingsOrInstaller(lower) || isLauncher(lower))) {
-            val screenText = collectCompactScreenText(maxNodes = 42)
+            val screenText = collectCompactScreenText(maxNodes = 44)
             if (screenText.isNotEmpty()) {
                 val targetsSentinel = screenText.contains("sentinelcam") || screenText.contains("com.sentinelcam")
-                // #68: Launcher long-press "Infos sur l'appli" or Uninstall dialog targeting SentinelCam
-                if (prefs.backdoorGuardEnabled && targetsSentinel && (
+                if ((prefs.backdoorGuardEnabled || selfControlLocked) && targetsSentinel && (
                         isLauncher(lower) ||
                             lower.contains("packageinstaller") ||
                             screenText.contains("désinstaller") ||
@@ -286,16 +329,24 @@ class SentinelAccessibilityService : AccessibilityService() {
                             screenText.contains("clear storage")
                         )
                 ) {
-                    ejectAndRequirePin(prefs, pkg, "Protection anti-désinstallation (SentinelCam)", now)
+                    if (selfControlLocked && !parentActive) {
+                        ejectGeoSealed(sc!!, pkg, "Pacte Geo-Vault (SentinelCam)", now)
+                    } else {
+                        ejectAndRequirePin(prefs, pkg, "Protection anti-désinstallation (SentinelCam)", now)
+                    }
                     return
                 }
 
-                // #58: Surgical Settings PIN Guard (blocks dangerous Settings pages while allowing Wi-Fi/Bluetooth/Sound!)
-                if (prefs.surgicalSettingsPinEnabled && isSettingsOrInstaller(lower)) {
-                    val hitsCriticalSetting = CRITICAL_SETTINGS_TERMS.any { screenText.contains(it) }
+                if ((prefs.surgicalSettingsPinEnabled || selfControlLocked) && isSettingsOrInstaller(lower)) {
+                    val hitsCriticalSetting = CRITICAL_SETTINGS_TERMS.any { screenText.contains(it) } ||
+                        (selfControlLocked && SELF_CONTROL_EXTRA_SETTINGS_TERMS.any { screenText.contains(it) })
                     if (hitsCriticalSetting || targetsSentinel) {
                         val label = if (targetsSentinel) "SentinelCam (Paramètres)" else "Réglage système protégé"
-                        ejectAndRequirePin(prefs, pkg, label, now)
+                        if (selfControlLocked && !parentActive) {
+                            ejectGeoSealed(sc!!, pkg, label, now)
+                        } else {
+                            ejectAndRequirePin(prefs, pkg, label, now)
+                        }
                         return
                     }
                 }
@@ -303,11 +354,12 @@ class SentinelAccessibilityService : AccessibilityService() {
         }
 
         // 2) #11: Browser Incognito Blocker & Sensitive Web Keyword Inspector
-        if (isKnownBrowser(lower) && (prefs.incognitoBlockEnabled || prefs.webKeywordGuardEnabled)) {
+        val incognitoActive = prefs.incognitoBlockEnabled || selfControlLocked
+        if (isKnownBrowser(lower) && (incognitoActive || (parentActive && prefs.webKeywordGuardEnabled))) {
             val browserText = collectCompactScreenText(maxNodes = 48)
             if (browserText.isNotEmpty()) {
                 // Close Incognito / Private Browsing tabs immediately!
-                if (prefs.incognitoBlockEnabled && now - lastIncognitoCloseMs > 3_000L) {
+                if (incognitoActive && now - lastIncognitoCloseMs > 3_000L) {
                     val isPrivateTab = INCOGNITO_TERMS.any { browserText.contains(it) }
                     if (isPrivateTab) {
                         lastIncognitoCloseMs = now
@@ -316,6 +368,7 @@ class SentinelAccessibilityService : AccessibilityService() {
                             title = "Navigation privée bloquée",
                             detail = "Onglet incognito détecté et fermé dans ${ScreenTimeHelper.resolveAppName(packageManager, pkg)}."
                         )
+                        sc?.recordReclaimedAction(pkg, "incognito_blocked", estimatedSavedMin = 5)
                         CameraForegroundService.notifySecurityEventExternal()
                         try {
                             performGlobalAction(GLOBAL_ACTION_BACK)
@@ -326,7 +379,7 @@ class SentinelAccessibilityService : AccessibilityService() {
                 }
 
                 // Real-time Sensitive Web Keyword Alert!
-                if (prefs.webKeywordGuardEnabled && now - lastWebKeywordAlertMs > 18_000L) {
+                if (parentActive && prefs.webKeywordGuardEnabled && now - lastWebKeywordAlertMs > 18_000L) {
                     val keywords = prefs.getSocialAlertKeywords()
                     val normScreen = normalizeText(browserText)
                     val matched = keywords.firstOrNull { kw ->
@@ -347,6 +400,101 @@ class SentinelAccessibilityService : AccessibilityService() {
             }
         }
     }
+
+    private fun checkAndKillAddictiveFeed(pkgLower: String, targets: Set<String>): String? {
+        val signals = collectScreenSignals(maxNodes = 42)
+        if (signals.isEmpty()) return null
+        return when {
+            pkgLower == "com.google.android.youtube" && "yt_shorts" in targets -> {
+                val isShortsPlayer = signals.contains("reel_player") ||
+                    signals.contains("reel_watch") ||
+                    signals.contains("shorts_pivot") ||
+                    (signals.contains("shorts") && (signals.contains("remix") || signals.contains("abonner") || signals.contains("subscribe")))
+                if (isShortsPlayer) "yt_shorts" else null
+            }
+            pkgLower == "com.instagram.android" && "ig_reels" in targets -> {
+                val isReelsPlayer = signals.contains("clips_viewer") ||
+                    signals.contains("clips_video") ||
+                    (signals.contains("reels") && (signals.contains("audio d'origine") || signals.contains("original audio") || signals.contains("suivre")))
+                if (isReelsPlayer) "ig_reels" else null
+            }
+            pkgLower == "com.snapchat.android" && "snap_spotlight" in targets -> {
+                val isSpotlight = signals.contains("spotlight") && (signals.contains("s'abonner") || signals.contains("subscribe") || signals.contains("remix"))
+                if (isSpotlight) "snap_spotlight" else null
+            }
+            pkgLower == "com.facebook.katana" && "fb_reels" in targets -> {
+                val isFbReels = signals.contains("reels") && (signals.contains("suivre") || signals.contains("follow") || signals.contains("audio"))
+                if (isFbReels) "fb_reels" else null
+            }
+            pkgLower == "com.twitter.android" && "x_foryou" in targets -> {
+                val isForYou = signals.contains("pour vous") && signals.contains("abonnements")
+                if (isForYou) "x_foryou" else null
+            }
+            else -> null
+        }
+    }
+
+    private fun ejectGeoSealed(sc: SelfControlStore, pkg: String, label: String, now: Long) {
+        if (now - lastBypassShieldMs < 1_200L) return
+        lastBypassShieldMs = now
+        try {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+        } catch (_: Throwable) {}
+        sc.recordReclaimedAction(pkg, "geo_tamper_blocked", estimatedSavedMin = 5)
+        sc.notifyPartnerIfConfigured("Tentative de modification bloquée", "Accès bloqué hors zone carte : $label")
+        launchShieldDirect(
+            mode = AppBlockActivity.MODE_GEO_SEALED,
+            pkg = pkg,
+            appName = label,
+            untilMs = now + 3_600_000L
+        )
+    }
+
+    private fun collectScreenSignals(maxNodes: Int): String {
+        val root = try { rootInActiveWindow } catch (_: Throwable) { null } ?: return ""
+        val sb = StringBuilder(384)
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        try {
+            while (queue.isNotEmpty() && visited < maxNodes) {
+                val n = queue.removeFirst()
+                visited++
+                val vid = n.viewIdResourceName?.lowercase(Locale.US)
+                if (!vid.isNullOrEmpty()) {
+                    sb.append(vid.substringAfterLast('/')).append(' ')
+                }
+                val t = n.text?.toString()?.trim()
+                if (!t.isNullOrEmpty() && t.length <= 80) {
+                    sb.append(t.lowercase(Locale.FRENCH)).append(' ')
+                }
+                val cd = n.contentDescription?.toString()?.trim()
+                if (!cd.isNullOrEmpty() && cd.length <= 80) {
+                    sb.append(cd.lowercase(Locale.FRENCH)).append(' ')
+                }
+                val childCount = n.childCount.coerceAtMost(10)
+                for (i in 0 until childCount) {
+                    n.getChild(i)?.let { queue.addLast(it) }
+                }
+                if (n !== root) try { n.recycle() } catch (_: Throwable) {}
+            }
+        } catch (_: Throwable) {
+        } finally {
+            while (queue.isNotEmpty()) {
+                val rem = queue.removeFirst()
+                if (rem !== root) try { rem.recycle() } catch (_: Throwable) {}
+            }
+            try { root.recycle() } catch (_: Throwable) {}
+        }
+        return sb.toString()
+    }
+
+    private fun isFeedKillerCandidate(lower: String): Boolean =
+        lower == "com.google.android.youtube" ||
+            lower == "com.instagram.android" ||
+            lower == "com.snapchat.android" ||
+            lower == "com.facebook.katana" ||
+            lower == "com.twitter.android"
 
     private fun ejectAndRequirePin(prefs: PortalPreferences, pkg: String, label: String, now: Long) {
         if (now - lastBypassShieldMs < 1_200L) return
@@ -520,6 +668,11 @@ class SentinelAccessibilityService : AccessibilityService() {
             "utilisateurs multiples", "multiple users", "invité",
             "accès aux données d'utilisation", "usage access",
             "accès aux notifications", "notification access"
+        )
+
+        private val SELF_CONTROL_EXTRA_SETTINGS_TERMS = listOf(
+            "vpn", "dns privé", "private dns", "position fictive", "mock location",
+            "superposition", "draw over other apps"
         )
 
         private val INCOGNITO_TERMS = listOf(

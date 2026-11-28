@@ -768,6 +768,18 @@ export interface DataScreenTimeMsg {
   multiWindowGuardEnabled?: boolean;
   quickSettingsGuardEnabled?: boolean;
   backdoorGuardEnabled?: boolean;
+  dnsVpnEnabled?: boolean;
+  dnsVpnRunning?: boolean;
+  dnsVpnConsented?: boolean;
+  dnsCategories?: string[];
+  dnsForceSafeSearch?: boolean;
+  dnsCoupleAppWeb?: boolean;
+  dnsBlacklist?: string[];
+  dnsWhitelist?: string[];
+  dnsBlockedKeywords?: string[];
+  dnsBlockedTodayCount?: number;
+  recentDnsLogs?: DnsLogEntry[];
+  feedKillerTargets?: string[];
   error?: string;
   ts: number;
 }
@@ -1355,6 +1367,14 @@ export interface CmdSetAdvancedControlsMsg {
   multiWindowGuardEnabled?: boolean;
   quickSettingsGuardEnabled?: boolean;
   backdoorGuardEnabled?: boolean;
+  dnsVpnEnabled?: boolean;
+  dnsCategories?: string[];
+  dnsForceSafeSearch?: boolean;
+  dnsCoupleAppWeb?: boolean;
+  dnsBlacklist?: string[];
+  dnsWhitelist?: string[];
+  dnsBlockedKeywords?: string[];
+  feedKillerTargets?: string[];
   ts: number;
 }
 
@@ -1752,7 +1772,129 @@ export interface NativePermissionStatus {
   usageAccess?: boolean;
   overlay?: boolean;
   accessibilityService?: boolean;
+  vpnConsent?: boolean;
+  activityRecognition?: boolean;
   screenShareReady: boolean;
+}
+
+export interface DnsLogEntry {
+  timestamp: number;
+  domain: string;
+  category: string;
+  blocked: boolean;
+}
+
+export interface SelfControlSessionQuota {
+  packageName: string;
+  appName: string;
+  maxSessionMin: number;
+  cooldownMin: number;
+  cooldownUntilMs?: number;
+}
+
+export interface SelfControlScheduleSlot {
+  id: string;
+  name: string;
+  startMin: number;
+  endMin: number;
+  daysMask: number;
+  mode: 'focus' | 'block_social' | 'sleep';
+  blockedPackages: string[];
+}
+
+export interface SelfControlFocusZone {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  radiusMeters: number;
+  mode: 'deep_work' | 'night_curfew';
+  insideNow: boolean;
+}
+
+export interface SelfControlGeoStatus {
+  hasFix: boolean;
+  currentLat: number;
+  currentLng: number;
+  accuracyM: number;
+  distanceM: number;
+  insideZone: boolean;
+  dwellSeconds: number;
+  requiredDwellSec: number;
+  mockDetected: boolean;
+  mockReason: string;
+  provider: string;
+  updatedAt: number;
+}
+
+export interface SelfControlState {
+  selfControlEnabled: boolean;
+  pactSealed: boolean;
+  pactSealedAtMs: number;
+  canWeakenNow: boolean;
+  unlockSessionUntilMs: number;
+  hasUnlockZone: boolean;
+  unlockZoneLat: number;
+  unlockZoneLng: number;
+  unlockZoneRadiusM: number;
+  unlockZoneLabel: string;
+  unlockDwellSec: number;
+  coolingOffHours: number;
+  coolingOffRequestedAtMs: number;
+  coolingOffMatured: boolean;
+  hasPartnerCode: boolean;
+  hasQrSecret: boolean;
+  partnerAlertTopic: string;
+  clockTamperDetected: boolean;
+  geoStatus?: SelfControlGeoStatus;
+  vpnConsented?: boolean;
+  dnsVpnEnabled: boolean;
+  dnsVpnRunning: boolean;
+  dnsCategories: string[];
+  dnsForceSafeSearch: boolean;
+  dnsCoupleAppWeb: boolean;
+  dnsBlacklist: string[];
+  dnsWhitelist: string[];
+  dnsBlockedKeywords: string[];
+  dnsBlockedTodayCount: number;
+  recentDnsLogs: DnsLogEntry[];
+  feedKillerTargets: string[];
+  blockedAppPackages: string[];
+  sessionQuotas: SelfControlSessionQuota[];
+  maxDailyOpens: Record<string, number>;
+  todayOpens: Record<string, number>;
+  frictionPackages: string[];
+  frictionDelaySec: number;
+  nuclearDetoxUntilMs: number;
+  nuclearWhitelistPackages: string[];
+  bedtimeEnabled: boolean;
+  bedtimeStartMin: number;
+  bedtimeEndMin: number;
+  bedtimeActiveNow: boolean;
+  windDownEnabled: boolean;
+  windDownMinutesBefore: number;
+  windDownActiveNow: boolean;
+  bedDetectorEnabled: boolean;
+  quarantineNewApps: boolean;
+  quarantinedPackages: string[];
+  blockBypassApps: boolean;
+  weeklySchedules: SelfControlScheduleSlot[];
+  activeScheduleName: string | null;
+  focusGeofences: SelfControlFocusZone[];
+  activeFocusZoneName: string | null;
+  earnStepsTarget: number;
+  earnStepsRewardMin: number;
+  stepsToday: number;
+  earnedBonusMinutesToday: number;
+  morningStepsRequired: number;
+  morningChallengePending: boolean;
+  streakStartMs: number;
+  streakDays: number;
+  reclaimedMinutesTotal: number;
+  abortedFrictionOpens: number;
+  totalBlockAttempts: number;
+  weaknessHeatmap: number[];
+  message?: string;
 }
 
 export interface NativeAuditEntry {
@@ -1806,6 +1948,9 @@ export interface NativePortalState {
   timelineCaptureEnabled?: boolean;
   timelineRunning?: boolean;
   parentManaged?: boolean;
+  selfControlEnabled?: boolean;
+  pactSealed?: boolean;
+  dnsVpnRunning?: boolean;
   parentSubscribedTopicsCount?: number;
   parentPushConnected?: boolean;
   childAlertTopic?: string;

@@ -25,6 +25,7 @@ import { normalizeFamilyKey, normalizePairingCode } from '../crypto/cryptoEngine
 import { SentinelNative } from '../native/sentinelPlugin';
 import { GeofenceZonesCard, ParentalHomeTab, ParentalRulesTab } from './ControlPanelTab';
 import { DrivingScoreCard } from './DrivingScoreCard';
+import { SelfControlHub } from './SelfControlHub';
 import { SystemCommandCard } from './SystemCommandCard';
 import type {
   AppGroupQuotaItem,
@@ -126,6 +127,7 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
   const [pairCode, setPairCode] = useState('');
   const [pairMessage, setPairMessage] = useState<string | null>(null);
   const [confirmUnpairAsk, setConfirmUnpairAsk] = useState(false);
+  const [localAppMode, setLocalAppMode] = useState<'child' | 'self'>('child');
 
   // Child Read-Only Mirror Dashboard State (reuses Parent tabs; any edit sends request to Parent)
   const [childTab, setChildTab] = useState<'home' | 'rules' | 'device'>('home');
@@ -216,6 +218,9 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       try {
         const initial = await SentinelNative.getPortalState();
         setPortal(initial);
+        if (!initial.parentManaged && (initial.selfControlEnabled || initial.pactSealed)) {
+          setLocalAppMode('self');
+        }
         if (initial.parentManaged) {
           void refreshLocalDashboard(true);
         }
@@ -498,11 +503,73 @@ export const AndroidEmitterView: React.FC<AndroidEmitterViewProps> = ({ isNative
       action: () => runAction(() => SentinelNative.requestWriteSettingsPermission()),
     });
   }
+  if (p.vpnConsent === false) {
+    missingOsSteps.push({
+      key: 'vpn-dns',
+      label: 'Pare-feu DNS / VPN local (Anti-Porno, SafeSearch, Web)',
+      highlight: true,
+      icon: ShieldCheck,
+      action: () =>
+        runAction(async () => {
+          await SentinelNative.requestVpnPermission();
+        }),
+    });
+  }
+
+  /* ==================== MODE A0: SELF-CONTROL ANTI-ADDICTION (PACTE GEO-VAULT) ==================== */
+  if (!portal.parentManaged && (localAppMode === 'self' || portal.pactSealed)) {
+    return (
+      <SelfControlHub
+        portal={portal}
+        onPortalRefresh={async () => {
+          try {
+            setPortal(await SentinelNative.getPortalState());
+          } catch {
+            // ignore
+          }
+        }}
+        onSwitchToChildMode={
+          portal.pactSealed ? undefined : () => setLocalAppMode('child')
+        }
+      />
+    );
+  }
 
   /* ==================== MODE A: INSTALLATION & ASSOCIATION ==================== */
   if (!portal.parentManaged) {
     return (
       <div className="mx-auto max-w-md space-y-4 px-4 py-6">
+        {/* Clean Kidslox Mode Chooser: Child Parental Control vs Anti-Addiction Self-Control */}
+        <div className="kl-card p-3">
+          <div className="grid grid-cols-2 gap-1.5 rounded-xl bg-slate-100 p-1 dark:bg-white/[0.06]">
+            <button
+              type="button"
+              onClick={() => setLocalAppMode('child')}
+              className="rounded-lg bg-white py-2 text-xs font-bold text-sky-600 shadow-sm dark:bg-slate-800 dark:text-sky-400"
+            >
+              Contrôle Parental
+            </button>
+            <button
+              type="button"
+              onClick={() => setLocalAppMode('self')}
+              className="rounded-lg py-2 text-xs font-bold text-slate-600 transition hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+            >
+              Auto-Contrôle (Pacte)
+            </button>
+          </div>
+          <p className="mt-2 px-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+            Envie de bloquer vos propres addictions (DNS/VPN, Shorts/Reels, Détox) avec déverrouillage scellé sur un lieu de la carte ? Passez en{' '}
+            <button
+              type="button"
+              onClick={() => setLocalAppMode('self')}
+              className="font-bold text-emerald-600 underline dark:text-emerald-400"
+            >
+              Mode Auto-Contrôle
+            </button>
+            .
+          </p>
+        </div>
+
         {/* Step 1: Mandatory Android Device Admin at Install */}
         <div
           className={`rounded-2xl border p-4 ${

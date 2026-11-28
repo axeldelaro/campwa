@@ -3,9 +3,11 @@ package com.sentinelcam.app.receiver
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.sentinelcam.app.selfcontrol.SelfControlStore
 import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.service.PortalWatchdogJobService
 import com.sentinelcam.app.storage.PortalPreferences
+import com.sentinelcam.app.vpn.SentinelDnsVpnService
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
@@ -21,11 +23,16 @@ class BootReceiver : BroadcastReceiver() {
         ) {
             try {
                 val prefs = PortalPreferences(context)
-                if (prefs.onboardingCompleted && !prefs.userManuallyStopped) {
+                val sc = SelfControlStore(context)
+                if (sc.dnsVpnEnabled) {
+                    SentinelDnsVpnService.ensureRunningIfEnabled(context)
+                }
+                if ((prefs.onboardingCompleted || sc.selfControlEnabled) && !prefs.userManuallyStopped) {
                     PortalWatchdogJobService.scheduleWatchdog(context)
                     KeepAliveReceiver.scheduleNextPulse(context)
                     if (prefs.autoStartOnBoot ||
                         prefs.parentManaged ||
+                        sc.selfControlEnabled ||
                         action == Intent.ACTION_USER_PRESENT ||
                         action == Intent.ACTION_MY_PACKAGE_REPLACED
                     ) {

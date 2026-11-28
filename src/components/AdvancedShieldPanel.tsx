@@ -6,6 +6,7 @@ import {
   Lock,
   PanelTopClose,
   RotateCcw,
+  Scissors,
   ShieldAlert,
   ShieldCheck,
   Snowflake,
@@ -13,6 +14,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { DataScreenTimeMsg, DataSystemStatusMsg } from '../types/sentinel';
+import { DnsFirewallCard } from './DnsFirewallCard';
 
 interface AdvancedShieldPanelProps {
   screenTime: DataScreenTimeMsg | null;
@@ -29,9 +31,25 @@ interface AdvancedShieldPanelProps {
     multiWindowGuardEnabled?: boolean;
     quickSettingsGuardEnabled?: boolean;
     backdoorGuardEnabled?: boolean;
+    dnsVpnEnabled?: boolean;
+    dnsCategories?: string[];
+    dnsForceSafeSearch?: boolean;
+    dnsCoupleAppWeb?: boolean;
+    dnsBlacklist?: string[];
+    dnsWhitelist?: string[];
+    dnsBlockedKeywords?: string[];
+    feedKillerTargets?: string[];
   }) => Promise<void>;
   onMdmHardenAll?: () => Promise<void>;
 }
+
+const PARENT_FEED_KILLERS = [
+  { id: 'yt_shorts', label: 'YouTube Shorts' },
+  { id: 'ig_reels', label: 'Instagram Reels' },
+  { id: 'snap_spotlight', label: 'Snapchat Spotlight' },
+  { id: 'fb_reels', label: 'Facebook Reels' },
+  { id: 'x_foryou', label: 'X « Pour vous »' },
+];
 
 const REELS_PRESETS = [
   { val: 0, label: 'Illimité' },
@@ -384,6 +402,66 @@ export const AdvancedShieldPanel: React.FC<AdvancedShieldPanelProps> = ({
           ))}
         </div>
       </div>
+
+      {/* ==================== V28 IN-APP ADDICTIVE FEED KILLER (PARENT REMOTE) ==================== */}
+      <div className="kl-card p-4 sm:p-5">
+        <div className="mb-2 flex items-center gap-2">
+          <Scissors className="h-4 w-4 text-rose-500" />
+          <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+            Tueur de Flux Addictifs In-App (Shorts, Reels, Spotlight)
+          </h3>
+        </div>
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          Bloque uniquement les flux infinis dans l’application tout en laissant YouTube long ou les messages utilisables.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {PARENT_FEED_KILLERS.map((fk) => {
+            const current = screenTime?.feedKillerTargets ?? [];
+            const active = current.includes(fk.id);
+            return (
+              <button
+                key={fk.id}
+                type="button"
+                disabled={busyKey === `fk_${fk.id}`}
+                onClick={() => {
+                  const next = active
+                    ? current.filter((x) => x !== fk.id)
+                    : [...current, fk.id];
+                  void runAction(`fk_${fk.id}`, () =>
+                    onUpdateAdvanced({ feedKillerTargets: next })
+                  );
+                }}
+                className={`rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                  active
+                    ? 'border-rose-300 bg-rose-500 text-white kl-solid-white shadow-sm'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-200'
+                }`}
+              >
+                {fk.label} {active ? '• TUÉ' : ''}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ==================== V28 BUILT-IN LOCAL DNS / VPN FIREWALL (PARENT REMOTE) ==================== */}
+      <DnsFirewallCard
+        dnsVpnEnabled={Boolean(screenTime?.dnsVpnEnabled)}
+        dnsVpnRunning={Boolean(screenTime?.dnsVpnRunning)}
+        vpnConsented={screenTime?.dnsVpnConsented ?? true}
+        dnsCategories={screenTime?.dnsCategories ?? []}
+        dnsForceSafeSearch={screenTime?.dnsForceSafeSearch ?? true}
+        dnsCoupleAppWeb={screenTime?.dnsCoupleAppWeb ?? true}
+        dnsBlacklist={screenTime?.dnsBlacklist ?? []}
+        dnsWhitelist={screenTime?.dnsWhitelist ?? []}
+        dnsBlockedKeywords={screenTime?.dnsBlockedKeywords ?? []}
+        dnsBlockedTodayCount={screenTime?.dnsBlockedTodayCount ?? 0}
+        recentDnsLogs={screenTime?.recentDnsLogs ?? []}
+        canWeaken={true}
+        onUpdateDns={async (patch) => {
+          await onUpdateAdvanced(patch);
+        }}
+      />
     </div>
   );
 };

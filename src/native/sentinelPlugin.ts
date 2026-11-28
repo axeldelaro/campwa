@@ -5,6 +5,7 @@ import type {
   GpsTrackingMode,
   NativePermissionStatus,
   NativePortalState,
+  SelfControlState,
 } from '../types/sentinel';
 
 export interface SentinelNativePluginContract {
@@ -77,9 +78,39 @@ export interface SentinelNativePluginContract {
   toggleAccessProfile(options: { id: string; enabled: boolean }): Promise<NativePortalState>;
   deleteAccessProfile(options: { id: string }): Promise<NativePortalState>;
   kickActiveViewer(): Promise<NativePortalState>;
+  getSelfControlState(): Promise<SelfControlState>;
+  updateSelfControlConfig(config: Record<string, unknown>): Promise<SelfControlState>;
+  sealSelfControlPact(options: {
+    latitude: number;
+    longitude: number;
+    radiusMeters: number;
+    label: string;
+    dwellSeconds: number;
+    coolingOffHours?: number;
+    partnerCode?: string;
+    qrSecret?: string;
+    partnerAlertTopic?: string;
+  }): Promise<SelfControlState>;
+  unsealSelfControlPact(): Promise<SelfControlState>;
+  startGeoUnlockWatch(): Promise<SelfControlState>;
+  stopGeoUnlockWatch(): Promise<SelfControlState>;
+  requestCoolingOffUnlock(): Promise<SelfControlState>;
+  cancelCoolingOffUnlock(): Promise<SelfControlState>;
+  unlockWithPartnerCode(options: { code: string }): Promise<SelfControlState>;
+  unlockWithQrSecret(options: { secret: string }): Promise<SelfControlState>;
+  applySelfControlPreset(options: { presetId: string }): Promise<SelfControlState>;
+  startNuclearDetox(options: { hours: number }): Promise<SelfControlState>;
+  stopNuclearDetox(): Promise<SelfControlState>;
+  requestVpnPermission(): Promise<SelfControlState>;
+  requestActivityRecognitionPermission(): Promise<NativePortalState>;
+  getInstalledUserApps(): Promise<{ apps: Array<{ packageName: string; appName: string }> }>;
   addListener(
     eventName: 'portalStateChanged',
     listenerFunc: (state: NativePortalState) => void
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: 'selfControlStateChanged',
+    listenerFunc: (state: SelfControlState) => void
   ): Promise<PluginListenerHandle>;
 }
 

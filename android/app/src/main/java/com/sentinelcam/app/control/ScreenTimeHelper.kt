@@ -711,6 +711,36 @@ object ScreenTimeHelper {
             put("multiWindowGuardEnabled", prefs.multiWindowGuardEnabled)
             put("quickSettingsGuardEnabled", prefs.quickSettingsGuardEnabled)
             put("backdoorGuardEnabled", prefs.backdoorGuardEnabled)
+            // v28 Local DNS/VPN Firewall & Feed Killer state (visible on Parent Web Dashboard too!)
+            val sc = com.sentinelcam.app.selfcontrol.SelfControlStore(context)
+            val todayStartMs = Calendar.getInstance().apply {
+                timeInMillis = now
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+            put("dnsVpnEnabled", sc.dnsVpnEnabled)
+            put("dnsVpnRunning", com.sentinelcam.app.vpn.SentinelDnsVpnService.isVpnActive)
+            put("dnsVpnConsented", com.sentinelcam.app.vpn.SentinelDnsVpnService.hasVpnConsent(context))
+            put("dnsCategories", JSONArray(sc.getDnsCategories().toList()))
+            put("dnsForceSafeSearch", sc.dnsForceSafeSearch)
+            put("dnsCoupleAppWeb", sc.dnsCoupleAppWeb)
+            put("dnsBlacklist", JSONArray(sc.getDnsBlacklist().toList()))
+            put("dnsWhitelist", JSONArray(sc.getDnsWhitelist().toList()))
+            put("dnsBlockedKeywords", JSONArray(sc.getDnsBlockedKeywords().toList()))
+            put("dnsBlockedTodayCount", sc.db.getBlockedDnsCountSince(todayStartMs))
+            put("feedKillerTargets", JSONArray(sc.getFeedKillerTargets().toList()))
+            val dnsLogsArr = JSONArray()
+            for (d in sc.db.queryRecentDnsLogs(limit = 30, blockedOnly = true)) {
+                dnsLogsArr.put(JSONObject().apply {
+                    put("timestamp", d.timestamp)
+                    put("domain", d.domain)
+                    put("category", d.category)
+                    put("blocked", d.blocked)
+                })
+            }
+            put("recentDnsLogs", dnsLogsArr)
         }
     }
 

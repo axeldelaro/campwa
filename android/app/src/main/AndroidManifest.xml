@@ -61,6 +61,7 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
     <application
         android:name=".SentinelApplication"
@@ -102,6 +103,39 @@
             android:launchMode="singleTask"
             android:showWhenLocked="true"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
+
+        <!-- Conscious Mindful Friction Pause Activity (Anti-Addiction Breathing Screen) -->
+        <activity
+            android:name=".selfcontrol.MindfulFrictionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
+        <!-- Zero-Server Local Always-On DNS / VPN Firewall Service -->
+        <service
+            android:name=".vpn.SentinelDnsVpnService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local zero-server DNS content firewall for parental control and anti-addiction self-control" />
+        </service>
+
+        <!-- Automatic New-App Quarantine Receiver while Pact Geo-Vault is sealed -->
+        <receiver
+            android:name=".selfcontrol.PackageQuarantineReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_ADDED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
 
         <!-- Triple-Fail-Safe Fullscreen Flash Message / Image Fallback Activity -->
         <activity

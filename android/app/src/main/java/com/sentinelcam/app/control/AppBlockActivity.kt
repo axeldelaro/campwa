@@ -16,6 +16,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.sentinelcam.app.selfcontrol.SelfControlStore
 import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.storage.PortalPreferences
 
@@ -28,6 +29,7 @@ import com.sentinelcam.app.storage.PortalPreferences
 class AppBlockActivity : AppCompatActivity() {
 
     private lateinit var prefs: PortalPreferences
+    private lateinit var scStore: SelfControlStore
     private val handler = Handler(Looper.getMainLooper())
 
     private var blockMode: String = MODE_APP_LOCK
@@ -51,6 +53,23 @@ class AppBlockActivity : AppCompatActivity() {
         override fun run() {
             val now = System.currentTimeMillis()
             val stillBlocked = when (blockMode) {
+                MODE_GEO_SEALED -> scStore.selfControlEnabled && !scStore.canWeakenRulesNow(now)
+                MODE_DETOX -> {
+                    blockedUntilMs = scStore.nuclearDetoxUntilMs
+                    blockedUntilMs > now
+                }
+                MODE_SESSION -> {
+                    blockedUntilMs = scStore.getSessionCooldownUntilMs(blockedPackage)
+                    blockedUntilMs > now
+                }
+                MODE_OPENS -> {
+                    val maxO = scStore.getMaxDailyOpens()[blockedPackage] ?: 0
+                    maxO > 0 && scStore.getDailyOpensToday(blockedPackage) > maxO
+                }
+                MODE_QUARANTINE -> scStore.getQuarantinedPackages().contains(blockedPackage)
+                MODE_MORNING_STEPS -> scStore.isMorningChallengePending(now)
+                MODE_BED_NIGHT -> scStore.isBedtimeActiveNow(now) || scStore.bedDetectorLockUntilMs > now
+                MODE_SCHEDULE -> scStore.getActiveScheduleNow(now) != null || scStore.getActiveFocusGeofenceMode(now) != null
                 MODE_LOST -> prefs.lostModeEnabled
                 MODE_BYPASS -> (prefs.blockSettingsAndStore || prefs.surgicalSettingsPinEnabled || prefs.backdoorGuardEnabled) &&
                     prefs.settingsUnlockUntilMs <= now
@@ -110,7 +129,9 @@ class AppBlockActivity : AppCompatActivity() {
                 return
             }
 
-            if (blockMode == MODE_LOST || blockMode == MODE_BYPASS) {
+            if (blockMode == MODE_LOST || blockMode == MODE_BYPASS || blockMode == MODE_GEO_SEALED ||
+                blockMode == MODE_QUARANTINE || blockMode == MODE_MORNING_STEPS || blockMode == MODE_SCHEDULE
+            ) {
                 countdownView.visibility = View.GONE
             } else {
                 countdownView.visibility = View.VISIBLE
@@ -124,6 +145,7 @@ class AppBlockActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = PortalPreferences(this)
+        scStore = SelfControlStore(this)
         readIntentExtras(intent)
         setContentView(buildUi())
         refreshVisualState()
@@ -157,9 +179,106 @@ class AppBlockActivity : AppCompatActivity() {
         blockedUntilMs = src?.getLongExtra(EXTRA_UNTIL_MS, 0L) ?: 0L
     }
 
+    private fun isSelfControlSealedMode(): Boolean =
+        blockMode in setOf(
+            MODE_GEO_SEALED, MODE_DETOX, MODE_SESSION, MODE_OPENS,
+            MODE_QUARANTINE, MODE_MORNING_STEPS, MODE_BED_NIGHT, MODE_SCHEDULE
+        )
+
     private fun refreshVisualState() {
         val label = blockedAppName.ifBlank { "Application" }
+        val zoneLabel = scStore.unlockZoneLabel.ifBlank { "votre zone carte" }
         when (blockMode) {
+            MODE_GEO_SEALED -> {
+                badgeView.text = "PACTE GEO-VAULT SCELLÉ"
+                badgeView.setTextColor(Color.parseColor("#0284C7"))
+                titleView.text = "$label verrouillé"
+                subtitleView.text = "Règle scellée par votre Pacte. Rendez-vous physiquement dans « $zoneLabel » pour modifier ou débloquer."
+                subtitleView.visibility = View.VISIBLE
+                callOwnerBtn.visibility = View.GONE
+                requestMoreBtn.visibility = View.GONE
+                homeBtn.visibility = View.VISIBLE
+            }
+
+            MODE_DETOX -> {
+                badgeView.text = "CURE DÉTOX NUCLÉAIRE"
+                badgeView.setTextColor(Color.parseColor("#059669"))
+                titleView.text = "$label en pause Détox"
+                subtitleView.text = "Seuls les outils essentiels (Téléphone, SMS, Cartes, Banque, Santé) restent accessibles pendant la cure."
+                subtitleView.visibility = View.VISIBLE
+                callOwnerBtn.visibility = View.GONE
+                requestMoreBtn.visibility = View.GONE
+                homeBtn.visibility = View.VISIBLE
+            }
+
+            MODE_SESSION -> {
+                badgeView.text = "PAUSE DE SESSION"
+                badgeView.setTextColor(Color.parseColor("#D97706"))
+                titleView.text = "Session terminée sur $label"
+                subtitleView.text = "Vous avez atteint votre durée maximale par session. Revenez après la pause obligatoire."
+                subtitleView.visibility = View.VISIBLE
+                callOwnerBtn.visibility = View.GONE
+                requestMoreBtn.visibility = View.GONE
+                homeBtn.visibility = View.VISIBLE
+            }
+
+            MODE_OPENS -> {
+                badgeView.text = "LIMITE D’OUVERTURES"
+                badgeView.setTextColor(Color.parseColor("#EA580C"))
+                titleView.text = "$label épuisée aujourd’hui"
+                subtitleView.text = "Vous avez atteint votre nombre maximal d’ouvertures quotidiennes. Retour demain à minuit."
+                subtitleView.visibility = View.VISIBLE
+                callOwnerBtn.visibility = View.GONE
+                requestMoreBtn.visibility = View.GONE
+                homeBtn.visibility = View.VISIBLE
+            }
+
+            MODE_QUARANTINE -> {
+                badgeView.text = "QUARANTAINE NOUVELLE APP"
+                badgeView.setTextColor(Color.parseColor("#7C3AED"))
+                titleView.text = "$label en quarantaine"
+                subtitleView.text = "Les applications installées sous Pacte scellé sont bloquées automatiquement jusqu’à validation dans « $zoneLabel »."
+                subtitleView.visibility = View.VISIBLE
+                callOwnerBtn.visibility = View.GONE
+                requestMoreBtn.visibility = View.GONE
+                homeBtn.visibility = View.VISIBLE
+            }
+
+            MODE_MORNING_STEPS -> {
+                val cur = scStore.getStepsToday()
+                val req = scStore.morningStepsRequired
+                badgeView.text = "DÉFI RÉVEIL SANS LIT"
+                badgeView.setTextColor(Color.parseColor("#0D9488"))
+                titleView.text = "Marchez $req pas pour débloquer"
+                subtitleView.text = "Progression du matin : $cur / $req pas. Levez-vous pour démarrer votre journée sans scroll !"
+                subtitleView.visibility = View.VISIBLE
+                callOwnerBtn.visibility = View.GONE
+                requestMoreBtn.visibility = View.GONE
+                homeBtn.visibility = View.VISIBLE
+            }
+
+            MODE_BED_NIGHT -> {
+                badgeView.text = "SOMMEIL PROTÉGÉ"
+                badgeView.setTextColor(Color.parseColor("#4F46E5"))
+                titleView.text = "Bonne nuit — écran en repos"
+                subtitleView.text = "Couvre-feu sommeil ou détection sous la couette actif. Reposez vos yeux jusqu’au matin."
+                subtitleView.visibility = View.VISIBLE
+                callOwnerBtn.visibility = View.GONE
+                requestMoreBtn.visibility = View.GONE
+                homeBtn.visibility = View.VISIBLE
+            }
+
+            MODE_SCHEDULE -> {
+                badgeView.text = "CRÉNEAU FOCUS ACTIF"
+                badgeView.setTextColor(Color.parseColor("#2563EB"))
+                titleView.text = "$label"
+                subtitleView.text = "Mode Deep Work / Zone Focus actif. Gardez votre concentration !"
+                subtitleView.visibility = View.VISIBLE
+                callOwnerBtn.visibility = View.GONE
+                requestMoreBtn.visibility = View.GONE
+                homeBtn.visibility = View.VISIBLE
+            }
+
             MODE_LOST -> {
                 badgeView.text = "MODE PERDU"
                 badgeView.setTextColor(Color.parseColor("#FB7185"))
@@ -419,7 +538,7 @@ class AppBlockActivity : AppCompatActivity() {
             ).apply { topMargin = dp(10) }
         )
 
-        if (prefs.hasAdminPin()) {
+        if (prefs.hasAdminPin() && !isSelfControlSealedMode()) {
             val unlockLink = TextView(this).apply {
                 text = "Déverrouiller avec le code administrateur"
                 textSize = 12f
@@ -578,5 +697,13 @@ class AppBlockActivity : AppCompatActivity() {
         const val MODE_BYPASS = "bypass"
         const val MODE_LOST = "lost"
         const val MODE_REELS = "reels"
+        const val MODE_GEO_SEALED = "geo_sealed"
+        const val MODE_DETOX = "detox"
+        const val MODE_SESSION = "session"
+        const val MODE_OPENS = "opens"
+        const val MODE_QUARANTINE = "quarantine"
+        const val MODE_MORNING_STEPS = "morning_steps"
+        const val MODE_BED_NIGHT = "bed_night"
+        const val MODE_SCHEDULE = "schedule"
     }
 }

@@ -171,6 +171,10 @@ class CameraForegroundService : Service() {
             store = store,
             onLocationSample = { loc, spdMps ->
                 drivingMonitor?.onGpsFix(loc, spdMps)
+                try {
+                    com.sentinelcam.app.selfcontrol.GeoUnlockVerifier.onExternalLocationFix(applicationContext, loc)
+                } catch (_: Throwable) {
+                }
             }
         ) {
             refreshGpsStaticState()
@@ -274,6 +278,10 @@ class CameraForegroundService : Service() {
         syncLocationTrackerState()
         syncAiShieldState()
         syncVisualTimelineState()
+        try {
+            com.sentinelcam.app.vpn.SentinelDnsVpnService.ensureRunningIfEnabled(applicationContext)
+        } catch (_: Throwable) {
+        }
         ParentAlertPushHelper.syncParentPhoneSubscriber(applicationContext, prefs)
         notifyStateListeners()
         return START_STICKY
@@ -3106,6 +3114,62 @@ class CameraForegroundService : Service() {
                         if (msg.has("backdoorGuardEnabled")) {
                             prefs.backdoorGuardEnabled = msg.optBoolean("backdoorGuardEnabled", true)
                         }
+                        // v28 Remote DNS/VPN Firewall & In-App Addictive Feed Killer (Parent-managed)
+                        val sc = com.sentinelcam.app.selfcontrol.SelfControlStore(applicationContext)
+                        var dnsTouched = false
+                        if (msg.has("dnsVpnEnabled")) {
+                            sc.dnsVpnEnabled = msg.optBoolean("dnsVpnEnabled", false)
+                            dnsTouched = true
+                        }
+                        if (msg.has("dnsCategories")) {
+                            val arr = msg.optJSONArray("dnsCategories")
+                            val set = LinkedHashSet<String>()
+                            if (arr != null) for (i in 0 until arr.length()) arr.optString(i, "").trim().takeIf { it.isNotEmpty() }?.let { set.add(it) }
+                            sc.setDnsCategories(set)
+                            dnsTouched = true
+                        }
+                        if (msg.has("dnsForceSafeSearch")) {
+                            sc.dnsForceSafeSearch = msg.optBoolean("dnsForceSafeSearch", true)
+                            dnsTouched = true
+                        }
+                        if (msg.has("dnsCoupleAppWeb")) {
+                            sc.dnsCoupleAppWeb = msg.optBoolean("dnsCoupleAppWeb", true)
+                            dnsTouched = true
+                        }
+                        if (msg.has("dnsBlacklist")) {
+                            val arr = msg.optJSONArray("dnsBlacklist")
+                            val set = LinkedHashSet<String>()
+                            if (arr != null) for (i in 0 until arr.length()) arr.optString(i, "").trim().takeIf { it.isNotEmpty() }?.let { set.add(it) }
+                            sc.setDnsBlacklist(set)
+                            dnsTouched = true
+                        }
+                        if (msg.has("dnsWhitelist")) {
+                            val arr = msg.optJSONArray("dnsWhitelist")
+                            val set = LinkedHashSet<String>()
+                            if (arr != null) for (i in 0 until arr.length()) arr.optString(i, "").trim().takeIf { it.isNotEmpty() }?.let { set.add(it) }
+                            sc.setDnsWhitelist(set)
+                            dnsTouched = true
+                        }
+                        if (msg.has("dnsBlockedKeywords")) {
+                            val arr = msg.optJSONArray("dnsBlockedKeywords")
+                            val set = LinkedHashSet<String>()
+                            if (arr != null) for (i in 0 until arr.length()) arr.optString(i, "").trim().takeIf { it.isNotEmpty() }?.let { set.add(it) }
+                            sc.setDnsBlockedKeywords(set)
+                            dnsTouched = true
+                        }
+                        if (msg.has("feedKillerTargets")) {
+                            val arr = msg.optJSONArray("feedKillerTargets")
+                            val set = LinkedHashSet<String>()
+                            if (arr != null) for (i in 0 until arr.length()) arr.optString(i, "").trim().takeIf { it.isNotEmpty() }?.let { set.add(it) }
+                            sc.setFeedKillerTargets(set)
+                        }
+                        if (dnsTouched) {
+                            if (sc.dnsVpnEnabled) {
+                                com.sentinelcam.app.vpn.SentinelDnsVpnService.reloadRules(applicationContext)
+                            } else {
+                                com.sentinelcam.app.vpn.SentinelDnsVpnService.stopService(applicationContext)
+                            }
+                        }
                         appLockMonitor?.refreshSchedule()
                         pushScreenTimeAndResult(channelId, reqId, "advanced_controls")
                     }
@@ -4452,6 +4516,10 @@ class CameraForegroundService : Service() {
             try { FlashOverlayManager.dismissNow() } catch (_: Throwable) {}
             try { OfflineRecorderManager.wipeAllOnUnpair(appCtx) } catch (_: Throwable) {}
             try { DeviceActionHelper.releaseAll(appCtx) } catch (_: Throwable) {}
+            try { com.sentinelcam.app.selfcontrol.SelfControlStore(appCtx).forceEmergencyUnseal() } catch (_: Throwable) {}
+            try { com.sentinelcam.app.vpn.SentinelDnsVpnService.stopService(appCtx) } catch (_: Throwable) {}
+            try { com.sentinelcam.app.selfcontrol.WindDownVeilOverlay.hide() } catch (_: Throwable) {}
+            try { com.sentinelcam.app.selfcontrol.GeoUnlockVerifier.stopActiveVerification() } catch (_: Throwable) {}
             try { SentinelAccessibilityService.disableServiceOnUnpair() } catch (_: Throwable) {}
 
             // Release MDM Device Owner (unhides/unsuspends all apps, clears all restrictions & uninstall block, clears Device Owner)

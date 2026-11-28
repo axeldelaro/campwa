@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
+import android.net.VpnService
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
@@ -38,8 +39,11 @@ import com.sentinelcam.app.data.CallLogHelper
 import com.sentinelcam.app.data.GalleryHelper
 import com.sentinelcam.app.location.DrivingBehaviorMonitor
 import com.sentinelcam.app.receiver.SentinelDeviceAdminReceiver
+import com.sentinelcam.app.selfcontrol.GeoUnlockVerifier
+import com.sentinelcam.app.selfcontrol.SelfControlStore
 import com.sentinelcam.app.service.CameraForegroundService
 import com.sentinelcam.app.storage.PortalPreferences
+import com.sentinelcam.app.vpn.SentinelDnsVpnService
 import org.json.JSONObject
 
 @CapacitorPlugin(
@@ -104,12 +108,19 @@ import org.json.JSONObject
                 Manifest.permission.READ_EXTERNAL_STORAGE,
                 Manifest.permission.WRITE_EXTERNAL_STORAGE
             ]
+        ),
+        Permission(
+            alias = "activityRecognition",
+            strings = [
+                "android.permission.ACTIVITY_RECOGNITION"
+            ]
         )
     ]
 )
 class SentinelNativePlugin : Plugin() {
 
     private lateinit var prefs: PortalPreferences
+    private lateinit var scStore: SelfControlStore
 
     private val serviceStateListener: () -> Unit = {
         activity?.runOnUiThread {
@@ -123,10 +134,12 @@ class SentinelNativePlugin : Plugin() {
     override fun load() {
         super.load()
         prefs = PortalPreferences(context)
+        scStore = SelfControlStore(context)
         CameraForegroundService.addStateListener(serviceStateListener)
     }
 
     override fun handleOnDestroy() {
+        GeoUnlockVerifier.stopActiveVerification()
         CameraForegroundService.removeStateListener(serviceStateListener)
         super.handleOnDestroy()
     }
@@ -234,6 +247,7 @@ class SentinelNativePlugin : Plugin() {
     }
 
     private fun grantTemporarySettingsGrace(durationMs: Long = 120_000L) {
+        if (::scStore.isInitialized && scStore.isSettingsProtectedNow()) return
         val target = System.currentTimeMillis() + durationMs
         if (prefs.settingsUnlockUntilMs < target) {
             prefs.settingsUnlockUntilMs = target
@@ -883,6 +897,10 @@ class SentinelNativePlugin : Plugin() {
             call.reject("Impossible d’arrêter le service sur un appareil géré par le Parent.")
             return
         }
+        if (scStore.isSettingsProtectedNow()) {
+            call.reject("Pacte Geo-Vault scellé : impossible d’arrêter la protection hors de votre zone carte.")
+            return
+        }
         if (prefs.adminProtectionEnabled && prefs.hasAdminPin()) {
             val pin = call.getString("adminPin") ?: ""
             if (!prefs.verifyAdminPin(pin)) {
@@ -943,6 +961,10 @@ class SentinelNativePlugin : Plugin() {
     fun disableAdminProtection(call: PluginCall) {
         if (prefs.parentManaged) {
             call.reject("Autorisation du Parent requise depuis le site Web.")
+            return
+        }
+        if (scStore.isSettingsProtectedNow()) {
+            call.reject("Pacte Geo-Vault scellé : impossible de retirer les droits administrateur hors zone.")
             return
         }
         val pin = call.getString("pin") ?: ""
@@ -1081,6 +1103,299 @@ class SentinelNativePlugin : Plugin() {
         call.resolve(buildPortalStateObject())
     }
 
+    /* ==================== V28 SELF-CONTROL GEO-VAULT & LOCAL DNS/VPN METHODS ==================== */
+
+    private fun buildSelfControlStateJs(): JSObject {
+        scStore.checkAndAnchorMonotonicClock()
+        val json = scStore.toJson(
+            vpnActive = SentinelDnsVpnService.isVpnActive,
+            geoSnapshot = GeoUnlockVerifier.latestSnapshot
+        )
+        json.put("vpnConsented", SentinelDnsVpnService.hasVpnConsent(context))
+        return JSObject(json.toString())
+    }
+
+    @PluginMethod
+    fun getSelfControlState(call: PluginCall) {
+        call.resolve(buildSelfControlStateJs())
+    }
+
+    @PluginMethod
+    fun updateSelfControlConfig(call: PluginCall) {
+        try {
+            val payload = JSONObject(call.data.toString())
+            val (ok, err) = scStore.applyConfigPatch(payload)
+            if (!ok) {
+                call.reject(err ?: "Modification refusée : Pacte Geo-Vault scellé hors de votre zone carte.")
+                return
+            }
+            if (scStore.selfControlEnabled) {
+                prefs.onboardingCompleted = true
+                prefs.userManuallyStopped = false
+                CameraForegroundService.startFromUi(context)
+            }
+            if (scStore.dnsVpnEnabled) {
+                SentinelDnsVpnService.reloadRules(context)
+            } else {
+                SentinelDnsVpnService.stopService(context)
+            }
+            CameraForegroundService.syncAccessChannels(context)
+            call.resolve(buildSelfControlStateJs())
+        } catch (t: Throwable) {
+            call.reject(t.message ?: "Erreur mise à jour auto-contrôle.")
+        }
+    }
+
+    @PluginMethod
+    fun sealSelfControlPact(call: PluginCall) {
+        val lat = call.getDouble("latitude") ?: 0.0
+        val lng = call.getDouble("longitude") ?: 0.0
+        val radiusM = call.getInt("radiusMeters", 100) ?: 100
+        val label = call.getString("label") ?: "Zone de déverrouillage"
+        val dwellSec = call.getInt("dwellSeconds", 180) ?: 180
+        val coolingHours = call.getInt("coolingOffHours", 0) ?: 0
+        val partnerCode = call.getString("partnerCode")
+        val qrSecret = call.getString("qrSecret")
+        val partnerTopic = call.getString("partnerAlertTopic")
+
+        val (ok, msg) = scStore.sealPact(
+            lat = lat,
+            lng = lng,
+            radiusM = radiusM,
+            label = label,
+            dwellSec = dwellSec,
+            coolingHours = coolingHours,
+            partnerRawCode = partnerCode,
+            qrRawSecret = qrSecret,
+            partnerTopic = partnerTopic
+        )
+        if (!ok) {
+            call.reject(msg)
+            return
+        }
+        prefs.onboardingCompleted = true
+        prefs.userManuallyStopped = false
+        CameraForegroundService.startFromUi(context)
+        if (scStore.dnsVpnEnabled) {
+            SentinelDnsVpnService.ensureRunningIfEnabled(context)
+        }
+        CameraForegroundService.syncAccessChannels(context)
+        val res = buildSelfControlStateJs()
+        res.put("message", msg)
+        call.resolve(res)
+    }
+
+    @PluginMethod
+    fun unsealSelfControlPact(call: PluginCall) {
+        val (ok, msg) = scStore.unsealPactIfAllowed()
+        if (!ok) {
+            call.reject(msg)
+            return
+        }
+        CameraForegroundService.syncAccessChannels(context)
+        val res = buildSelfControlStateJs()
+        res.put("message", msg)
+        call.resolve(res)
+    }
+
+    @PluginMethod
+    fun startGeoUnlockWatch(call: PluginCall) {
+        GeoUnlockVerifier.startActiveVerification(context) {
+            activity?.runOnUiThread {
+                try {
+                    notifyListeners("selfControlStateChanged", buildSelfControlStateJs())
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        call.resolve(buildSelfControlStateJs())
+    }
+
+    @PluginMethod
+    fun stopGeoUnlockWatch(call: PluginCall) {
+        GeoUnlockVerifier.stopActiveVerification()
+        call.resolve(buildSelfControlStateJs())
+    }
+
+    @PluginMethod
+    fun requestCoolingOffUnlock(call: PluginCall) {
+        val (ok, msg) = scStore.requestCoolingOff()
+        if (!ok) {
+            call.reject(msg)
+            return
+        }
+        val res = buildSelfControlStateJs()
+        res.put("message", msg)
+        call.resolve(res)
+    }
+
+    @PluginMethod
+    fun cancelCoolingOffUnlock(call: PluginCall) {
+        scStore.cancelCoolingOff()
+        call.resolve(buildSelfControlStateJs())
+    }
+
+    @PluginMethod
+    fun unlockWithPartnerCode(call: PluginCall) {
+        val code = call.getString("code")?.trim().orEmpty()
+        if (code.isEmpty()) {
+            call.reject("Saisissez la clé d’urgence du partenaire.")
+            return
+        }
+        if (!scStore.verifyPartnerCodeAndUnlock(code)) {
+            call.reject("Clé d’urgence partenaire incorrecte.")
+            return
+        }
+        call.resolve(buildSelfControlStateJs())
+    }
+
+    @PluginMethod
+    fun unlockWithQrSecret(call: PluginCall) {
+        val secret = call.getString("secret")?.trim().orEmpty()
+        if (secret.isEmpty()) {
+            call.reject("Code QR / badge requis.")
+            return
+        }
+        if (!scStore.verifyQrSecretAndUnlock(secret)) {
+            call.reject("Badge QR / NFC invalide.")
+            return
+        }
+        call.resolve(buildSelfControlStateJs())
+    }
+
+    @PluginMethod
+    fun applySelfControlPreset(call: PluginCall) {
+        val presetId = call.getString("presetId")?.trim().orEmpty()
+        if (presetId.isEmpty()) {
+            call.reject("Profil manquant.")
+            return
+        }
+        scStore.applyPreset(presetId)
+        prefs.onboardingCompleted = true
+        prefs.userManuallyStopped = false
+        CameraForegroundService.startFromUi(context)
+        if (scStore.dnsVpnEnabled) {
+            SentinelDnsVpnService.reloadRules(context)
+        }
+        CameraForegroundService.syncAccessChannels(context)
+        call.resolve(buildSelfControlStateJs())
+    }
+
+    @PluginMethod
+    fun startNuclearDetox(call: PluginCall) {
+        val hours = call.getInt("hours", 24) ?: 24
+        val (ok, msg) = scStore.startNuclearDetox(hours)
+        if (!ok) {
+            call.reject(msg)
+            return
+        }
+        prefs.onboardingCompleted = true
+        prefs.userManuallyStopped = false
+        CameraForegroundService.startFromUi(context)
+        if (scStore.dnsVpnEnabled) {
+            SentinelDnsVpnService.reloadRules(context)
+        }
+        CameraForegroundService.syncAccessChannels(context)
+        val res = buildSelfControlStateJs()
+        res.put("message", msg)
+        call.resolve(res)
+    }
+
+    @PluginMethod
+    fun stopNuclearDetox(call: PluginCall) {
+        val (ok, msg) = scStore.stopNuclearDetoxIfAllowed()
+        if (!ok) {
+            call.reject(msg)
+            return
+        }
+        if (scStore.dnsVpnEnabled) {
+            SentinelDnsVpnService.reloadRules(context)
+        }
+        CameraForegroundService.syncAccessChannels(context)
+        val res = buildSelfControlStateJs()
+        res.put("message", msg)
+        call.resolve(res)
+    }
+
+    @PluginMethod
+    fun requestVpnPermission(call: PluginCall) {
+        try {
+            val prepIntent = VpnService.prepare(context)
+            if (prepIntent == null) {
+                scStore.dnsVpnEnabled = true
+                SentinelDnsVpnService.ensureRunningIfEnabled(context)
+                call.resolve(buildSelfControlStateJs())
+                return
+            }
+            startActivityForResult(call, prepIntent, "vpnPermissionCallback")
+        } catch (t: Throwable) {
+            call.reject(t.message ?: "Impossible d’autoriser le pare-feu VPN local.")
+        }
+    }
+
+    @ActivityCallback
+    fun vpnPermissionCallback(call: PluginCall?, result: ActivityResult) {
+        if (result.resultCode == Activity.RESULT_OK) {
+            scStore.dnsVpnEnabled = true
+            SentinelDnsVpnService.ensureRunningIfEnabled(context)
+        }
+        call?.resolve(buildSelfControlStateJs())
+    }
+
+    @PluginMethod
+    fun requestActivityRecognitionPermission(call: PluginCall) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                requestPermissionForAlias("activityRecognition", call, "activityRecCallback")
+            } else {
+                call.resolve(buildPortalStateObject())
+            }
+        } catch (_: Throwable) {
+            call.resolve(buildPortalStateObject())
+        }
+    }
+
+    @PermissionCallback
+    fun activityRecCallback(call: PluginCall) {
+        call.resolve(buildPortalStateObject())
+    }
+
+    @PluginMethod
+    fun getInstalledUserApps(call: PluginCall) {
+        Thread {
+            try {
+                val pm = context.packageManager
+                val launchIntent = Intent(Intent.ACTION_MAIN, null).apply {
+                    addCategory(Intent.CATEGORY_LAUNCHER)
+                }
+                val resolved = pm.queryIntentActivities(launchIntent, 0)
+                val seen = HashSet<String>()
+                val list = ArrayList<Pair<String, String>>()
+                for (ri in resolved) {
+                    val pkg = ri.activityInfo?.packageName ?: continue
+                    if (pkg == context.packageName || !seen.add(pkg)) continue
+                    val label = try {
+                        ri.loadLabel(pm).toString().trim().ifEmpty { pkg }
+                    } catch (_: Throwable) {
+                        pkg
+                    }
+                    list.add(Pair(pkg, label))
+                }
+                list.sortBy { it.second.lowercase() }
+                val arr = JSArray()
+                for ((pkg, label) in list) {
+                    arr.put(JSObject().apply {
+                        put("packageName", pkg)
+                        put("appName", label)
+                    })
+                }
+                call.resolve(JSObject().apply { put("apps", arr) })
+            } catch (t: Throwable) {
+                call.reject(t.message ?: "Impossible de lister les applications.")
+            }
+        }.start()
+    }
+
     private fun buildPermissionStatusObject(): JSObject {
         val camGranted = ContextCompat.checkSelfPermission(
             context,
@@ -1155,6 +1470,16 @@ class SentinelNativePlugin : Plugin() {
             put("usageAccess", ScreenTimeHelper.hasUsageAccess(context))
             put("overlay", ScreenTimeHelper.hasOverlayPermission(context))
             put("accessibilityService", SentinelAccessibilityService.isAccessibilityEnabled(context))
+            put("vpnConsent", SentinelDnsVpnService.hasVpnConsent(context))
+            put(
+                "activityRecognition",
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.ACTIVITY_RECOGNITION
+                    ) == PackageManager.PERMISSION_GRANTED
+                } else true
+            )
             put("screenShareReady", CameraForegroundService.hasActiveScreenProjectionConsent())
         }
     }
@@ -1277,6 +1602,9 @@ class SentinelNativePlugin : Plugin() {
             put("timelineCaptureEnabled", prefs.timelineCaptureEnabled)
             put("timelineRunning", CameraForegroundService.timelineActive)
             put("parentManaged", prefs.parentManaged)
+            put("selfControlEnabled", if (::scStore.isInitialized) scStore.selfControlEnabled else false)
+            put("pactSealed", if (::scStore.isInitialized) scStore.pactSealed else false)
+            put("dnsVpnRunning", SentinelDnsVpnService.isVpnActive)
             put("parentSubscribedTopicsCount", prefs.getParentSubscribedTopics().size)
             put("parentPushConnected", ParentAlertPushHelper.subscriberConnected)
             put("childAlertTopic", ParentAlertPushHelper.deriveChildAlertTopic(prefs.pairingCode))
